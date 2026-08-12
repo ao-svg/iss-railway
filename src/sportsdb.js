@@ -41,8 +41,8 @@ async function getMatchChannels(apiKey, sportsDbEventId) {
   const url = `${BASE_URL}/${apiKey}/lookuptv.php?id=${sportsDbEventId}`;
   try {
     const { data } = await axios.get(url, { timeout: 15000 });
-    if (!data || !Array.isArray(data.tvevents)) return [];
-    const names = data.tvevents.map((tv) => tv.strChannel).filter(Boolean);
+    if (!data || !Array.isArray(data.tvevent)) return [];
+    const names = data.tvevent.map((tv) => tv.strChannel).filter(Boolean);
     return [...new Set(names)];
   } catch (err) {
     console.error(`[sportsdb] tv lookup for event ${sportsDbEventId} failed: ${err.message}`);

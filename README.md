@@ -59,7 +59,7 @@ scrapers.
 
 ## Notes on TheSportsDB rate limits
 
-The free key (`1`) is shared and rate-limited. `lookuptv.php` is called once
+The free key (`123`) is shared and rate-limited. `lookuptv.php` is called once
 **per fixture**, so with the default 12 leagues + full TV lookups you may
 want to either request a paid key or lower `PIPELINE_CRON` frequency
 (default: every 6 hours, matching TheSportsDB's own "fetch once daily"
