@@ -9,7 +9,7 @@ const { writeCsv } = require('./csv');
 async function runPipeline({ apiKey, leagueIds, playlistUrl, outputCsvPath }) {
   console.log(`[pipeline] starting run for ${leagueIds.length} leagues`);
 
-  const rawEvents = await sportsdb.fetchAllFixtures(apiKey, leagueIds);
+  const { events: rawEvents, failures } = await sportsdb.fetchAllFixtures(apiKey, leagueIds);
   const rows = [];
 
   for (const raw of rawEvents) {
@@ -39,7 +39,7 @@ async function runPipeline({ apiKey, leagueIds, playlistUrl, outputCsvPath }) {
 
   writeCsv(deduped, outputCsvPath);
   console.log(`[pipeline] done — ${deduped.length} fixtures written`);
-  return deduped;
+  return { rows: deduped, failures };
 }
 
 module.exports = { runPipeline };

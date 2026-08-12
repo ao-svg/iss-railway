@@ -2,27 +2,50 @@ require('dotenv').config();
 const cron = require('node-cron');
 const { runPipeline } = require('./pipeline');
 const { createServer } = require('./server');
+const { getConfig } = require('./config');
 
-const config = {
-  apiKey: process.env.SPORTSDB_API_KEY || '1',
-  leagueIds: (process.env.SPORTSDB_LEAGUE_IDS || '4790')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean),
-  playlistUrl: process.env.IPTV_ORG_PLAYLIST_URL || 'https://iptv-org.github.io/iptv/index.m3u',
-  outputCsvPath: process.env.OUTPUT_CSV_PATH || './data/fixtures.csv',
-  cronExpr: process.env.PIPELINE_CRON || '0 */6 * * *',
-  port: process.env.PORT || 3000,
+const port = process.env.PORT || 3000;
+
+const state = {
+  running: false,
+  lastRunAt: null,
+  lastRunCount: null,
+  lastRunFailures: [],
+  lastError: null,
+  lastRows: null,
 };
 
-let lastRunRows = null;
+let cronTask = null;
 
 async function runOnce() {
+  if (state.running) return state;
+  state.running = true;
   try {
-    lastRunRows = await runPipeline(config);
+    const { apiKey, leagueIds, playlistUrl, outputCsvPath } = getConfig();
+    const { rows, failures } = await runPipeline({ apiKey, leagueIds, playlistUrl, outputCsvPath });
+    state.lastRunAt = new Date().toISOString();
+    state.lastRunCount = rows.length;
+    state.lastRunFailures = failures;
+    state.lastRows = rows;
+    state.lastError = null;
   } catch (err) {
     console.error('[pipeline] run failed:', err.message);
+    state.lastError = err.message;
+  } finally {
+    state.running = false;
   }
+  return state;
+}
+
+function scheduleCron() {
+  if (cronTask) cronTask.stop();
+  const { cronExpr } = getConfig();
+  if (!cron.validate(cronExpr)) {
+    console.error(`[index] invalid PIPELINE_CRON "${cronExpr}", falling back to every 6h`);
+    getConfig().cronExpr = '0 */6 * * *';
+  }
+  cronTask = cron.schedule(getConfig().cronExpr, runOnce);
+  console.log(`[index] pipeline scheduled: ${getConfig().cronExpr}`);
 }
 
 const runOnlyFlag = process.argv.includes('--once');
@@ -30,21 +53,15 @@ const runOnlyFlag = process.argv.includes('--once');
 if (runOnlyFlag) {
   runOnce().then(() => process.exit(0));
 } else {
-  // Kick off an initial run at boot, then follow the cron schedule.
   runOnce();
-
-  if (!cron.validate(config.cronExpr)) {
-    console.error(`[index] invalid PIPELINE_CRON "${config.cronExpr}", falling back to every 6h`);
-    config.cronExpr = '0 */6 * * *';
-  }
-  cron.schedule(config.cronExpr, runOnce);
-  console.log(`[index] pipeline scheduled: ${config.cronExpr}`);
+  scheduleCron();
 
   const app = createServer({
-    outputCsvPath: config.outputCsvPath,
-    getLastRun: () => lastRunRows,
+    getState: () => state,
+    runOnce,
+    rescheduleCron: scheduleCron,
   });
-  app.listen(config.port, () => {
-    console.log(`[index] server listening on :${config.port}`);
+  app.listen(port, () => {
+    console.log(`[index] server listening on :${port}`);
   });
 }

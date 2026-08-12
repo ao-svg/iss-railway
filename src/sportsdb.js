@@ -21,6 +21,7 @@ async function getLeagueFixtures(apiKey, leagueId) {
  */
 async function fetchAllFixtures(apiKey, leagueIds) {
   const allEvents = [];
+  const failures = [];
   for (const leagueId of leagueIds) {
     try {
       const events = await getLeagueFixtures(apiKey, leagueId);
@@ -28,9 +29,10 @@ async function fetchAllFixtures(apiKey, leagueIds) {
       console.log(`[sportsdb] league ${leagueId}: ${events.length} fixtures`);
     } catch (err) {
       console.error(`[sportsdb] league ${leagueId} failed: ${err.message}`);
+      failures.push({ leagueId, message: err.message });
     }
   }
-  return allEvents;
+  return { events: allEvents, failures };
 }
 
 /**
