@@ -3,6 +3,12 @@
 // broadcaster NAMES only, same as sportsdb.js. Actual stream URLs still come
 // from the public iptv-org index (see iptv.js), never from the old script's
 // pirate-mirror "channels" sheet, which was deliberately not ported.
+//
+// The site was redesigned since the old script was written: the old
+// itemscope/itemtype HTML table markup is gone, replaced by a per-day
+// JSON-LD <script type="application/ld+json"> block (schema.org ItemList),
+// capped at 20 events per day. So instead of one range request, this fetches
+// one request per day and aggregates.
 
 const axios = require('axios');
 
@@ -19,101 +25,68 @@ function formatDate(d) {
   return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}`;
 }
 
-function extractByClass(html, className) {
-  const m = html.match(new RegExp(`<[^>]*class="[^"]*\\b${className}\\b[^"]*"[^>]*>([\\s\\S]*?)<\\/[a-z]+>`, 'i'));
-  return m ? m[1] : null;
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function stripTags(html) {
-  return html.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
-}
+async function fetchDay(dateStr) {
+  const url = `${BASE_URL}?showdatestart=${dateStr}`;
+  const { data: html } = await axios.get(url, { headers: HEADERS, timeout: 20000 });
 
-function extractChannel(rowHtml) {
-  const sectionMatch = rowHtml.match(/class="[^"]*channel-details[^"]*"[^>]*>([\s\S]*?)(?:<\/td>|<\/div>)/i);
-  if (!sectionMatch) return null;
-  const section = sectionMatch[1];
-  const imgRegex = /<img[^>]*>/gi;
-  let img;
-  while ((img = imgRegex.exec(section)) !== null) {
-    const titleMatch = img[0].match(/title\s*=\s*["']([^"']+)['"]/i);
-    if (titleMatch) return titleMatch[1].trim();
+  const m = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/);
+  if (!m) return [];
+
+  let json;
+  try {
+    json = JSON.parse(m[1]);
+  } catch {
+    return [];
   }
-  return null;
-}
 
-const TYPE_ICON_MAP = [
-  ['tennis', 'Tennis'],
-  ['cricket', 'Cricket'],
-  ['horseracing', 'Horse Racing'],
-  ['football', 'Football'],
-  ['soccer', 'Football'],
-  ['basketball', 'Basketball'],
-  ['rugby', 'Rugby'],
-  ['baseball', 'Baseball'],
-  ['golf', 'Golf'],
-  ['boxing', 'Boxing'],
-  ['motorsport', 'Motorsport'],
-  ['motogp', 'Motorsport'],
-  ['cycling', 'Cycling'],
-  ['snooker', 'Snooker'],
-  ['darts', 'Darts'],
-  ['icehockey', 'Ice Hockey'],
-  ['americanfootball', 'American Football'],
-  ['aussierules', 'Australian Rules'],
-  ['netball', 'Netball'],
-];
+  const items = Array.isArray(json.itemListElement) ? json.itemListElement : [];
+  const rows = [];
 
-function detectType(rowHtml, matchName, league) {
-  const iconMatch = rowHtml.match(/(?:src|data-src)="([^"]*\/images\/sports\/[^"]+)"/i);
-  if (iconMatch) {
-    const src = iconMatch[1];
-    const hit = TYPE_ICON_MAP.find(([needle]) => src.includes(needle));
-    if (hit) return hit[1];
+  for (const li of items) {
+    const item = li.item;
+    if (!item || !item.name || !item.startDate) continue;
+
+    const broadcast = Array.isArray(item.publication) ? item.publication[0] : null;
+    const channel = broadcast && broadcast.publishedOn ? broadcast.publishedOn.name : null;
+    if (!channel) continue;
+
+    rows.push({
+      isoDate: item.startDate,
+      matchName: item.name,
+      league: item.description || '',
+      channel,
+      homeTeam: item.homeTeam ? item.homeTeam.name : null,
+      awayTeam: item.awayTeam ? item.awayTeam.name : null,
+    });
   }
-  const text = `${matchName} ${league}`.toLowerCase();
-  if (/premier league|champions league|europa league|la liga|serie a|bundesliga|ligue 1|fa cup/.test(text)) return 'Football';
-  if (/atp|wta|wimbledon|grand slam|french open|us open/.test(text)) return 'Tennis';
-  if (/cricket|ipl|t20|odi/.test(text)) return 'Cricket';
-  if (/nba|euroleague|basketball/.test(text)) return 'Basketball';
-  if (/formula|f1|motogp|nascar|rally/.test(text)) return 'Motorsport';
-  return 'Other';
+
+  return rows;
 }
 
 /**
  * Scrape wheresthematch.com's public schedule for the next `days` days.
- * Returns raw rows: { date, time, matchName, league, channel, type, isoDate }
+ * One request per day (the site paginates by day and caps at 20 events/day).
+ * Returns raw rows: { isoDate, matchName, league, channel, homeTeam, awayTeam }
  */
 async function fetchSchedule(days = 31) {
-  const startDate = new Date();
-  startDate.setUTCHours(0, 0, 0, 0);
-  const endDate = new Date(startDate.getTime() + days * 24 * 60 * 60 * 1000);
-  const url = `${BASE_URL}?showdatestart=${formatDate(startDate)}&showdateend=${formatDate(endDate)}`;
-
-  const { data: html } = await axios.get(url, { headers: HEADERS, timeout: 20000 });
-
   const rows = [];
-  const rowRegex = /<tr[^>]*itemscope[^>]*itemtype\s*=\s*["']https:\/\/schema\.org\/BroadcastEvent["'][^>]*>([\s\S]*?)<\/tr>/gi;
-  let m;
-  while ((m = rowRegex.exec(html)) !== null) {
-    const rowHtml = m[1];
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
 
-    const dtMatch = rowHtml.match(/content\s*=\s*["'](\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[^"']*)['"]/i);
-    if (!dtMatch) continue;
-    const isoDate = dtMatch[1];
-
-    const fixtureHtml = extractByClass(rowHtml, 'fixture-details');
-    if (!fixtureHtml) continue;
-    const matchName = stripTags(fixtureHtml).replace(/\s+v\s+/i, ' v ').trim();
-    if (!matchName) continue;
-
-    const leagueHtml = extractByClass(rowHtml, 'competition-name');
-    const league = leagueHtml ? stripTags(leagueHtml).trim() : '';
-
-    const channel = extractChannel(rowHtml);
-    if (!channel) continue;
-
-    const type = detectType(rowHtml, matchName, league);
-    rows.push({ isoDate, matchName, league, channel, type });
+  for (let i = 0; i < days; i++) {
+    const d = new Date(today.getTime() + i * 24 * 60 * 60 * 1000);
+    const dateStr = formatDate(d);
+    try {
+      const dayRows = await fetchDay(dateStr);
+      rows.push(...dayRows);
+    } catch (err) {
+      console.error(`[wheresthematch] day ${dateStr} failed: ${err.message}`);
+    }
+    if (i < days - 1) await sleep(250);
   }
 
   return rows;
@@ -127,14 +100,18 @@ function slugify(s) {
  * Normalize a raw scraped row into the same shape sportsdb.normalizeEvent() produces.
  */
 function normalizeRow(raw) {
-  const parts = raw.matchName.split(/\s+v\s+/i);
-  const homeTeam = parts[0] ? parts[0].trim() : raw.matchName;
-  const awayTeam = parts[1] ? parts[1].trim() : '';
+  let homeTeam = raw.homeTeam;
+  let awayTeam = raw.awayTeam;
+  if (!homeTeam) {
+    const parts = raw.matchName.split(/\s+v\s+/i);
+    homeTeam = parts[0] ? parts[0].trim() : raw.matchName;
+    awayTeam = parts[1] ? parts[1].trim() : '';
+  }
   return {
     eventId: `wtm-${raw.isoDate}-${slugify(raw.matchName)}`,
     league: raw.league,
     homeTeam,
-    awayTeam,
+    awayTeam: awayTeam || '',
     homeLogo: '',
     awayLogo: '',
     matchDateUTC: raw.isoDate,
