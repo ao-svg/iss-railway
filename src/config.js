@@ -19,6 +19,7 @@ function envDefaults() {
     playlistUrl: process.env.IPTV_ORG_PLAYLIST_URL || 'https://iptv-org.github.io/iptv/index.m3u',
     cronExpr: process.env.PIPELINE_CRON || '0 */6 * * *',
     outputCsvPath: process.env.OUTPUT_CSV_PATH || './data/fixtures.csv',
+    wtmDays: Number(process.env.WTM_DAYS) || 31,
   };
 }
 
@@ -44,6 +45,9 @@ function updateConfig(patch) {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
+  }
+  if (normalized.wtmDays !== undefined) {
+    normalized.wtmDays = Number(normalized.wtmDays) || current.wtmDays;
   }
   current = { ...current, ...normalized };
   fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });

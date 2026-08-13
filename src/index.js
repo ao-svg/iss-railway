@@ -21,8 +21,8 @@ async function runOnce() {
   if (state.running) return state;
   state.running = true;
   try {
-    const { apiKey, leagueIds, playlistUrl, outputCsvPath } = getConfig();
-    const { rows, failures } = await runPipeline({ apiKey, leagueIds, playlistUrl, outputCsvPath });
+    const { apiKey, leagueIds, playlistUrl, outputCsvPath, wtmDays } = getConfig();
+    const { rows, failures } = await runPipeline({ apiKey, leagueIds, playlistUrl, outputCsvPath, wtmDays });
     state.lastRunAt = new Date().toISOString();
     state.lastRunCount = rows.length;
     state.lastRunFailures = failures;

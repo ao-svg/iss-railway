@@ -99,13 +99,18 @@ function renderDashboard(state, config) {
   const fixtureRows = rows
     .map(
       (r) => `<tr>
+        <td>${escapeHtml(r.source === 'wheresthematch' ? 'WTM' : 'SDB')}</td>
         <td>${escapeHtml(r.league)}</td>
-        <td>${escapeHtml(r.homeTeam)} vs ${escapeHtml(r.awayTeam)}</td>
+        <td>${escapeHtml(r.homeTeam)}${r.awayTeam ? ' vs ' + escapeHtml(r.awayTeam) : ''}</td>
         <td>${escapeHtml(r.matchDateUTC)}</td>
         <td>${escapeHtml((r.channels || []).join(', ') || '—')}</td>
       </tr>`
     )
     .join('');
+  const sourceCounts = (state.lastRows || []).reduce((acc, r) => {
+    acc[r.source] = (acc[r.source] || 0) + 1;
+    return acc;
+  }, {});
 
   return layout(
     'iss-railway dashboard',
@@ -116,9 +121,10 @@ function renderDashboard(state, config) {
     <div class="card">
       <table>
         <tr><th>Last run</th><td>${state.lastRunAt ? escapeHtml(state.lastRunAt) : '—'}</td></tr>
-        <tr><th>Fixtures written</th><td>${state.lastRunCount ?? '—'}</td></tr>
+        <tr><th>Fixtures written</th><td>${state.lastRunCount ?? '—'} (SportsDB: ${sourceCounts.sportsdb || 0}, wheresthematch: ${sourceCounts.wheresthematch || 0})</td></tr>
         <tr><th>Schedule</th><td><code>${escapeHtml(config.cronExpr)}</code></td></tr>
         <tr><th>Leagues configured</th><td>${config.leagueIds.length}</td></tr>
+        <tr><th>wheresthematch.com lookahead</th><td>${config.wtmDays} days</td></tr>
       </table>
       <form method="POST" action="/api/run">
         <button type="submit" ${state.running ? 'disabled' : ''}>Run pipeline now</button>
@@ -128,8 +134,8 @@ function renderDashboard(state, config) {
     ${
       failures.length
         ? `<div class="card">
-      <strong>Leagues that failed last run</strong>
-      <table><tr><th>League ID</th><th>Error</th></tr>${failureRows}</table>
+      <strong>Sources that failed last run</strong>
+      <table><tr><th>Source</th><th>Error</th></tr>${failureRows}</table>
     </div>`
         : ''
     }
@@ -138,7 +144,7 @@ function renderDashboard(state, config) {
       <strong>Latest fixtures</strong>
       ${
         rows.length
-          ? `<table><tr><th>League</th><th>Match</th><th>Date (UTC)</th><th>Channels</th></tr>${fixtureRows}</table>`
+          ? `<table><tr><th>Src</th><th>League</th><th>Match</th><th>Date (UTC)</th><th>Channels</th></tr>${fixtureRows}</table>`
           : '<p class="muted">No fixtures yet — click "Run pipeline now" above.</p>'
       }
     </div>
@@ -166,6 +172,9 @@ function renderSettings(config, saved) {
         <label for="cronExpr">Cron schedule</label>
         <input type="text" id="cronExpr" name="cronExpr" value="${escapeHtml(config.cronExpr)}">
 
+        <label for="wtmDays">wheresthematch.com lookahead (days)</label>
+        <input type="text" id="wtmDays" name="wtmDays" value="${escapeHtml(config.wtmDays)}">
+
         <button type="submit">Save settings</button>
       </form>
     </div>
@@ -191,8 +200,8 @@ function createServer({ getState, runOnce, rescheduleCron }) {
   });
 
   app.post('/settings', requireAuth, (req, res) => {
-    const { apiKey, leagueIds, playlistUrl, cronExpr } = req.body;
-    updateConfig({ apiKey, leagueIds, playlistUrl, cronExpr });
+    const { apiKey, leagueIds, playlistUrl, cronExpr, wtmDays } = req.body;
+    updateConfig({ apiKey, leagueIds, playlistUrl, cronExpr, wtmDays });
     rescheduleCron();
     res.redirect('/settings?saved=1');
   });

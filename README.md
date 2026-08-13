@@ -6,17 +6,27 @@ standalone pipeline you can deploy on Railway and pull CSV/JSON from.
 **What it does — and what it deliberately does NOT do:**
 
 - ✅ Pulls fixtures from **TheSportsDB** (`eventsnextleague.php`), same league
-  IDs as the original plugin (`SPORTSDB_LEAGUE_IDS` in `.env`).
-- ✅ Looks up official TV broadcaster listings per fixture (`lookuptv.php`)
+  IDs as the original plugin (`SPORTSDB_LEAGUE_IDS` in `.env`). Note: the free
+  key only returns 1 upcoming fixture per league — see rate-limit notes below.
+- ✅ Scrapes **wheresthematch.com**'s public live-sport-on-tv schedule
+  (`src/wheresthematch.js`) as a second, richer source — full multi-sport
+  schedule for the next `WTM_DAYS` days, not capped like the free SportsDB key.
+  Ported from the team's old Google Apps Script pipeline's `scrapeWheresMatch()`.
+- ✅ Looks up official TV broadcaster listings for both sources (`lookuptv.php`
+  for SportsDB fixtures, scraped broadcaster names for wheresthematch ones)
   and matches those channel names against the **public iptv-org** playlist
   (`https://iptv-org.github.io/iptv/index.m3u`) — a community-maintained,
   self-reported index of free-to-air / publicly broadcast channels.
 - ✅ Writes the result to `data/fixtures.csv` and serves it at `/fixtures.csv`
-  and `/fixtures.json`.
+  and `/fixtures.json`. Each row has a `source` field (`sportsdb` or
+  `wheresthematch`).
 - ❌ Does **not** include the original plugin's aggregator web-scraper
-  (Sportsurge/StreamEast link extraction) or the URL-token/anti-indexing
-  layer. That module scraped unauthorized copies of copyrighted live
-  broadcasts and was intentionally left out of this port.
+  (Sportsurge/StreamEast link extraction), nor the old Apps Script pipeline's
+  `channels`-sheet mapping to pirate-mirror stream URLs (tv-shihab.xyz,
+  freestreams-live1c.pk, dlhd.st, thedaddy.dad, acestream links, etc.) or its
+  `scraper_ltv.js` aggregator. Those scraped/linked unauthorized copies of
+  copyrighted live broadcasts and were intentionally left out of this port —
+  only the legitimate schedule/broadcaster-name scraping was ported.
 
 ## Local dev
 

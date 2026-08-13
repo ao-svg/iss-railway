@@ -3,6 +3,7 @@ const path = require('path');
 
 const HEADER = [
   'EventID',
+  'Source',
   'League',
   'HomeTeam',
   'AwayTeam',
@@ -25,6 +26,7 @@ function rowsToCsv(rows) {
     lines.push(
       [
         r.eventId,
+        r.source,
         r.league,
         r.homeTeam,
         r.awayTeam,
