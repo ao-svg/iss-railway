@@ -96,6 +96,34 @@ function slugify(s) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 }
 
+// The JSON-LD has no explicit sport field, so fall back to keyword matching
+// against the league/description text (mirrors the old scraper's text-based
+// fallback for when it couldn't find a sport icon).
+const SPORT_KEYWORDS = [
+  [/premier league|champions league|europa league|la liga|serie a|bundesliga|ligue 1|fa cup|football|soccer/i, 'Football'],
+  [/atp|wta|wimbledon|grand slam|french open|us open|tennis/i, 'Tennis'],
+  [/cricket|ipl|t20|odi/i, 'Cricket'],
+  [/nba|euroleague|basketball/i, 'Basketball'],
+  [/formula|f1|motogp|nascar|rally|motorsport/i, 'Motorsport'],
+  [/cycling|tour de|vuelta|giro|uci/i, 'Cycling'],
+  [/golf|pga|masters|ryder cup/i, 'Golf'],
+  [/snooker/i, 'Snooker'],
+  [/darts|pdc/i, 'Darts'],
+  [/rugby|nrl|super league/i, 'Rugby'],
+  [/boxing|ufc|mma/i, 'Boxing'],
+  [/race meeting|racing|horse/i, 'Horse Racing'],
+  [/baseball|mlb/i, 'Baseball'],
+  [/nhl|ice hockey/i, 'Ice Hockey'],
+  [/afl|aussie rules|australian rules/i, 'Australian Rules'],
+  [/athletics/i, 'Athletics'],
+];
+
+function detectSportType(matchName, league) {
+  const text = `${matchName} ${league}`;
+  const hit = SPORT_KEYWORDS.find(([re]) => re.test(text));
+  return hit ? hit[1] : 'Other';
+}
+
 /**
  * Normalize a raw scraped row into the same shape sportsdb.normalizeEvent() produces.
  */
@@ -116,6 +144,7 @@ function normalizeRow(raw) {
     awayLogo: '',
     matchDateUTC: raw.isoDate,
     channelName: raw.channel,
+    sportType: detectSportType(raw.matchName, raw.league),
   };
 }
 

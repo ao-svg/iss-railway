@@ -66,6 +66,7 @@ function normalizeEvent(event) {
     homeLogo: event.strHomeTeamBadge || '',
     awayLogo: event.strAwayTeamBadge || '',
     matchDateUTC: timestamp,
+    sportType: event.strSport || 'Football',
   };
 }
 

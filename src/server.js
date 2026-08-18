@@ -2,6 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const crypto = require('crypto');
 const { getConfig, updateConfig } = require('./config');
+const { formatBeijing } = require('./csv');
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({
@@ -97,15 +98,18 @@ function renderDashboard(state, config) {
 
   const rows = (state.lastRows || []).slice(0, 25);
   const fixtureRows = rows
-    .map(
-      (r) => `<tr>
-        <td>${escapeHtml(r.source === 'wheresthematch' ? 'WTM' : 'SDB')}</td>
+    .map((r) => {
+      const { date, time } = formatBeijing(r.matchDateUTC);
+      return `<tr>
+        <td>${escapeHtml(date)}</td>
+        <td>${escapeHtml(time)}</td>
+        <td>${escapeHtml(r.homeTeam)}${r.awayTeam ? ' v ' + escapeHtml(r.awayTeam) : ''}</td>
         <td>${escapeHtml(r.league)}</td>
-        <td>${escapeHtml(r.homeTeam)}${r.awayTeam ? ' vs ' + escapeHtml(r.awayTeam) : ''}</td>
-        <td>${escapeHtml(r.matchDateUTC)}</td>
         <td>${escapeHtml((r.channels || []).join(', ') || '—')}</td>
-      </tr>`
-    )
+        <td>${escapeHtml(r.sportType || '')}</td>
+        <td>${escapeHtml(r.source === 'wheresthematch' ? 'WTM' : 'SDB')}</td>
+      </tr>`;
+    })
     .join('');
   const sourceCounts = (state.lastRows || []).reduce((acc, r) => {
     acc[r.source] = (acc[r.source] || 0) + 1;
@@ -141,10 +145,10 @@ function renderDashboard(state, config) {
     }
 
     <div class="card">
-      <strong>Latest fixtures</strong>
+      <strong>Latest fixtures</strong> <span class="muted">(Date/Time in Beijing UTC+8, matching the reference sheet)</span>
       ${
         rows.length
-          ? `<table><tr><th>Src</th><th>League</th><th>Match</th><th>Date (UTC)</th><th>Channels</th></tr>${fixtureRows}</table>`
+          ? `<table><tr><th>Date</th><th>Time</th><th>Match</th><th>League</th><th>Channels</th><th>Type</th><th>Src</th></tr>${fixtureRows}</table>`
           : '<p class="muted">No fixtures yet — click "Run pipeline now" above.</p>'
       }
     </div>

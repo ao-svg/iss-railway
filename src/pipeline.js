@@ -47,6 +47,7 @@ async function runPipeline({ apiKey, leagueIds, playlistUrl, outputCsvPath, wtmD
         homeLogo: '',
         awayLogo: '',
         matchDateUTC: event.matchDateUTC,
+        sportType: event.sportType,
         source: 'wheresthematch',
         channels: matched.map((m) => m.label),
         streamUrls: matched.map((m) => m.streamUrl),
