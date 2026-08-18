@@ -118,9 +118,12 @@ const SPORT_KEYWORDS = [
   [/athletics/i, 'Athletics'],
 ];
 
-function detectSportType(matchName, league) {
-  const text = `${matchName} ${league}`;
-  const hit = SPORT_KEYWORDS.find(([re]) => re.test(text));
+function detectSportType(league) {
+  // League/description text only — matchName often contains team names that
+  // coincidentally match a keyword (e.g. "AFC Wimbledon" vs the Wimbledon
+  // tennis championship), which produced wrong sport labels for football
+  // fixtures.
+  const hit = SPORT_KEYWORDS.find(([re]) => re.test(league));
   return hit ? hit[1] : 'Other';
 }
 
@@ -144,7 +147,7 @@ function normalizeRow(raw) {
     awayLogo: '',
     matchDateUTC: raw.isoDate,
     channelName: raw.channel,
-    sportType: detectSportType(raw.matchName, raw.league),
+    sportType: detectSportType(raw.league),
   };
 }
 
