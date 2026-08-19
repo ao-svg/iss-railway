@@ -116,6 +116,15 @@ function renderDashboard(state, config) {
     return acc;
   }, {});
 
+  const allDates = (state.lastRows || [])
+    .map((r) => formatBeijing(r.matchDateUTC).date)
+    .filter(Boolean)
+    .sort();
+  const coverage =
+    allDates.length > 0
+      ? `${allDates[0]} to ${allDates[allDates.length - 1]} (${new Set(allDates).size} distinct days)`
+      : '—';
+
   return layout(
     'iss-railway dashboard',
     `
@@ -126,6 +135,7 @@ function renderDashboard(state, config) {
       <table>
         <tr><th>Last run</th><td>${state.lastRunAt ? escapeHtml(state.lastRunAt) : '—'}</td></tr>
         <tr><th>Fixtures written</th><td>${state.lastRunCount ?? '—'} (SportsDB: ${sourceCounts.sportsdb || 0}, wheresthematch: ${sourceCounts.wheresthematch || 0})</td></tr>
+        <tr><th>Date coverage</th><td>${escapeHtml(coverage)}</td></tr>
         <tr><th>Schedule</th><td><code>${escapeHtml(config.cronExpr)}</code></td></tr>
         <tr><th>Leagues configured</th><td>${config.leagueIds.length}</td></tr>
         <tr><th>wheresthematch.com lookahead</th><td>${config.wtmDays} days</td></tr>
@@ -145,7 +155,7 @@ function renderDashboard(state, config) {
     }
 
     <div class="card">
-      <strong>Latest fixtures</strong> <span class="muted">(Date/Time in Beijing UTC+8, matching the reference sheet)</span>
+      <strong>First 25 fixtures</strong> <span class="muted">(preview only, earliest first, Beijing UTC+8 — see fixtures.csv or fixtures.json for the full ${state.lastRunCount ?? 0}-row dataset)</span>
       ${
         rows.length
           ? `<table><tr><th>Date</th><th>Time</th><th>Match</th><th>League</th><th>Channels</th><th>Type</th><th>Src</th></tr>${fixtureRows}</table>`
