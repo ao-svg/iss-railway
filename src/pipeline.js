@@ -37,7 +37,9 @@ async function runPipeline({ apiKey, leagueIds, playlistUrl, outputCsvPath, wtmD
 
     for (const raw of wtmRaw) {
       const event = wtm.normalizeRow(raw);
-      const matched = await iptv.matchChannels([event.channelName], playlistUrl);
+      const matched = event.channels.length
+        ? await iptv.matchChannels(event.channels, playlistUrl)
+        : [];
 
       rows.push({
         eventId: event.eventId,

@@ -4,11 +4,17 @@
 // from the public iptv-org index (see iptv.js), never from the old script's
 // pirate-mirror "channels" sheet, which was deliberately not ported.
 //
-// The site was redesigned since the old script was written: the old
-// itemscope/itemtype HTML table markup is gone, replaced by a per-day
-// JSON-LD <script type="application/ld+json"> block (schema.org ItemList),
-// capped at 20 events per day. So instead of one range request, this fetches
-// one request per day and aggregates.
+// The site's markup changed since the old script was written: the old
+// itemscope/itemtype attributes are gone. There's now also a per-day JSON-LD
+// <script type="application/ld+json"> block, but it's capped at 20 events
+// and only reflects the single start date even when a date range is
+// requested — a red herring. The real, fuller data is still a classic HTML
+// table (<tr class="fixture-details">...), just restyled with a
+// <time class="sr-only" datetime="..."> instead of microdata. That table is
+// also capped (~1 request only reliably covers a handful of days even with
+// showdatestart/showdateend spanning more), so this still fetches one
+// request per day and aggregates — but each request now yields every
+// broadcaster for an event, not just the first one.
 
 const axios = require('axios');
 
@@ -29,39 +35,75 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function stripTags(html) {
+  return html.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+const SPORT_ICON_MAP = {
+  football: 'Football',
+  soccer: 'Football',
+  tennis: 'Tennis',
+  cricket: 'Cricket',
+  basketball: 'Basketball',
+  rugby: 'Rugby',
+  rugbyleague: 'Rugby',
+  rugbyunion: 'Rugby',
+  baseball: 'Baseball',
+  golf: 'Golf',
+  boxing: 'Boxing',
+  motorsport: 'Motorsport',
+  motogp: 'Motorsport',
+  f1: 'Motorsport',
+  cycling: 'Cycling',
+  snooker: 'Snooker',
+  darts: 'Darts',
+  icehockey: 'Ice Hockey',
+  americanfootball: 'American Football',
+  aussierules: 'Australian Rules',
+  netball: 'Netball',
+  horseracing: 'Horse Racing',
+  athletics: 'Athletics',
+  ufc: 'UFC/MMA',
+  wrestling: 'Wrestling',
+  hockey: 'Hockey',
+  gymnastics: 'Gymnastics',
+};
+
 async function fetchDay(dateStr) {
   const url = `${BASE_URL}?showdatestart=${dateStr}`;
   const { data: html } = await axios.get(url, { headers: HEADERS, timeout: 20000 });
 
-  const m = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/);
-  if (!m) return [];
-
-  let json;
-  try {
-    json = JSON.parse(m[1]);
-  } catch {
-    return [];
-  }
-
-  const items = Array.isArray(json.itemListElement) ? json.itemListElement : [];
   const rows = [];
+  const trRegex = /<tr>([\s\S]*?)<\/tr>/g;
+  let trMatch;
 
-  for (const li of items) {
-    const item = li.item;
-    if (!item || !item.name || !item.startDate) continue;
+  while ((trMatch = trRegex.exec(html)) !== null) {
+    const rowHtml = trMatch[1];
+    if (!rowHtml.includes('fixture-details')) continue;
 
-    const broadcast = Array.isArray(item.publication) ? item.publication[0] : null;
-    const channel = broadcast && broadcast.publishedOn ? broadcast.publishedOn.name : null;
-    if (!channel) continue;
+    const dtMatch = rowHtml.match(/<time class="sr-only" datetime="([^"]+)"/);
+    if (!dtMatch) continue;
+    const isoDate = dtMatch[1];
 
-    rows.push({
-      isoDate: item.startDate,
-      matchName: item.name,
-      league: item.description || '',
-      channel,
-      homeTeam: item.homeTeam ? item.homeTeam.name : null,
-      awayTeam: item.awayTeam ? item.awayTeam.name : null,
-    });
+    const fixtureMatch = rowHtml.match(/class="fixture">([\s\S]*?)<\/span>/);
+    if (!fixtureMatch) continue;
+    const matchName = stripTags(fixtureMatch[1]).replace(/\s+v\s+/i, ' v ').trim();
+    if (!matchName) continue;
+
+    const leagueMatch = rowHtml.match(/class="competition-name">[\s\S]*?<span>([^<]*)<\/span>/);
+    const league = leagueMatch ? leagueMatch[1].trim() : '';
+
+    const sportMatch = rowHtml.match(/class="competition-name"><img[^>]*src="[^"]*\/sports\/([a-zA-Z-]+)\.gif"/);
+    const sportSlug = sportMatch ? sportMatch[1].toLowerCase().replace(/-/g, '') : '';
+    const sportType = SPORT_ICON_MAP[sportSlug] || 'Other';
+
+    const channelBlockMatch = rowHtml.match(/class="channel-details">([\s\S]*?)<\/td>/);
+    const channels = channelBlockMatch
+      ? [...channelBlockMatch[1].matchAll(/class="sr-only">([^<]+)<\/span>/g)].map((m) => m[1].trim())
+      : [];
+    if (!channels.length) continue;
+
+    rows.push({ isoDate, matchName, league, channels: [...new Set(channels)], sportType });
   }
 
   return rows;
@@ -69,8 +111,8 @@ async function fetchDay(dateStr) {
 
 /**
  * Scrape wheresthematch.com's public schedule for the next `days` days.
- * One request per day (the site paginates by day and caps at 20 events/day).
- * Returns raw rows: { isoDate, matchName, league, channel, homeTeam, awayTeam }
+ * One request per day — see the module comment for why.
+ * Returns raw rows: { isoDate, matchName, league, channels, sportType }
  */
 async function fetchSchedule(days = 31) {
   const rows = [];
@@ -96,58 +138,25 @@ function slugify(s) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 }
 
-// The JSON-LD has no explicit sport field, so fall back to keyword matching
-// against the league/description text (mirrors the old scraper's text-based
-// fallback for when it couldn't find a sport icon).
-const SPORT_KEYWORDS = [
-  [/premier league|champions league|europa league|la liga|serie a|bundesliga|ligue 1|fa cup|football|soccer/i, 'Football'],
-  [/atp|wta|wimbledon|grand slam|french open|us open|tennis/i, 'Tennis'],
-  [/cricket|ipl|t20|odi/i, 'Cricket'],
-  [/nba|euroleague|basketball/i, 'Basketball'],
-  [/formula|f1|motogp|nascar|rally|motorsport/i, 'Motorsport'],
-  [/cycling|tour de|vuelta|giro|uci/i, 'Cycling'],
-  [/golf|pga|masters|ryder cup/i, 'Golf'],
-  [/snooker/i, 'Snooker'],
-  [/darts|pdc/i, 'Darts'],
-  [/rugby|nrl|super league/i, 'Rugby'],
-  [/boxing|ufc|mma/i, 'Boxing'],
-  [/race meeting|racing|horse/i, 'Horse Racing'],
-  [/baseball|mlb/i, 'Baseball'],
-  [/nhl|ice hockey/i, 'Ice Hockey'],
-  [/afl|aussie rules|australian rules/i, 'Australian Rules'],
-  [/athletics/i, 'Athletics'],
-];
-
-function detectSportType(league) {
-  // League/description text only — matchName often contains team names that
-  // coincidentally match a keyword (e.g. "AFC Wimbledon" vs the Wimbledon
-  // tennis championship), which produced wrong sport labels for football
-  // fixtures.
-  const hit = SPORT_KEYWORDS.find(([re]) => re.test(league));
-  return hit ? hit[1] : 'Other';
-}
-
 /**
  * Normalize a raw scraped row into the same shape sportsdb.normalizeEvent() produces.
+ * channels stays as its own array — pipeline.js matches it against iptv-org directly,
+ * same as it does with sportsdb's per-event channel list.
  */
 function normalizeRow(raw) {
-  let homeTeam = raw.homeTeam;
-  let awayTeam = raw.awayTeam;
-  if (!homeTeam) {
-    const parts = raw.matchName.split(/\s+v\s+/i);
-    homeTeam = parts[0] ? parts[0].trim() : raw.matchName;
-    awayTeam = parts[1] ? parts[1].trim() : '';
-  }
+  const parts = raw.matchName.split(/\s+v\s+/i);
+  const homeTeam = parts[0] ? parts[0].trim() : raw.matchName;
+  const awayTeam = parts[1] ? parts[1].trim() : '';
   return {
     eventId: `wtm-${raw.isoDate}-${slugify(raw.matchName)}`,
     league: raw.league,
     homeTeam,
-    awayTeam: awayTeam || '',
+    awayTeam,
     homeLogo: '',
     awayLogo: '',
     matchDateUTC: raw.isoDate,
-    channelName: raw.channel,
-    sportType: detectSportType(raw.league),
+    sportType: raw.sportType,
+    channels: raw.channels,
   };
 }
 
