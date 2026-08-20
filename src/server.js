@@ -66,11 +66,17 @@ function layout(title, body) {
   button.secondary { background: #334155; }
   .muted { color: #94a3b8; font-size: 0.85rem; }
   code { background: #0f172a; padding: 0.1rem 0.35rem; border-radius: 4px; }
+  .channel-list { list-style: none; margin: 0; padding: 0; }
+  .channel-list li { margin-bottom: 0.15rem; }
+  .channel-list a { color: #93c5fd; }
+  .channel-list .no-url { color: #94a3b8; }
+  #search-box { margin-bottom: 1rem; }
+  #row-count { font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.5rem; }
 </style>
 </head>
 <body>
 <main>
-<nav><a href="/">Dashboard</a><a href="/settings">Settings</a><a href="/fixtures.json">fixtures.json</a><a href="/fixtures.csv">fixtures.csv</a><a href="/health">health</a></nav>
+<nav><a href="/">Dashboard</a><a href="/browse">Browse all</a><a href="/settings">Settings</a><a href="/fixtures.json">fixtures.json</a><a href="/fixtures.csv">fixtures.csv</a><a href="/health">health</a></nav>
 ${body}
 </main>
 </body>
@@ -155,13 +161,74 @@ function renderDashboard(state, config) {
     }
 
     <div class="card">
-      <strong>First 25 fixtures</strong> <span class="muted">(preview only, earliest first, Beijing UTC+8 — see fixtures.csv or fixtures.json for the full ${state.lastRunCount ?? 0}-row dataset)</span>
+      <strong>First 25 fixtures</strong> <span class="muted">(preview only, earliest first, Beijing UTC+8 — see <a href="/browse">Browse all</a> for the full ${state.lastRunCount ?? 0}-row dataset with stream URLs, or fixtures.csv/fixtures.json for raw data)</span>
       ${
         rows.length
           ? `<table><tr><th>Date</th><th>Time</th><th>Match</th><th>League</th><th>Channels</th><th>Type</th><th>Src</th></tr>${fixtureRows}</table>`
           : '<p class="muted">No fixtures yet — click "Run pipeline now" above.</p>'
       }
     </div>
+  `
+  );
+}
+
+function renderBrowse(state) {
+  const rows = state.lastRows || [];
+
+  const tableRows = rows
+    .map((r) => {
+      const { date, time } = formatBeijing(r.matchDateUTC);
+      const channels = r.channels || [];
+      const streamUrls = r.streamUrls || [];
+      const channelItems = channels.length
+        ? channels
+            .map((ch, i) => {
+              const url = streamUrls[i];
+              return url
+                ? `<li><a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(ch)}</a></li>`
+                : `<li>${escapeHtml(ch)} <span class="no-url">(no stream match)</span></li>`;
+            })
+            .join('')
+        : '<li class="no-url">—</li>';
+      return `<tr>
+        <td>${escapeHtml(date)}</td>
+        <td>${escapeHtml(time)}</td>
+        <td>${escapeHtml(r.homeTeam)}${r.awayTeam ? ' v ' + escapeHtml(r.awayTeam) : ''}</td>
+        <td>${escapeHtml(r.league)}</td>
+        <td>${escapeHtml(r.sportType || '')}</td>
+        <td>${escapeHtml(r.source === 'wheresthematch' ? 'WTM' : 'SDB')}</td>
+        <td><ul class="channel-list">${channelItems}</ul></td>
+      </tr>`;
+    })
+    .join('');
+
+  return layout(
+    'iss-railway browse',
+    `
+    <h1>All fixtures</h1>
+    <p class="muted">Every row from the last run, with stream URLs where iptv-org had a match. Click a channel name to open its stream.</p>
+    <input type="text" id="search-box" placeholder="Filter by team, league, channel..." oninput="filterRows()">
+    <p id="row-count"></p>
+    <div class="card" style="overflow-x:auto">
+      <table id="fixtures-table">
+        <thead><tr><th>Date</th><th>Time</th><th>Match</th><th>League</th><th>Type</th><th>Src</th><th>Channels</th></tr></thead>
+        <tbody>${tableRows}</tbody>
+      </table>
+    </div>
+    <script>
+      function filterRows() {
+        const q = document.getElementById('search-box').value.toLowerCase();
+        const rows = document.querySelectorAll('#fixtures-table tbody tr');
+        let visible = 0;
+        rows.forEach((row) => {
+          const match = row.textContent.toLowerCase().includes(q);
+          row.style.display = match ? '' : 'none';
+          if (match) visible++;
+        });
+        document.getElementById('row-count').textContent = visible + ' of ' + rows.length + ' rows shown';
+      }
+      filterRows();
+    </script>
   `
   );
 }
@@ -207,6 +274,10 @@ function createServer({ getState, runOnce, rescheduleCron }) {
 
   app.get('/', requireAuth, (req, res) => {
     res.send(renderDashboard(getState(), getConfig()));
+  });
+
+  app.get('/browse', requireAuth, (req, res) => {
+    res.send(renderBrowse(getState()));
   });
 
   app.get('/settings', requireAuth, (req, res) => {

@@ -49,20 +49,33 @@ async function getPlaylist(playlistUrl) {
   return parsed;
 }
 
+// Below this length a substring match is too likely to be a coincidental
+// generic word (e.g. a playlist entry literally named "Sport" matched
+// "TNT Sports 1", "Sky Sports Cricket", "Viaplay Sports 1 UK", etc. — all
+// unrelated channels — because "Sport" is a substring of all of them).
+const MIN_SUBSTRING_MATCH_LENGTH = 8;
+
 /**
- * Case-insensitive fuzzy match, same rule as the original PHP:
- * exact match OR substring match in either direction.
- * Mirrors ISS_IPTV_Scraper::find_channel_in_playlist()
+ * Case-insensitive fuzzy match: exact match wins outright; otherwise the
+ * longest (most specific) substring match, above a minimum length to avoid
+ * generic short names producing false positives. Originally ported from the
+ * old PHP plugin's first-match-wins rule, which had exactly that bug.
+ * Mirrors ISS_IPTV_Scraper::find_channel_in_playlist(), fixed.
  */
 function findChannelInPlaylist(name, playlist) {
   const target = name.toLowerCase();
+  let best = null;
   for (const item of playlist) {
     const itemName = item.name.toLowerCase();
-    if (itemName === target || itemName.includes(target) || target.includes(itemName)) {
-      return item.url;
+    if (itemName === target) return item.url;
+    if (itemName.length < MIN_SUBSTRING_MATCH_LENGTH) continue;
+    if (itemName.includes(target) || target.includes(itemName)) {
+      if (!best || itemName.length > best.itemName.length) {
+        best = { itemName, url: item.url };
+      }
     }
   }
-  return null;
+  return best ? best.url : null;
 }
 
 /**
