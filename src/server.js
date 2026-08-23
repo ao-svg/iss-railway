@@ -76,6 +76,7 @@ function layout(title, body) {
   .source-list a { color: #93c5fd; font-size: 0.8rem; }
   .dot { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 50%; margin-right: 0.4rem; }
   .dot-ok { background: #4ade80; }
+  .dot-stream { background: #fbbf24; }
   .dot-blocked, .dot-dead { background: #f87171; }
   .dot-unchecked { background: #475569; }
   #search-box { margin-bottom: 1rem; }
@@ -153,7 +154,7 @@ function renderDashboard(state, config) {
     checkStatusLine = `<span class="status-warn">● checking… ${p ? `${p.done}/${p.total}` : ''}</span>`;
   } else if (state.lastCheckSummary) {
     const s = state.lastCheckSummary;
-    checkStatusLine = `<span class="muted">Last checked ${escapeHtml(state.lastCheckAt)} — ok: ${s.ok}, blocked: ${s.blocked}, dead: ${s.dead}, skipped (fresh): ${s.skipped}</span>`;
+    checkStatusLine = `<span class="muted">Last checked ${escapeHtml(state.lastCheckAt)} — ok: ${s.ok}, stream: ${s.stream ?? 0}, blocked: ${s.blocked}, dead: ${s.dead}, skipped (fresh): ${s.skipped}</span>`;
   } else {
     checkStatusLine = '<span class="muted">Never checked</span>';
   }
@@ -194,7 +195,7 @@ function renderDashboard(state, config) {
         <button type="submit" ${state.checkRunning ? 'disabled' : ''}>Check sources now</button>
         <button type="submit" name="force" value="1" class="secondary" ${state.checkRunning ? 'disabled' : ''}>Re-check all (ignore cache)</button>
       </form>
-      <p class="muted">Green = reachable and not blocked from framing. Red = dead link or blocks iframe embedding (X-Frame-Options/CSP). See <a href="/browse">Browse all</a> for per-source status.</p>
+      <p class="muted">Green = HTML page, directly &lt;iframe&gt;-embeddable. Amber = live stream manifest (HLS/DASH) — reachable and CORS-open, but needs a &lt;video&gt; player (hls.js/dash.js) on your page, not a bare iframe. Red = dead link, blocks framing (X-Frame-Options/CSP), or a manifest with no CORS access. See <a href="/browse">Browse all</a> for per-source status.</p>
     </div>
 
     <div class="card">
@@ -255,7 +256,7 @@ function renderBrowse(state, getSourceStatus) {
     'iss-railway browse',
     `
     <h1>All fixtures</h1>
-    <p class="muted">Every row from the last run. Each channel can have multiple candidate sources; the dot shows the last iframe/reachability check (<span class="dot dot-ok"></span> ok, <span class="dot dot-blocked"></span> blocked/dead, <span class="dot dot-unchecked"></span> not checked — run "Check sources" on the <a href="/">dashboard</a>).</p>
+    <p class="muted">Every row from the last run. Each channel can have multiple candidate sources; the dot shows the last check (<span class="dot dot-ok"></span> ok — iframe-ready, <span class="dot dot-stream"></span> stream — needs a video player, not a bare iframe, <span class="dot dot-blocked"></span> blocked/dead, <span class="dot dot-unchecked"></span> not checked — run "Check sources" on the <a href="/">dashboard</a>).</p>
     <input type="text" id="search-box" placeholder="Filter by team, league, channel..." oninput="filterRows()">
     <p id="row-count"></p>
     <div class="card" style="overflow-x:auto">
