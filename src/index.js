@@ -3,6 +3,7 @@ const cron = require('node-cron');
 const { runPipeline } = require('./pipeline');
 const { createServer } = require('./server');
 const { getConfig } = require('./config');
+const sourceChecks = require('./sourceChecks');
 
 const port = process.env.PORT || 3000;
 
@@ -13,6 +14,10 @@ const state = {
   lastRunFailures: [],
   lastError: null,
   lastRows: null,
+  checkRunning: false,
+  checkProgress: null, // { done, total }
+  lastCheckAt: null,
+  lastCheckSummary: null,
 };
 
 let cronTask = null;
@@ -33,6 +38,40 @@ async function runOnce() {
     state.lastError = err.message;
   } finally {
     state.running = false;
+  }
+  return state;
+}
+
+function allSourceUrls() {
+  const urls = [];
+  for (const row of state.lastRows || []) {
+    for (const ch of row.channels || []) {
+      for (const url of ch.sources || []) urls.push(url);
+    }
+  }
+  return urls;
+}
+
+async function runSourceCheck(force = false) {
+  if (state.checkRunning) return state;
+  const urls = allSourceUrls();
+  if (!urls.length) return state;
+  state.checkRunning = true;
+  state.checkProgress = { done: 0, total: urls.length };
+  try {
+    const summary = await sourceChecks.checkAll(urls, {
+      force,
+      onProgress: (done, total) => {
+        state.checkProgress = { done, total };
+      },
+    });
+    state.lastCheckAt = new Date().toISOString();
+    state.lastCheckSummary = summary;
+  } catch (err) {
+    console.error('[sourceChecks] run failed:', err.message);
+  } finally {
+    state.checkRunning = false;
+    state.checkProgress = null;
   }
   return state;
 }
@@ -60,6 +99,8 @@ if (runOnlyFlag) {
     getState: () => state,
     runOnce,
     rescheduleCron: scheduleCron,
+    runSourceCheck,
+    getSourceStatus: sourceChecks.getStatus,
   });
   app.listen(port, () => {
     console.log(`[index] server listening on :${port}`);

@@ -55,43 +55,82 @@ async function getPlaylist(playlistUrl) {
 // unrelated channels — because "Sport" is a substring of all of them).
 const MIN_SUBSTRING_MATCH_LENGTH = 8;
 
+// wheresthematch invents these suffixes to describe the delivery method
+// (e.g. "Channel 4 Sport YouTube", "BBC Sport Website") — they're not part
+// of any real channel name, so a raw match against them always fails. Only
+// applied as a fallback when the un-stripped name finds nothing, so it can
+// never corrupt a name that already matches (e.g. a real "STV Player" entry).
+const DELIVERY_SUFFIX_RE = /\s+(YouTube|Website|Online|App)$/i;
+
 /**
- * Case-insensitive fuzzy match: exact match wins outright; otherwise the
- * longest (most specific) substring match, above a minimum length to avoid
- * generic short names producing false positives. Originally ported from the
- * old PHP plugin's first-match-wins rule, which had exactly that bug.
- * Mirrors ISS_IPTV_Scraper::find_channel_in_playlist(), fixed.
+ * Every playlist entry that plausibly matches `name`, best first: exact
+ * match(es), then substring matches ordered by specificity (longest
+ * matched name first). Deduped by URL, capped at `limit`.
  */
-function findChannelInPlaylist(name, playlist) {
+function findMatches(name, playlist, limit) {
   const target = name.toLowerCase();
-  let best = null;
+  const exact = [];
+  const partial = [];
+  const seenUrls = new Set();
+
   for (const item of playlist) {
+    if (seenUrls.has(item.url)) continue;
     const itemName = item.name.toLowerCase();
-    if (itemName === target) return item.url;
+    if (itemName === target) {
+      exact.push(item);
+      seenUrls.add(item.url);
+      continue;
+    }
     if (itemName.length < MIN_SUBSTRING_MATCH_LENGTH) continue;
     if (itemName.includes(target) || target.includes(itemName)) {
-      if (!best || itemName.length > best.itemName.length) {
-        best = { itemName, url: item.url };
-      }
+      partial.push({ item, score: itemName.length });
     }
   }
-  return best ? best.url : null;
+
+  partial.sort((a, b) => b.score - a.score);
+  const ordered = [...exact, ...partial.map((p) => p.item)];
+
+  const out = [];
+  const used = new Set();
+  for (const item of ordered) {
+    if (used.has(item.url)) continue;
+    used.add(item.url);
+    out.push(item.url);
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 /**
- * Given a list of channel names (from TheSportsDB's lookuptv.php),
- * return the subset that resolve to a stream URL in the iptv-org playlist.
- * Mirrors the loop in ISS_IPTV_Scraper::discover_streams()
+ * Same as findMatches, but retries with a wheresthematch delivery-method
+ * suffix stripped if the raw name finds nothing.
  */
-async function matchChannels(channelNames, playlistUrl) {
+function findChannelSources(name, playlist, limit = 10) {
+  const direct = findMatches(name, playlist, limit);
+  if (direct.length) return direct;
+
+  const stripped = name.replace(DELIVERY_SUFFIX_RE, '').trim();
+  if (stripped !== name && stripped.length >= MIN_SUBSTRING_MATCH_LENGTH) {
+    return findMatches(stripped, playlist, limit);
+  }
+  return [];
+}
+
+/**
+ * Given a list of channel names, return every one that resolves to at least
+ * one iptv-org stream, each with up to `limit` candidate source URLs (not
+ * just the single best guess — a channel is genuinely carried on more than
+ * one mirror sometimes, and callers want alternates to fall back to).
+ */
+async function matchChannels(channelNames, playlistUrl, limit = 10) {
   if (!channelNames.length) return [];
   const playlist = await getPlaylist(playlistUrl);
   const found = [];
   for (const name of channelNames) {
-    const url = findChannelInPlaylist(name, playlist);
-    if (url) found.push({ label: name, streamUrl: url });
+    const sources = findChannelSources(name, playlist, limit);
+    if (sources.length) found.push({ label: name, sources });
   }
   return found;
 }
 
-module.exports = { parseM3U, getPlaylist, findChannelInPlaylist, matchChannels };
+module.exports = { parseM3U, getPlaylist, findChannelSources, matchChannels };

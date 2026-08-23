@@ -1,24 +1,26 @@
 const fs = require('fs');
 const path = require('path');
 
-// Column order mirrors the old Google Sheet's Source/Feed/Final tabs
-// (Date, 北京时间/Time, Match, League, Channels, Type), with the extra
-// traceability fields (EventID, Source, team split, StreamURLs) trailing —
-// useful for verifying a row on the dashboard without breaking the shape
-// match.
+const MAX_SOURCES = 10;
+
+// Column order mirrors the old Google Sheet's Source/Feed/Final tabs: one
+// row per (match, channel) pair, Date/Time in Beijing to match it exactly,
+// up to MAX_SOURCES candidate stream URLs per channel (Source1..Source10 —
+// a channel can resolve to more than one mirror, not a strict 1:1 mapping).
+// Traceability fields (EventID, Source, team split) trail at the end.
 const HEADER = [
-  'Date', // Beijing time (UTC+8), matching the reference sheet
-  'Time', // Beijing time (UTC+8), matching the reference sheet
+  'Date',
+  'Time',
   'Match',
   'League',
-  'Channels', // semicolon-separated list of matched TV channel names
-  'Type', // sport category
+  'Channel',
+  'Type',
+  ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}`),
   'EventID',
-  'Source', // sportsdb | wheresthematch
+  'Source',
   'HomeTeam',
   'AwayTeam',
   'MatchDateUTC',
-  'StreamURLs', // semicolon-separated, same order as Channels
 ];
 
 function escapeCsvField(value) {
@@ -66,24 +68,29 @@ function rowsToCsv(rows) {
   const lines = [HEADER.join(',')];
   for (const r of rows) {
     const { date, time } = formatBeijing(r.matchDateUTC);
-    lines.push(
-      [
-        date,
-        time,
-        matchLabel(r),
-        r.league,
-        (r.channels || []).join(';'),
-        r.sportType || '',
-        r.eventId,
-        r.source,
-        r.homeTeam,
-        r.awayTeam,
-        r.matchDateUTC,
-        (r.streamUrls || []).join(';'),
-      ]
-        .map(escapeCsvField)
-        .join(',')
-    );
+    const channels = r.channels && r.channels.length ? r.channels : [{ name: '', sources: [] }];
+    for (const ch of channels) {
+      const sources = (ch.sources || []).slice(0, MAX_SOURCES);
+      const sourceCols = Array.from({ length: MAX_SOURCES }, (_, i) => sources[i] || '');
+      lines.push(
+        [
+          date,
+          time,
+          matchLabel(r),
+          r.league,
+          ch.name || '',
+          r.sportType || '',
+          ...sourceCols,
+          r.eventId,
+          r.source,
+          r.homeTeam,
+          r.awayTeam,
+          r.matchDateUTC,
+        ]
+          .map(escapeCsvField)
+          .join(',')
+      );
+    }
   }
   return lines.join('\n') + '\n';
 }
@@ -92,7 +99,8 @@ function writeCsv(rows, outputPath) {
   const dir = path.dirname(outputPath);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(outputPath, rowsToCsv(rows), 'utf8');
-  console.log(`[csv] wrote ${rows.length} rows -> ${outputPath}`);
+  const rowCount = rows.reduce((n, r) => n + (r.channels && r.channels.length ? r.channels.length : 1), 0);
+  console.log(`[csv] wrote ${rowCount} rows (${rows.length} fixtures) -> ${outputPath}`);
 }
 
 module.exports = { rowsToCsv, writeCsv, HEADER, formatBeijing };

@@ -7,6 +7,10 @@ const { writeCsv } = require('./csv');
  * Full run: TheSportsDB fixtures + wheresthematch.com schedule scrape ->
  * per-event TV channel lookup -> match against the public iptv-org playlist
  * -> flat rows -> CSV.
+ *
+ * Each row's `channels` is an array of { name, sources: [url, ...] } — a
+ * channel can resolve to more than one candidate stream (mirrors), so this
+ * intentionally isn't a one-to-one channel-to-URL mapping.
  */
 async function runPipeline({ apiKey, leagueIds, playlistUrl, outputCsvPath, wtmDays }) {
   console.log(`[pipeline] starting run for ${leagueIds.length} leagues`);
@@ -18,15 +22,12 @@ async function runPipeline({ apiKey, leagueIds, playlistUrl, outputCsvPath, wtmD
     const event = sportsdb.normalizeEvent(raw);
 
     const channelNames = await sportsdb.getMatchChannels(apiKey, event.eventId);
-    const matched = channelNames.length
-      ? await iptv.matchChannels(channelNames, playlistUrl)
-      : [];
+    const matched = channelNames.length ? await iptv.matchChannels(channelNames, playlistUrl) : [];
 
     rows.push({
       ...event,
       source: 'sportsdb',
-      channels: matched.map((m) => m.label),
-      streamUrls: matched.map((m) => m.streamUrl),
+      channels: matched.map((m) => ({ name: m.label, sources: m.sources })),
     });
   }
 
@@ -37,9 +38,7 @@ async function runPipeline({ apiKey, leagueIds, playlistUrl, outputCsvPath, wtmD
 
     for (const raw of wtmRaw) {
       const event = wtm.normalizeRow(raw);
-      const matched = event.channels.length
-        ? await iptv.matchChannels(event.channels, playlistUrl)
-        : [];
+      const matched = event.channels.length ? await iptv.matchChannels(event.channels, playlistUrl) : [];
 
       rows.push({
         eventId: event.eventId,
@@ -51,8 +50,7 @@ async function runPipeline({ apiKey, leagueIds, playlistUrl, outputCsvPath, wtmD
         matchDateUTC: event.matchDateUTC,
         sportType: event.sportType,
         source: 'wheresthematch',
-        channels: matched.map((m) => m.label),
-        streamUrls: matched.map((m) => m.streamUrl),
+        channels: matched.map((m) => ({ name: m.label, sources: m.sources })),
       });
     }
   } catch (err) {

@@ -70,6 +70,14 @@ function layout(title, body) {
   .channel-list li { margin-bottom: 0.15rem; }
   .channel-list a { color: #93c5fd; }
   .channel-list .no-url { color: #94a3b8; }
+  .channel-name { color: #e2e8f0; margin-right: 0.3rem; }
+  .source-list { list-style: none; margin: 0.15rem 0 0.35rem 0.9rem; padding: 0; }
+  .source-list li { margin-bottom: 0.1rem; }
+  .source-list a { color: #93c5fd; font-size: 0.8rem; }
+  .dot { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 50%; margin-right: 0.4rem; }
+  .dot-ok { background: #4ade80; }
+  .dot-blocked, .dot-dead { background: #f87171; }
+  .dot-unchecked { background: #475569; }
   #search-box { margin-bottom: 1rem; }
   #row-count { font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.5rem; }
 </style>
@@ -81,6 +89,10 @@ ${body}
 </main>
 </body>
 </html>`;
+}
+
+function channelNames(row) {
+  return (row.channels || []).map((c) => c.name).join(', ') || '—';
 }
 
 function renderDashboard(state, config) {
@@ -111,7 +123,7 @@ function renderDashboard(state, config) {
         <td>${escapeHtml(time)}</td>
         <td>${escapeHtml(r.homeTeam)}${r.awayTeam ? ' v ' + escapeHtml(r.awayTeam) : ''}</td>
         <td>${escapeHtml(r.league)}</td>
-        <td>${escapeHtml((r.channels || []).join(', ') || '—')}</td>
+        <td>${escapeHtml(channelNames(r))}</td>
         <td>${escapeHtml(r.sportType || '')}</td>
         <td>${escapeHtml(r.source === 'wheresthematch' ? 'WTM' : 'SDB')}</td>
       </tr>`;
@@ -130,6 +142,21 @@ function renderDashboard(state, config) {
     allDates.length > 0
       ? `${allDates[0]} to ${allDates[allDates.length - 1]} (${new Set(allDates).size} distinct days)`
       : '—';
+
+  const uniqueSourceCount = new Set(
+    (state.lastRows || []).flatMap((r) => (r.channels || []).flatMap((c) => c.sources || []))
+  ).size;
+
+  let checkStatusLine;
+  if (state.checkRunning) {
+    const p = state.checkProgress;
+    checkStatusLine = `<span class="status-warn">● checking… ${p ? `${p.done}/${p.total}` : ''}</span>`;
+  } else if (state.lastCheckSummary) {
+    const s = state.lastCheckSummary;
+    checkStatusLine = `<span class="muted">Last checked ${escapeHtml(state.lastCheckAt)} — ok: ${s.ok}, blocked: ${s.blocked}, dead: ${s.dead}, skipped (fresh): ${s.skipped}</span>`;
+  } else {
+    checkStatusLine = '<span class="muted">Never checked</span>';
+  }
 
   return layout(
     'iss-railway dashboard',
@@ -161,6 +188,16 @@ function renderDashboard(state, config) {
     }
 
     <div class="card">
+      <strong>Source (iframe) checks</strong> <span class="muted">— ${uniqueSourceCount} unique stream URLs across all fixtures</span>
+      <p>${checkStatusLine}</p>
+      <form method="POST" action="/api/check-sources">
+        <button type="submit" ${state.checkRunning ? 'disabled' : ''}>Check sources now</button>
+        <button type="submit" name="force" value="1" class="secondary" ${state.checkRunning ? 'disabled' : ''}>Re-check all (ignore cache)</button>
+      </form>
+      <p class="muted">Green = reachable and not blocked from framing. Red = dead link or blocks iframe embedding (X-Frame-Options/CSP). See <a href="/browse">Browse all</a> for per-source status.</p>
+    </div>
+
+    <div class="card">
       <strong>First 25 fixtures</strong> <span class="muted">(preview only, earliest first, Beijing UTC+8 — see <a href="/browse">Browse all</a> for the full ${state.lastRunCount ?? 0}-row dataset with stream URLs, or fixtures.csv/fixtures.json for raw data)</span>
       ${
         rows.length
@@ -172,21 +209,33 @@ function renderDashboard(state, config) {
   );
 }
 
-function renderBrowse(state) {
+function statusDot(url, getSourceStatus) {
+  const cached = getSourceStatus ? getSourceStatus(url) : null;
+  const cls = cached ? `dot-${cached.status}` : 'dot-unchecked';
+  const title = cached ? `${cached.status} (checked ${cached.checkedAt})` : 'not checked yet';
+  return `<span class="dot ${cls}" title="${escapeHtml(title)}"></span>`;
+}
+
+function renderBrowse(state, getSourceStatus) {
   const rows = state.lastRows || [];
 
   const tableRows = rows
     .map((r) => {
       const { date, time } = formatBeijing(r.matchDateUTC);
       const channels = r.channels || [];
-      const streamUrls = r.streamUrls || [];
       const channelItems = channels.length
         ? channels
-            .map((ch, i) => {
-              const url = streamUrls[i];
-              return url
-                ? `<li><a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(ch)}</a></li>`
-                : `<li>${escapeHtml(ch)} <span class="no-url">(no stream match)</span></li>`;
+            .map((ch) => {
+              const sources = ch.sources || [];
+              const sourceItems = sources
+                .map(
+                  (url) =>
+                    `<li>${statusDot(url, getSourceStatus)}<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a></li>`
+                )
+                .join('');
+              return `<li><span class="channel-name">${escapeHtml(ch.name)}</span>${sources.length ? '' : '<span class="no-url">(no stream match)</span>'}
+                ${sources.length ? `<ul class="source-list">${sourceItems}</ul>` : ''}
+              </li>`;
             })
             .join('')
         : '<li class="no-url">—</li>';
@@ -206,7 +255,7 @@ function renderBrowse(state) {
     'iss-railway browse',
     `
     <h1>All fixtures</h1>
-    <p class="muted">Every row from the last run, with stream URLs where iptv-org had a match. Click a channel name to open its stream.</p>
+    <p class="muted">Every row from the last run. Each channel can have multiple candidate sources; the dot shows the last iframe/reachability check (<span class="dot dot-ok"></span> ok, <span class="dot dot-blocked"></span> blocked/dead, <span class="dot dot-unchecked"></span> not checked — run "Check sources" on the <a href="/">dashboard</a>).</p>
     <input type="text" id="search-box" placeholder="Filter by team, league, channel..." oninput="filterRows()">
     <p id="row-count"></p>
     <div class="card" style="overflow-x:auto">
@@ -266,7 +315,7 @@ function renderSettings(config, saved) {
   );
 }
 
-function createServer({ getState, runOnce, rescheduleCron }) {
+function createServer({ getState, runOnce, rescheduleCron, runSourceCheck, getSourceStatus }) {
   const app = express();
   app.use(express.urlencoded({ extended: false }));
 
@@ -277,7 +326,14 @@ function createServer({ getState, runOnce, rescheduleCron }) {
   });
 
   app.get('/browse', requireAuth, (req, res) => {
-    res.send(renderBrowse(getState()));
+    res.send(renderBrowse(getState(), getSourceStatus));
+  });
+
+  app.post('/api/check-sources', requireAuth, (req, res) => {
+    // Fire-and-forget: the check can take minutes for hundreds of URLs, so
+    // don't block the response on it. Progress shows up on the dashboard.
+    runSourceCheck(req.body.force === '1').catch((err) => console.error('[sourceChecks]', err.message));
+    res.redirect('/');
   });
 
   app.get('/settings', requireAuth, (req, res) => {

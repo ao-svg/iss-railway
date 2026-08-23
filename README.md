@@ -19,7 +19,14 @@ standalone pipeline you can deploy on Railway and pull CSV/JSON from.
   self-reported index of free-to-air / publicly broadcast channels.
 - ✅ Writes the result to `data/fixtures.csv` and serves it at `/fixtures.csv`
   and `/fixtures.json`. Each row has a `source` field (`sportsdb` or
-  `wheresthematch`).
+  `wheresthematch`), and each channel can carry **up to 10 candidate source
+  URLs** (`Source1`..`Source10` in the CSV) — a channel isn't matched 1:1 to
+  a single stream, since iptv-org sometimes carries several mirrors.
+- ✅ Checks whether each source URL is reachable and not blocked from
+  `<iframe>` embedding (`X-Frame-Options`/CSP `frame-ancestors`), via a
+  manual "Check sources" job on the dashboard. Results persist to
+  `data/source-checks.json` and show as a green/red dot per source on
+  `/browse`.
 - ❌ Does **not** include the original plugin's aggregator web-scraper
   (Sportsurge/StreamEast link extraction), nor the old Apps Script pipeline's
   `channels`-sheet mapping to pirate-mirror stream URLs (tv-shihab.xyz,
@@ -50,6 +57,9 @@ npm start             # runs once at boot, then on the PIPELINE_CRON schedule, s
 | Route            | Description                                    |
 |-------------------|-------------------------------------------------|
 | `GET /health`      | Liveness check                                 |
+| `GET /`             | Admin dashboard (password-protected)          |
+| `GET /browse`       | Every fixture with per-source status dots, full-text filter (password-protected) |
+| `POST /api/check-sources` | Kicks off the reachability/iframe check job in the background (password-protected) |
 | `GET /fixtures.csv`| Latest fixtures + matched channels, as CSV     |
 | `GET /fixtures.json` | Same data as JSON                            |
 
