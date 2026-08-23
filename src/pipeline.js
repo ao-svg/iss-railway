@@ -1,6 +1,8 @@
 const sportsdb = require('./sportsdb');
 const wtm = require('./wheresthematch');
 const iptv = require('./iptv');
+const leagues = require('./leagues');
+const translate = require('./translate');
 const { writeCsv } = require('./csv');
 
 /**
@@ -11,6 +13,15 @@ const { writeCsv } = require('./csv');
  * Each row's `channels` is an array of { name, sources: [url, ...] } — a
  * channel can resolve to more than one candidate stream (mirrors), so this
  * intentionally isn't a one-to-one channel-to-URL mapping.
+ *
+ * `league` is the canonicalized name (see leagues.js — merges e.g. SportsDB's
+ * "English Premier League" and wheresthematch's "Premier League" into one);
+ * `rawLeague` keeps the original as scraped. `leagueZH`/`homeTeamZH`/
+ * `awayTeamZH` are Simplified Chinese translations pulled from the
+ * translation cache (translate.js) — null until the "Translate names" job
+ * has run for that string at least once; this run never blocks on live
+ * translation calls, same reasoning as source checks running as their own
+ * job rather than inline.
  */
 async function runPipeline({ apiKey, leagueIds, playlistUrl, outputCsvPath, wtmDays }) {
   console.log(`[pipeline] starting run for ${leagueIds.length} leagues`);
@@ -26,6 +37,8 @@ async function runPipeline({ apiKey, leagueIds, playlistUrl, outputCsvPath, wtmD
 
     rows.push({
       ...event,
+      rawLeague: event.league,
+      league: leagues.canonicalLeague(event.league),
       source: 'sportsdb',
       channels: matched.map((m) => ({ name: m.label, sources: m.sources })),
     });
@@ -42,7 +55,8 @@ async function runPipeline({ apiKey, leagueIds, playlistUrl, outputCsvPath, wtmD
 
       rows.push({
         eventId: event.eventId,
-        league: event.league,
+        rawLeague: event.league,
+        league: leagues.canonicalLeague(event.league),
         homeTeam: event.homeTeam,
         awayTeam: event.awayTeam,
         homeLogo: '',
@@ -65,6 +79,12 @@ async function runPipeline({ apiKey, leagueIds, playlistUrl, outputCsvPath, wtmD
     seen.add(r.eventId);
     return true;
   });
+
+  for (const r of deduped) {
+    r.leagueZH = translate.getCached(r.league)?.zh || null;
+    r.homeTeamZH = translate.getCached(r.homeTeam)?.zh || null;
+    r.awayTeamZH = r.awayTeam ? translate.getCached(r.awayTeam)?.zh || null : null;
+  }
 
   deduped.sort((a, b) => (a.matchDateUTC < b.matchDateUTC ? -1 : 1));
 

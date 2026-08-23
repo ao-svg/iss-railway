@@ -2,7 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const crypto = require('crypto');
 const { getConfig, updateConfig } = require('./config');
-const { formatBeijing } = require('./csv');
+const { formatBeijing, formatInTimezone } = require('./csv');
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({
@@ -81,11 +81,18 @@ function layout(title, body) {
   .dot-unchecked { background: #475569; }
   #search-box { margin-bottom: 1rem; }
   #row-count { font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.5rem; }
+  .badge { display: inline-block; font-size: 0.7rem; padding: 0.05rem 0.4rem; border-radius: 4px; margin-left: 0.4rem; }
+  .badge-manual { background: #1e3a8a; color: #93c5fd; }
+  .badge-auto { background: #334155; color: #94a3b8; }
+  .badge-none { background: #334155; color: #64748b; }
+  .inline-form { display: flex; gap: 0.4rem; align-items: center; }
+  .inline-form input[type=text] { width: auto; flex: 1; }
+  .inline-form button { margin-top: 0; padding: 0.35rem 0.7rem; font-size: 0.8rem; }
 </style>
 </head>
 <body>
 <main>
-<nav><a href="/">Dashboard</a><a href="/browse">Browse all</a><a href="/settings">Settings</a><a href="/fixtures.json">fixtures.json</a><a href="/fixtures.csv">fixtures.csv</a><a href="/health">health</a></nav>
+<nav><a href="/">Dashboard</a><a href="/browse">Browse all</a><a href="/leagues">Leagues</a><a href="/translations">Translations</a><a href="/settings">Settings</a><a href="/fixtures.json">fixtures.json</a><a href="/fixtures.csv">fixtures.csv</a><a href="/health">health</a></nav>
 ${body}
 </main>
 </body>
@@ -159,6 +166,24 @@ function renderDashboard(state, config) {
     checkStatusLine = '<span class="muted">Never checked</span>';
   }
 
+  const namesToTranslate = new Set();
+  for (const r of state.lastRows || []) {
+    if (r.league) namesToTranslate.add(r.league);
+    if (r.homeTeam) namesToTranslate.add(r.homeTeam);
+    if (r.awayTeam) namesToTranslate.add(r.awayTeam);
+  }
+
+  let translateStatusLine;
+  if (state.translateRunning) {
+    const p = state.translateProgress;
+    translateStatusLine = `<span class="status-warn">● translating… ${p ? `${p.done}/${p.total}` : ''}</span>`;
+  } else if (state.lastTranslateSummary) {
+    const s = state.lastTranslateSummary;
+    translateStatusLine = `<span class="muted">Last run ${escapeHtml(state.lastTranslateAt)} — translated: ${s.translated}, failed: ${s.failed}, skipped (cached): ${s.skipped}</span>`;
+  } else {
+    translateStatusLine = '<span class="muted">Never run</span>';
+  }
+
   return layout(
     'iss-railway dashboard',
     `
@@ -195,7 +220,17 @@ function renderDashboard(state, config) {
         <button type="submit" ${state.checkRunning ? 'disabled' : ''}>Check sources now</button>
         <button type="submit" name="force" value="1" class="secondary" ${state.checkRunning ? 'disabled' : ''}>Re-check all (ignore cache)</button>
       </form>
-      <p class="muted">Green = HTML page, directly &lt;iframe&gt;-embeddable. Amber = live stream manifest (HLS/DASH) — reachable and CORS-open, but needs a &lt;video&gt; player (hls.js/dash.js) on your page, not a bare iframe. Red = dead link, blocks framing (X-Frame-Options/CSP), or a manifest with no CORS access. See <a href="/browse">Browse all</a> for per-source status.</p>
+      <p class="muted">Green = HTML page, directly &lt;iframe&gt;-embeddable. Amber = live stream manifest (HLS/DASH) — reachable and CORS-open (for HLS, its first actual video segment is verified too, not just the master playlist), but needs a &lt;video&gt; player (hls.js/dash.js) on your page, not a bare iframe. Red = dead link, blocks framing (X-Frame-Options/CSP), a manifest with no CORS access, or (HLS) one whose first segment isn't reachable. See <a href="/browse">Browse all</a> for per-source status.</p>
+    </div>
+
+    <div class="card">
+      <strong>Simplified Chinese translation</strong> <span class="muted">— ${namesToTranslate.size} distinct league/team names</span>
+      <p>${translateStatusLine}</p>
+      <form method="POST" action="/api/translate-names">
+        <button type="submit" ${state.translateRunning ? 'disabled' : ''}>Translate names now</button>
+        <button type="submit" name="force" value="1" class="secondary" ${state.translateRunning ? 'disabled' : ''}>Re-translate (ignore cache, keeps manual overrides)</button>
+      </form>
+      <p class="muted">Auto-translated via the free Google Translate endpoint and cached. Manual corrections on the <a href="/translations">Translations</a> page always win and are never overwritten by re-translation.</p>
     </div>
 
     <div class="card">
@@ -213,16 +248,24 @@ function renderDashboard(state, config) {
 function statusDot(url, getSourceStatus) {
   const cached = getSourceStatus ? getSourceStatus(url) : null;
   const cls = cached ? `dot-${cached.status}` : 'dot-unchecked';
-  const title = cached ? `${cached.status} (checked ${cached.checkedAt})` : 'not checked yet';
+  let title = 'not checked yet';
+  if (cached) {
+    title = `${cached.status} (checked ${cached.checkedAt})`;
+    if (cached.nestedUrl) {
+      title += cached.nestedOk
+        ? ' — first segment verified reachable'
+        : ' — first segment failed reachability/CORS';
+    }
+  }
   return `<span class="dot ${cls}" title="${escapeHtml(title)}"></span>`;
 }
 
-function renderBrowse(state, getSourceStatus) {
+function renderBrowse(state, getSourceStatus, tz = 'beijing') {
   const rows = state.lastRows || [];
 
   const tableRows = rows
     .map((r) => {
-      const { date, time } = formatBeijing(r.matchDateUTC);
+      const { date, time } = formatInTimezone(r.matchDateUTC, tz);
       const channels = r.channels || [];
       const channelItems = channels.length
         ? channels
@@ -240,11 +283,17 @@ function renderBrowse(state, getSourceStatus) {
             })
             .join('')
         : '<li class="no-url">—</li>';
+      const matchZH =
+        r.homeTeamZH && (!r.awayTeam || r.awayTeamZH)
+          ? `${r.homeTeamZH}${r.awayTeamZH ? ' v ' + r.awayTeamZH : ''}`
+          : '';
       return `<tr>
         <td>${escapeHtml(date)}</td>
         <td>${escapeHtml(time)}</td>
         <td>${escapeHtml(r.homeTeam)}${r.awayTeam ? ' v ' + escapeHtml(r.awayTeam) : ''}</td>
+        <td>${escapeHtml(matchZH) || '<span class="no-url">—</span>'}</td>
         <td>${escapeHtml(r.league)}</td>
+        <td>${escapeHtml(r.leagueZH || '') || '<span class="no-url">—</span>'}</td>
         <td>${escapeHtml(r.sportType || '')}</td>
         <td>${escapeHtml(r.source === 'wheresthematch' ? 'WTM' : 'SDB')}</td>
         <td><ul class="channel-list">${channelItems}</ul></td>
@@ -257,11 +306,12 @@ function renderBrowse(state, getSourceStatus) {
     `
     <h1>All fixtures</h1>
     <p class="muted">Every row from the last run. Each channel can have multiple candidate sources; the dot shows the last check (<span class="dot dot-ok"></span> ok — iframe-ready, <span class="dot dot-stream"></span> stream — needs a video player, not a bare iframe, <span class="dot dot-blocked"></span> blocked/dead, <span class="dot dot-unchecked"></span> not checked — run "Check sources" on the <a href="/">dashboard</a>).</p>
+    <p class="muted">Times shown: <a href="/browse?tz=beijing" ${tz === 'beijing' ? 'style="color:#e2e8f0;font-weight:600"' : ''}>Beijing (UTC+8)</a> · <a href="/browse?tz=jerusalem" ${tz === 'jerusalem' ? 'style="color:#e2e8f0;font-weight:600"' : ''}>Jerusalem</a> — exports (fixtures.csv/fixtures.json) are always Beijing time regardless of this toggle. Chinese columns are blank until "Translate names" has run — see the <a href="/">dashboard</a>.</p>
     <input type="text" id="search-box" placeholder="Filter by team, league, channel..." oninput="filterRows()">
     <p id="row-count"></p>
     <div class="card" style="overflow-x:auto">
       <table id="fixtures-table">
-        <thead><tr><th>Date</th><th>Time</th><th>Match</th><th>League</th><th>Type</th><th>Src</th><th>Channels</th></tr></thead>
+        <thead><tr><th>Date</th><th>Time</th><th>Match</th><th>Match (中文)</th><th>League</th><th>League (中文)</th><th>Type</th><th>Src</th><th>Channels</th></tr></thead>
         <tbody>${tableRows}</tbody>
       </table>
     </div>
@@ -279,6 +329,97 @@ function renderBrowse(state, getSourceStatus) {
       }
       filterRows();
     </script>
+  `
+  );
+}
+
+function renderLeagues(state, getLeagueOverrides) {
+  const overrides = getLeagueOverrides ? getLeagueOverrides() : {};
+  const rawNames = new Set();
+  for (const r of state.lastRows || []) {
+    if (r.rawLeague) rawNames.add(r.rawLeague);
+  }
+
+  const rows = [...rawNames]
+    .sort()
+    .map((raw) => {
+      const key = raw.trim().toLowerCase().replace(/\s+/g, ' ');
+      const current = overrides[key];
+      // Find what it currently resolves to by checking a live row (covers the seed-table case too)
+      const example = (state.lastRows || []).find((r) => r.rawLeague === raw);
+      const resolvesTo = example ? example.league : raw;
+      return `<tr>
+        <td>${escapeHtml(raw)}</td>
+        <td>${escapeHtml(resolvesTo)}${current ? ' <span class="badge badge-manual">override</span>' : ''}</td>
+        <td>
+          <form class="inline-form" method="POST" action="/api/league-alias">
+            <input type="hidden" name="rawName" value="${escapeHtml(raw)}">
+            <input type="text" name="canonicalName" value="${escapeHtml(resolvesTo)}" placeholder="Canonical name">
+            <button type="submit">Save</button>
+          </form>
+        </td>
+      </tr>`;
+    })
+    .join('');
+
+  return layout(
+    'iss-railway leagues',
+    `
+    <h1>League grouping</h1>
+    <p class="muted">Different sources word the same league differently (e.g. SportsDB's "English Premier League" vs wheresthematch's "Premier League"). Set the canonical name each raw name should resolve to — it applies immediately to the current dataset and persists for future runs.</p>
+    <div class="card" style="overflow-x:auto">
+      ${
+        rows.length
+          ? `<table><tr><th>Raw league name</th><th>Currently resolves to</th><th>Set canonical name</th></tr>${rows}</table>`
+          : '<p class="muted">No fixtures yet — run the pipeline first.</p>'
+      }
+    </div>
+  `
+  );
+}
+
+function renderTranslations(state, getAllTranslations) {
+  const cache = getAllTranslations ? getAllTranslations() : {};
+  const names = new Set();
+  for (const r of state.lastRows || []) {
+    if (r.league) names.add(r.league);
+    if (r.homeTeam) names.add(r.homeTeam);
+    if (r.awayTeam) names.add(r.awayTeam);
+  }
+
+  const rows = [...names]
+    .sort()
+    .map((text) => {
+      const entry = cache[text];
+      const badge = entry
+        ? `<span class="badge ${entry.source === 'manual' ? 'badge-manual' : 'badge-auto'}">${entry.source}</span>`
+        : '<span class="badge badge-none">untranslated</span>';
+      return `<tr>
+        <td>${escapeHtml(text)}</td>
+        <td>${badge}</td>
+        <td>
+          <form class="inline-form" method="POST" action="/api/translation">
+            <input type="hidden" name="text" value="${escapeHtml(text)}">
+            <input type="text" name="zh" value="${escapeHtml(entry ? entry.zh : '')}" placeholder="Simplified Chinese">
+            <button type="submit">Save</button>
+          </form>
+        </td>
+      </tr>`;
+    })
+    .join('');
+
+  return layout(
+    'iss-railway translations',
+    `
+    <h1>Translations</h1>
+    <p class="muted">League and team names, Simplified Chinese. Saving here sets a manual override that always wins over auto-translation and is never overwritten by "Re-translate" on the <a href="/">dashboard</a>.</p>
+    <div class="card" style="overflow-x:auto">
+      ${
+        rows.length
+          ? `<table><tr><th>Original</th><th>Source</th><th>Simplified Chinese</th></tr>${rows}</table>`
+          : '<p class="muted">No fixtures yet — run the pipeline first.</p>'
+      }
+    </div>
   `
   );
 }
@@ -316,7 +457,18 @@ function renderSettings(config, saved) {
   );
 }
 
-function createServer({ getState, runOnce, rescheduleCron, runSourceCheck, getSourceStatus }) {
+function createServer({
+  getState,
+  runOnce,
+  rescheduleCron,
+  runSourceCheck,
+  getSourceStatus,
+  runTranslate,
+  getAllTranslations,
+  setManualTranslation,
+  getLeagueOverrides,
+  setLeagueAlias,
+}) {
   const app = express();
   app.use(express.urlencoded({ extended: false }));
 
@@ -327,7 +479,8 @@ function createServer({ getState, runOnce, rescheduleCron, runSourceCheck, getSo
   });
 
   app.get('/browse', requireAuth, (req, res) => {
-    res.send(renderBrowse(getState(), getSourceStatus));
+    const tz = req.query.tz === 'jerusalem' ? 'jerusalem' : 'beijing';
+    res.send(renderBrowse(getState(), getSourceStatus, tz));
   });
 
   app.post('/api/check-sources', requireAuth, (req, res) => {
@@ -335,6 +488,31 @@ function createServer({ getState, runOnce, rescheduleCron, runSourceCheck, getSo
     // don't block the response on it. Progress shows up on the dashboard.
     runSourceCheck(req.body.force === '1').catch((err) => console.error('[sourceChecks]', err.message));
     res.redirect('/');
+  });
+
+  app.post('/api/translate-names', requireAuth, (req, res) => {
+    runTranslate(req.body.force === '1').catch((err) => console.error('[translate]', err.message));
+    res.redirect('/');
+  });
+
+  app.get('/leagues', requireAuth, (req, res) => {
+    res.send(renderLeagues(getState(), getLeagueOverrides));
+  });
+
+  app.post('/api/league-alias', requireAuth, (req, res) => {
+    const { rawName, canonicalName } = req.body;
+    setLeagueAlias(rawName, canonicalName);
+    res.redirect('/leagues');
+  });
+
+  app.get('/translations', requireAuth, (req, res) => {
+    res.send(renderTranslations(getState(), getAllTranslations));
+  });
+
+  app.post('/api/translation', requireAuth, (req, res) => {
+    const { text, zh } = req.body;
+    setManualTranslation(text, zh);
+    res.redirect('/translations');
   });
 
   app.get('/settings', requireAuth, (req, res) => {

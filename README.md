@@ -22,11 +22,34 @@ standalone pipeline you can deploy on Railway and pull CSV/JSON from.
   `wheresthematch`), and each channel can carry **up to 10 candidate source
   URLs** (`Source1`..`Source10` in the CSV) — a channel isn't matched 1:1 to
   a single stream, since iptv-org sometimes carries several mirrors.
-- ✅ Checks whether each source URL is reachable and not blocked from
-  `<iframe>` embedding (`X-Frame-Options`/CSP `frame-ancestors`), via a
-  manual "Check sources" job on the dashboard. Results persist to
-  `data/source-checks.json` and show as a green/red dot per source on
-  `/browse`.
+- ✅ Checks whether each source URL is genuinely usable, via a manual "Check
+  sources" job on the dashboard (`src/sourceChecks.js`). Classifies into
+  four states: **ok** (HTML page, iframe-ready), **stream** (HLS/DASH
+  manifest, reachable + CORS-open — for HLS, its first actual video segment
+  is fetched and verified too, not just the master playlist — but needs a
+  `<video>` player like hls.js, not a bare iframe), **blocked**, **dead**.
+  Results persist to `data/source-checks.json` and show as a colored dot per
+  source on `/browse`.
+- ✅ Groups differently-worded league names from the two sources into one
+  canonical name (`src/leagues.js` — e.g. SportsDB's "English Premier
+  League" and wheresthematch's "Premier League" both resolve to "Premier
+  League"). Manual overrides on `/leagues` always win over the seed table.
+- ✅ Translates league/team names to Simplified Chinese (`src/translate.js`),
+  via a manual "Translate names" job on the dashboard. Uses the free,
+  unofficial `translate.googleapis.com` endpoint (no API key/billing setup
+  needed — swappable for the official Cloud Translation API later without
+  changing the cache/override interface). Results persist to
+  `data/translations.json`; manual overrides on `/translations` always win
+  and are never touched by re-translation. **Known limitation:** this free
+  endpoint rate-limits fairly aggressively under sustained use (hundreds of
+  names in one run) — the client retries with backoff and stops early rather
+  than hammering a wall, but a large first run may need to be re-triggered
+  a few times as the limit clears. If this proves too unreliable in
+  practice, swap in the paid API.
+- ✅ Date/time defaults to Beijing time everywhere (matching the reference
+  sheet), with a Beijing/Jerusalem toggle on `/browse` (`?tz=jerusalem`) for
+  viewing — `fixtures.csv`/`fixtures.json` are always Beijing time
+  regardless of that toggle, since exports need one consistent timezone.
 - ❌ Does **not** include the original plugin's aggregator web-scraper
   (Sportsurge/StreamEast link extraction), nor the old Apps Script pipeline's
   `channels`-sheet mapping to pirate-mirror stream URLs (tv-shihab.xyz,
@@ -58,8 +81,11 @@ npm start             # runs once at boot, then on the PIPELINE_CRON schedule, s
 |-------------------|-------------------------------------------------|
 | `GET /health`      | Liveness check                                 |
 | `GET /`             | Admin dashboard (password-protected)          |
-| `GET /browse`       | Every fixture with per-source status dots, full-text filter (password-protected) |
+| `GET /browse`       | Every fixture with per-source status dots, Chinese names, timezone toggle, full-text filter (password-protected) |
+| `GET /leagues`      | Set canonical league-name groupings (password-protected) |
+| `GET /translations` | Set manual Simplified Chinese overrides (password-protected) |
 | `POST /api/check-sources` | Kicks off the reachability/iframe check job in the background (password-protected) |
+| `POST /api/translate-names` | Kicks off the translation job in the background (password-protected) |
 | `GET /fixtures.csv`| Latest fixtures + matched channels, as CSV     |
 | `GET /fixtures.json` | Same data as JSON                            |
 

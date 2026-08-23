@@ -12,12 +12,15 @@ const HEADER = [
   'Date',
   'Time',
   'Match',
+  'MatchZH',
   'League',
+  'LeagueZH',
   'Channel',
   'Type',
   ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}`),
   'EventID',
   'Source',
+  'RawLeague',
   'HomeTeam',
   'AwayTeam',
   'MatchDateUTC',
@@ -46,22 +49,62 @@ function parseMatchDate(matchDateUTC) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+const TIMEZONES = {
+  beijing: 'Asia/Shanghai', // no DST, always UTC+8 — matches the reference sheet's "北京时间"
+  jerusalem: 'Asia/Jerusalem', // has DST, so this needs real IANA tz data, not fixed-offset math
+};
+
+const _tzFormatters = {};
+function getTzFormatter(timeZone) {
+  if (!_tzFormatters[timeZone]) {
+    _tzFormatters[timeZone] = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  }
+  return _tzFormatters[timeZone];
+}
+
 /**
- * Format a Date as Beijing time (UTC+8), matching the reference sheet's
- * "北京时间" column regardless of the source's original timezone.
+ * Format a Date in the given IANA timezone (default Beijing, matching the
+ * reference sheet's "北京时间" column). `tzKey` is one of TIMEZONES' keys.
  */
-function formatBeijing(matchDateUTC) {
+function formatInTimezone(matchDateUTC, tzKey = 'beijing') {
   const d = parseMatchDate(matchDateUTC);
   if (!d) return { date: '', time: '' };
-  const beijing = new Date(d.getTime() + 8 * 3600000);
+  const timeZone = TIMEZONES[tzKey] || TIMEZONES.beijing;
+  const parts = getTzFormatter(timeZone).formatToParts(d);
+  const get = (type) => parts.find((p) => p.type === type).value;
   return {
-    date: `${beijing.getUTCFullYear()}-${pad(beijing.getUTCMonth() + 1)}-${pad(beijing.getUTCDate())}`,
-    time: `${pad(beijing.getUTCHours())}:${pad(beijing.getUTCMinutes())}`,
+    date: `${get('year')}-${get('month')}-${get('day')}`,
+    time: `${get('hour')}:${get('minute')}`,
   };
+}
+
+/**
+ * Beijing time (UTC+8) — always used for CSV/export, regardless of any
+ * timezone the web GUI is currently showing.
+ */
+function formatBeijing(matchDateUTC) {
+  return formatInTimezone(matchDateUTC, 'beijing');
 }
 
 function matchLabel(r) {
   return r.awayTeam ? `${r.homeTeam} v ${r.awayTeam}` : r.homeTeam;
+}
+
+// Only produce a Chinese match label once every needed name is translated —
+// a half-translated "曼城 v Liverpool" is worse than leaving it blank until
+// the translate job catches up.
+function matchLabelZH(r) {
+  if (!r.homeTeamZH) return '';
+  if (r.awayTeam) return r.awayTeamZH ? `${r.homeTeamZH} v ${r.awayTeamZH}` : '';
+  return r.homeTeamZH;
 }
 
 function rowsToCsv(rows) {
@@ -77,12 +120,15 @@ function rowsToCsv(rows) {
           date,
           time,
           matchLabel(r),
+          matchLabelZH(r),
           r.league,
+          r.leagueZH || '',
           ch.name || '',
           r.sportType || '',
           ...sourceCols,
           r.eventId,
           r.source,
+          r.rawLeague || '',
           r.homeTeam,
           r.awayTeam,
           r.matchDateUTC,
@@ -103,4 +149,4 @@ function writeCsv(rows, outputPath) {
   console.log(`[csv] wrote ${rowCount} rows (${rows.length} fixtures) -> ${outputPath}`);
 }
 
-module.exports = { rowsToCsv, writeCsv, HEADER, formatBeijing };
+module.exports = { rowsToCsv, writeCsv, HEADER, formatBeijing, formatInTimezone, TIMEZONES };

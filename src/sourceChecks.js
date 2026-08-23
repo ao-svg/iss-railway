@@ -103,14 +103,59 @@ function hasCorsHeader(headers) {
 }
 
 /**
+ * A master HLS playlist points at a sub-playlist; a media playlist points at
+ * segment files; a DASH manifest is XML we don't attempt to parse (out of
+ * scope for this fix). Returns the first referenced URL, resolved against
+ * the manifest's own URL, or null if none found.
+ */
+function extractFirstReference(text, baseUrl) {
+  const lines = text.split('\n');
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (line && !line.startsWith('#')) {
+      try {
+        return new URL(line, baseUrl).toString();
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Reachability + CORS check only (no further manifest parsing) — used to
+ * verify the actual video content a manifest points to is real, not just
+ * the manifest text itself. A master playlist can be perfectly reachable
+ * while every segment it references is dead.
+ */
+async function checkNestedReachable(url) {
+  try {
+    const res = await axios.get(url, {
+      timeout: REQUEST_TIMEOUT_MS,
+      maxRedirects: 5,
+      validateStatus: () => true,
+      headers: { Range: 'bytes=0-2047' },
+      responseType: 'arraybuffer',
+    });
+    return res.status < 400 && hasCorsHeader(res.headers);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Probe one URL. Uses a ranged GET (not HEAD — many stream CDNs reject HEAD)
- * to avoid downloading the whole file.
+ * to avoid downloading the whole file — the range is generous (16KB) so a
+ * full HLS manifest is captured even with many variants/segments listed.
  *
  * status is one of:
  *   'ok'      - HTML page, reachable, not blocked from framing
- *   'stream'  - HLS/DASH manifest, reachable, CORS-open — needs a video
- *               player on the user's site, NOT a bare iframe
- *   'blocked' - HTML page blocked from framing, or a manifest with no CORS
+ *   'stream'  - HLS manifest AND (when one could be found) its first
+ *               referenced sub-playlist/segment, both reachable + CORS-open
+ *               — needs a video player on the user's site, NOT a bare iframe
+ *   'blocked' - HTML page blocked from framing, a manifest with no CORS, or
+ *               (HLS only) its first referenced segment failed reachability
  *   'dead'    - unreachable (4xx/5xx, timeout, network error)
  */
 async function checkUrl(url) {
@@ -119,7 +164,7 @@ async function checkUrl(url) {
       timeout: REQUEST_TIMEOUT_MS,
       maxRedirects: 5,
       validateStatus: () => true,
-      headers: { Range: 'bytes=0-2047' },
+      headers: { Range: 'bytes=0-16383' },
       responseType: 'arraybuffer',
     });
     const checkedAt = new Date().toISOString();
@@ -133,11 +178,31 @@ async function checkUrl(url) {
 
     if (isManifest) {
       const corsOk = hasCorsHeader(res.headers);
+      let status = corsOk && !blockedByHeaders ? 'stream' : 'blocked';
+      let nestedUrl = null;
+      let nestedOk = null;
+
+      // Only bother verifying the referenced content for HLS (.m3u8) — the
+      // extractor understands its plain-text format; DASH's XML segment
+      // templates are out of scope, so an .mpd only gets the outer check.
+      if (status === 'stream' && urlPathname(url).endsWith('.m3u8')) {
+        const text = Buffer.from(res.data).toString('utf8');
+        nestedUrl = extractFirstReference(text, url);
+        if (nestedUrl) {
+          nestedOk = await checkNestedReachable(nestedUrl);
+          if (!nestedOk) status = 'blocked';
+        }
+        // No reference found at all (e.g. empty/truncated playlist) — keep
+        // the outer 'stream' result rather than penalizing an inconclusive read.
+      }
+
       return {
-        status: corsOk && !blockedByHeaders ? 'stream' : 'blocked',
+        status,
         httpStatus: res.status,
         contentType,
         isManifest: true,
+        nestedUrl,
+        nestedOk,
         checkedAt,
       };
     }
