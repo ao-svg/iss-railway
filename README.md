@@ -93,20 +93,28 @@ npm start             # runs once at boot, then on the PIPELINE_CRON schedule, s
 
 ## Endpoints
 
+Two roles: **admin** (full access) and **viewer** (read-only, `/browse`
+only). Manage accounts on `/users`.
+
 | Route            | Description                                    |
 |-------------------|-------------------------------------------------|
 | `GET /health`      | Liveness check                                 |
-| `GET /`             | Admin dashboard (password-protected)          |
-| `GET /browse`       | Every fixture with per-source status dots, Chinese names, timezone toggle, full-text filter (password-protected) |
-| `GET /leagues`      | Set canonical league-name groupings (password-protected) |
-| `GET /translations` | Set manual Simplified Chinese overrides (password-protected) |
-| `GET /live`          | Currently-live games from the live-streaming source, refreshed on demand (password-protected) |
-| `GET /youtube-channels` | Approve/reject YouTube channels the live-streaming source has surfaced (password-protected) |
-| `POST /api/check-sources` | Kicks off the reachability/iframe check job in the background (password-protected) |
-| `POST /api/translate-names` | Kicks off the translation job in the background (password-protected) |
-| `POST /api/fetch-live` | Kicks off the live-streaming fetch job in the background (password-protected) |
+| `GET /`             | Admin dashboard (admin only)          |
+| `GET /browse`       | Every fixture with per-source status dots, Chinese names, timezone toggle, full-text filter (admin or viewer) |
+| `GET /leagues`      | Set canonical league-name groupings (admin only) |
+| `GET /translations` | Set manual Simplified Chinese overrides (admin only) |
+| `GET /live`          | Currently-live games from the live-streaming source, refreshed on demand (admin only) |
+| `GET /youtube-channels` | Approve/reject YouTube channels the live-streaming source has surfaced (admin only) |
+| `GET /users`        | Manage accounts: add/edit/delete admin and viewer logins (admin only) |
+| `POST /api/check-sources` | Kicks off the reachability/iframe check job in the background (admin only) |
+| `POST /api/translate-names` | Kicks off the translation job in the background (admin only) |
+| `POST /api/fetch-live` | Kicks off the live-streaming fetch job in the background (admin only) |
+| `POST /api/users`   | Add an account or replace an existing one's password/role (admin only) |
+| `POST /api/users/delete` | Remove an account, blocked if it's the last remaining admin (admin only) |
 | `GET /fixtures.csv`| Latest fixtures + matched channels, as CSV     |
 | `GET /fixtures.json` | Same data as JSON                            |
+| `GET /live.csv`     | Currently-live rows, same CSV format as fixtures.csv |
+| `GET /live.json`    | Same data as JSON                              |
 
 ## Pulling into your Google Sheet
 

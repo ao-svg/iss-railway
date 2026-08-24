@@ -1,8 +1,8 @@
 const express = require('express');
 const fs = require('fs');
-const crypto = require('crypto');
 const { getConfig, updateConfig } = require('./config');
 const { formatBeijing, formatInTimezone } = require('./csv');
+const auth = require('./auth');
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({
@@ -14,30 +14,26 @@ function escapeHtml(value) {
   }[c]));
 }
 
-function timingSafeEqual(a, b) {
-  const bufA = Buffer.from(String(a));
-  const bufB = Buffer.from(String(b));
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
-}
-
-function requireAuth(req, res, next) {
-  const password = process.env.ADMIN_PASSWORD;
-  if (!password) {
-    return res
-      .status(503)
-      .send('Dashboard disabled: set the ADMIN_PASSWORD environment variable on this service to enable it.');
-  }
-  const header = req.headers.authorization || '';
-  const [scheme, encoded] = header.split(' ');
-  if (scheme === 'Basic' && encoded) {
-    const decoded = Buffer.from(encoded, 'base64').toString('utf8');
-    const sep = decoded.indexOf(':');
-    const pass = sep === -1 ? '' : decoded.slice(sep + 1);
-    if (timingSafeEqual(pass, password)) return next();
-  }
-  res.set('WWW-Authenticate', 'Basic realm="iss-railway admin"');
-  return res.status(401).send('Authentication required');
+function requireAuth(minRole) {
+  return function (req, res, next) {
+    if (!auth.hasAnyAdmin()) {
+      return res
+        .status(503)
+        .send('Dashboard disabled: set ADMIN_PASSWORD (and optionally ADMIN_USERNAME) on this service to enable it.');
+    }
+    const header = req.headers.authorization || '';
+    const [scheme, encoded] = header.split(' ');
+    if (scheme === 'Basic' && encoded) {
+      const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+      const sep = decoded.indexOf(':');
+      const username = sep === -1 ? decoded : decoded.slice(0, sep);
+      const password = sep === -1 ? '' : decoded.slice(sep + 1);
+      const user = auth.authenticate(username, password);
+      if (auth.hasRole(user, minRole)) return next();
+    }
+    res.set('WWW-Authenticate', 'Basic realm="iss-railway"');
+    return res.status(401).send('Authentication required');
+  };
 }
 
 function layout(title, body) {
@@ -61,7 +57,7 @@ function layout(title, body) {
   th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #334155; vertical-align: top; }
   th { color: #94a3b8; font-weight: 600; }
   label { display: block; margin: 0.75rem 0 0.25rem; font-size: 0.85rem; color: #94a3b8; }
-  input[type=text], input[type=password] { width: 100%; box-sizing: border-box; padding: 0.5rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: 0.9rem; }
+  input[type=text], input[type=password], select { width: 100%; box-sizing: border-box; padding: 0.5rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: 0.9rem; }
   button { margin-top: 1rem; background: #2563eb; color: white; border: none; padding: 0.55rem 1.1rem; border-radius: 6px; cursor: pointer; font-size: 0.9rem; }
   button.secondary { background: #334155; }
   .muted { color: #94a3b8; font-size: 0.85rem; }
@@ -88,6 +84,8 @@ function layout(title, body) {
   .badge-approved { background: #14532d; color: #4ade80; }
   .badge-pending { background: #713f12; color: #fbbf24; }
   .badge-rejected { background: #7f1d1d; color: #f87171; }
+  .badge-admin { background: #4c1d95; color: #c4b5fd; }
+  .badge-viewer { background: #164e63; color: #67e8f9; }
   .inline-form { display: flex; gap: 0.4rem; align-items: center; }
   .inline-form input[type=text] { width: auto; flex: 1; }
   .inline-form button { margin-top: 0; padding: 0.35rem 0.7rem; font-size: 0.8rem; }
@@ -95,7 +93,7 @@ function layout(title, body) {
 </head>
 <body>
 <main>
-<nav><a href="/">Dashboard</a><a href="/browse">Browse all</a><a href="/live">Live now</a><a href="/youtube-channels">YouTube channels</a><a href="/leagues">Leagues</a><a href="/translations">Translations</a><a href="/settings">Settings</a><a href="/fixtures.json">fixtures.json</a><a href="/fixtures.csv">fixtures.csv</a><a href="/live.json">live.json</a><a href="/live.csv">live.csv</a><a href="/health">health</a></nav>
+<nav><a href="/">Dashboard</a><a href="/browse">Browse all</a><a href="/live">Live now</a><a href="/youtube-channels">YouTube channels</a><a href="/leagues">Leagues</a><a href="/translations">Translations</a><a href="/settings">Settings</a><a href="/users">Users</a><a href="/fixtures.json">fixtures.json</a><a href="/fixtures.csv">fixtures.csv</a><a href="/live.json">live.json</a><a href="/live.csv">live.csv</a><a href="/health">health</a></nav>
 ${body}
 </main>
 </body>
@@ -418,6 +416,58 @@ function renderLive(state) {
   );
 }
 
+function renderUsers(getAllUsers, flash) {
+  const users = (getAllUsers ? getAllUsers() : []).slice().sort((a, b) => a.username.localeCompare(b.username));
+  const rows = users
+    .map(
+      (u) => `<tr>
+    <td>${escapeHtml(u.username)}</td>
+    <td><span class="badge badge-${u.role}">${escapeHtml(u.role)}</span></td>
+    <td class="muted">${escapeHtml(u.updatedAt || u.createdAt || '')}</td>
+    <td>
+      <form class="inline-form" method="POST" action="/api/users/delete" onsubmit="return confirm('Delete ${escapeHtml(u.username)}?');">
+        <input type="hidden" name="username" value="${escapeHtml(u.username)}">
+        <button type="submit" class="secondary">Delete</button>
+      </form>
+    </td>
+  </tr>`
+    )
+    .join('');
+
+  return layout(
+    'iss-railway users',
+    `
+    <h1>Users</h1>
+    ${flash === 'saved' ? '<p class="status-ok">Saved.</p>' : ''}
+    ${flash === 'deleted' ? '<p class="status-ok">Deleted.</p>' : ''}
+    ${flash && flash.startsWith('error:') ? `<p class="status-err">${escapeHtml(flash.slice(6))}</p>` : ''}
+    <div class="card" style="overflow-x:auto">
+      ${
+        users.length
+          ? `<table><tr><th>Username</th><th>Role</th><th>Updated</th><th></th></tr>${rows}</table>`
+          : '<p class="muted">No accounts yet.</p>'
+      }
+    </div>
+    <div class="card">
+      <strong>Add account / change password</strong>
+      <p class="muted">To change the admin username: add a new admin account with the new username below, confirm you can log in with it, then delete the old one. Submitting an existing username here replaces its password (and role, if changed) instead of creating a duplicate — leave password blank to keep it unchanged.</p>
+      <form method="POST" action="/api/users">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" required>
+        <label for="password">Password (leave blank to keep existing, when editing)</label>
+        <input type="password" id="password" name="password">
+        <label for="role">Role</label>
+        <select id="role" name="role">
+          <option value="viewer">viewer — /browse only</option>
+          <option value="admin">admin — full access</option>
+        </select>
+        <button type="submit">Save account</button>
+      </form>
+    </div>
+  `
+  );
+}
+
 function renderYouTubeChannels(getAllYouTubeChannels) {
   const channels = getAllYouTubeChannels ? getAllYouTubeChannels() : {};
   const entries = Object.entries(channels).sort((a, b) => (a[1].channelName || '').localeCompare(b[1].channelName || ''));
@@ -603,80 +653,98 @@ function createServer({
 
   app.get('/health', (req, res) => res.json({ ok: true }));
 
-  app.get('/', requireAuth, (req, res) => {
+  app.get('/', requireAuth('admin'), (req, res) => {
     res.send(renderDashboard(getState(), getConfig()));
   });
 
-  app.get('/browse', requireAuth, (req, res) => {
+  app.get('/browse', requireAuth('viewer'), (req, res) => {
     const tz = req.query.tz === 'jerusalem' ? 'jerusalem' : 'beijing';
     res.send(renderBrowse(getState(), getSourceStatus, tz));
   });
 
-  app.post('/api/check-sources', requireAuth, (req, res) => {
+  app.post('/api/check-sources', requireAuth('admin'), (req, res) => {
     // Fire-and-forget: the check can take minutes for hundreds of URLs, so
     // don't block the response on it. Progress shows up on the dashboard.
     runSourceCheck(req.body.force === '1').catch((err) => console.error('[sourceChecks]', err.message));
     res.redirect('/');
   });
 
-  app.post('/api/translate-names', requireAuth, (req, res) => {
+  app.post('/api/translate-names', requireAuth('admin'), (req, res) => {
     runTranslate(req.body.force === '1').catch((err) => console.error('[translate]', err.message));
     res.redirect('/');
   });
 
-  app.get('/leagues', requireAuth, (req, res) => {
+  app.get('/leagues', requireAuth('admin'), (req, res) => {
     res.send(renderLeagues(getState(), getLeagueOverrides));
   });
 
-  app.post('/api/league-alias', requireAuth, (req, res) => {
+  app.post('/api/league-alias', requireAuth('admin'), (req, res) => {
     const { rawName, canonicalName } = req.body;
     setLeagueAlias(rawName, canonicalName);
     res.redirect('/leagues');
   });
 
-  app.get('/live', requireAuth, (req, res) => {
+  app.get('/live', requireAuth('admin'), (req, res) => {
     res.send(renderLive(getState()));
   });
 
-  app.post('/api/fetch-live', requireAuth, (req, res) => {
+  app.post('/api/fetch-live', requireAuth('admin'), (req, res) => {
     runLiveTvFetch().catch((err) => console.error('[liveTv]', err.message));
     res.redirect('/');
   });
 
-  app.get('/youtube-channels', requireAuth, (req, res) => {
+  app.get('/youtube-channels', requireAuth('admin'), (req, res) => {
     res.send(renderYouTubeChannels(getAllYouTubeChannels));
   });
 
-  app.post('/api/youtube-channel', requireAuth, (req, res) => {
+  app.post('/api/youtube-channel', requireAuth('admin'), (req, res) => {
     const { channelUrl, status } = req.body;
     setChannelStatus(channelUrl, status);
     res.redirect('/youtube-channels');
   });
 
-  app.get('/translations', requireAuth, (req, res) => {
+  app.get('/translations', requireAuth('admin'), (req, res) => {
     res.send(renderTranslations(getState(), getAllTranslations));
   });
 
-  app.post('/api/translation', requireAuth, (req, res) => {
+  app.post('/api/translation', requireAuth('admin'), (req, res) => {
     const { text, zh } = req.body;
     setManualTranslation(text, zh);
     res.redirect('/translations');
   });
 
-  app.get('/settings', requireAuth, (req, res) => {
+  app.get('/settings', requireAuth('admin'), (req, res) => {
     res.send(renderSettings(getConfig(), req.query.saved === '1'));
   });
 
-  app.post('/settings', requireAuth, (req, res) => {
+  app.post('/settings', requireAuth('admin'), (req, res) => {
     const { apiKey, leagueIds, playlistUrl, cronExpr, wtmDays, liveTvDomain } = req.body;
     updateConfig({ apiKey, leagueIds, playlistUrl, cronExpr, wtmDays, liveTvDomain });
     rescheduleCron();
     res.redirect('/settings?saved=1');
   });
 
-  app.post('/api/run', requireAuth, async (req, res) => {
+  app.post('/api/run', requireAuth('admin'), async (req, res) => {
     await runOnce();
     res.redirect('/');
+  });
+
+  app.get('/users', requireAuth('admin'), (req, res) => {
+    res.send(renderUsers(auth.getAllUsers, req.query.flash));
+  });
+
+  app.post('/api/users', requireAuth('admin'), (req, res) => {
+    try {
+      auth.upsert({ username: req.body.username, password: req.body.password, role: req.body.role });
+      res.redirect('/users?flash=saved');
+    } catch (err) {
+      res.redirect(`/users?flash=${encodeURIComponent('error:' + err.message)}`);
+    }
+  });
+
+  app.post('/api/users/delete', requireAuth('admin'), (req, res) => {
+    const { error } = auth.remove(req.body.username);
+    res.redirect(error ? `/users?flash=${encodeURIComponent('error:' + error)}` : '/users?flash=deleted');
   });
 
   app.get('/fixtures.csv', (req, res) => {
