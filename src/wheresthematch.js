@@ -17,6 +17,7 @@
 // broadcaster for an event, not just the first one.
 
 const axios = require('axios');
+const { splitTeams } = require('./teamSplit');
 
 const BASE_URL = 'https://www.wheresthematch.com/live-sport-on-tv/';
 const HEADERS = {
@@ -144,9 +145,7 @@ function slugify(s) {
  * same as it does with sportsdb's per-event channel list.
  */
 function normalizeRow(raw) {
-  const parts = raw.matchName.split(/\s+v\s+/i);
-  const homeTeam = parts[0] ? parts[0].trim() : raw.matchName;
-  const awayTeam = parts[1] ? parts[1].trim() : '';
+  const { homeTeam, awayTeam } = splitTeams(raw.matchName);
   return {
     eventId: `wtm-${raw.isoDate}-${slugify(raw.matchName)}`,
     league: raw.league,

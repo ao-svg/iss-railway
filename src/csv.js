@@ -24,6 +24,7 @@ const HEADER = [
   'HomeTeam',
   'AwayTeam',
   'MatchDateUTC',
+  'Status', // 'live' | 'ended' for livetv rows; blank for scheduled fixtures
 ];
 
 function escapeCsvField(value) {
@@ -132,6 +133,7 @@ function rowsToCsv(rows) {
           r.homeTeam,
           r.awayTeam,
           r.matchDateUTC,
+          r.status || '',
         ]
           .map(escapeCsvField)
           .join(',')

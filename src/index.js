@@ -7,6 +7,7 @@ const sourceChecks = require('./sourceChecks');
 const translate = require('./translate');
 const leagues = require('./leagues');
 const liveTv = require('./liveTv');
+const liveTvStore = require('./liveTvStore');
 const youtubeChannels = require('./youtubeChannels');
 const { writeCsv } = require('./csv');
 
@@ -32,6 +33,7 @@ const state = {
   lastLiveAt: null,
   lastLiveFailures: [],
   liveRows: null, // separate from lastRows: "live right now", not schedule data
+  liveRowsNormalized: null, // backs /live.csv and /live.json, mirrors lastRows -> fixtures.csv/json
 };
 
 let cronTask = null;
@@ -148,16 +150,30 @@ async function runTranslate(force = false) {
 function setManualTranslationAndRefresh(text, zh) {
   translate.setManualTranslation(text, zh);
   refreshTranslationsOnRows();
+  refreshLiveCsv();
 }
 
 function setLeagueAliasAndRefresh(rawName, canonicalName) {
   leagues.setLeagueAlias(rawName, canonicalName);
-  if (!state.lastRows) return;
-  for (const r of state.lastRows) {
-    if (r.rawLeague) r.league = leagues.canonicalLeague(r.rawLeague);
+  if (state.lastRows) {
+    for (const r of state.lastRows) {
+      if (r.rawLeague) r.league = leagues.canonicalLeague(r.rawLeague);
+    }
+    const { outputCsvPath } = getConfig();
+    writeCsv(state.lastRows, outputCsvPath);
   }
-  const { outputCsvPath } = getConfig();
-  writeCsv(state.lastRows, outputCsvPath);
+  refreshLiveCsv();
+}
+
+// Rebuilds live.csv/live.json from the current state.liveRows — called
+// after every fetch and after any manual override (channel approval,
+// translation, league alias) so those show up immediately, same reasoning
+// as refreshTranslationsOnRows() above for the main pipeline's CSV.
+function refreshLiveCsv() {
+  if (!state.liveRows) return;
+  const { outputLiveCsvPath } = getConfig();
+  state.liveRowsNormalized = liveTv.normalizeLiveRows(state.liveRows);
+  writeCsv(state.liveRowsNormalized, outputLiveCsvPath);
 }
 
 async function runLiveTvFetch() {
@@ -166,14 +182,15 @@ async function runLiveTvFetch() {
   state.liveRunning = true;
   state.liveProgress = { done: 0, total: liveTv.SPORTS.length };
   try {
-    const { rows, failures } = await liveTv.fetchLiveStreams(liveTvDomain, {
+    const { rows, failures, successfulSports } = await liveTv.fetchLiveStreams(liveTvDomain, {
       onProgress: (done, total) => {
         state.liveProgress = { done, total };
       },
     });
-    state.liveRows = rows;
+    state.liveRows = liveTvStore.applyFetch(rows, successfulSports);
     state.lastLiveFailures = failures;
     state.lastLiveAt = new Date().toISOString();
+    refreshLiveCsv();
   } catch (err) {
     console.error('[liveTv] run failed:', err.message);
   } finally {
@@ -195,6 +212,7 @@ function setChannelStatusAndRefresh(channelUrl, status) {
       }
     }
   }
+  refreshLiveCsv();
 }
 
 function scheduleCron() {

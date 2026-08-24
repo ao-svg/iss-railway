@@ -95,7 +95,7 @@ function layout(title, body) {
 </head>
 <body>
 <main>
-<nav><a href="/">Dashboard</a><a href="/browse">Browse all</a><a href="/live">Live now</a><a href="/youtube-channels">YouTube channels</a><a href="/leagues">Leagues</a><a href="/translations">Translations</a><a href="/settings">Settings</a><a href="/fixtures.json">fixtures.json</a><a href="/fixtures.csv">fixtures.csv</a><a href="/health">health</a></nav>
+<nav><a href="/">Dashboard</a><a href="/browse">Browse all</a><a href="/live">Live now</a><a href="/youtube-channels">YouTube channels</a><a href="/leagues">Leagues</a><a href="/translations">Translations</a><a href="/settings">Settings</a><a href="/fixtures.json">fixtures.json</a><a href="/fixtures.csv">fixtures.csv</a><a href="/live.json">live.json</a><a href="/live.csv">live.csv</a><a href="/health">health</a></nav>
 ${body}
 </main>
 </body>
@@ -194,16 +194,12 @@ function renderDashboard(state, config) {
     const p = state.liveProgress;
     liveStatusLine = `<span class="status-warn">● fetching… sport ${p ? `${p.done}/${p.total}` : ''}</span>`;
   } else if (state.lastLiveAt) {
-    const liveCount = (state.liveRows || []).length;
-    const ytCount = (state.liveRows || []).reduce(
-      (n, r) => n + (r.channels || []).filter((c) => c.type === 'youtube').length,
-      0
-    );
-    const otherCount = (state.liveRows || []).reduce(
-      (n, r) => n + (r.channels || []).filter((c) => c.type === 'other').length,
-      0
-    );
-    liveStatusLine = `<span class="muted">Last fetched ${escapeHtml(state.lastLiveAt)} — ${liveCount} live games, ${ytCount} YouTube links, ${otherCount} other (not shown)</span>`;
+    const rows = state.liveRows || [];
+    const liveCount = rows.filter((r) => r.status === 'live').length;
+    const endedCount = rows.filter((r) => r.status === 'ended').length;
+    const ytCount = rows.reduce((n, r) => n + (r.channels || []).filter((c) => c.type === 'youtube').length, 0);
+    const otherCount = rows.reduce((n, r) => n + (r.channels || []).filter((c) => c.type === 'other').length, 0);
+    liveStatusLine = `<span class="muted">Last fetched ${escapeHtml(state.lastLiveAt)} — ${liveCount} live, ${endedCount} recently ended, ${ytCount} YouTube links, ${otherCount} other (not shown)</span>`;
   } else {
     liveStatusLine = '<span class="muted">Never fetched</span>';
   }
@@ -366,6 +362,13 @@ function renderBrowse(state, getSourceStatus, tz = 'beijing') {
   );
 }
 
+function liveStatusBadge(row) {
+  if (row.status === 'ended') {
+    return `<span class="dot dot-dead" title="Ended ${escapeHtml(row.endedAt || '')}"></span>Ended`;
+  }
+  return `<span class="dot dot-ok" title="Live since ${escapeHtml(row.firstSeenAt || '')}"></span>Live`;
+}
+
 function renderLive(state) {
   const rows = state.liveRows || [];
 
@@ -392,6 +395,7 @@ function renderLive(state) {
         <td>${escapeHtml(r.matchName)}</td>
         <td>${escapeHtml(r.league)}</td>
         <td>${escapeHtml(r.sportType || '')}</td>
+        <td>${liveStatusBadge(r)}</td>
         <td><ul class="channel-list">${channelItems || '<li class="no-url">—</li>'}</ul></td>
       </tr>`;
     })
@@ -401,12 +405,12 @@ function renderLive(state) {
     'iss-railway live now',
     `
     <h1>Live now</h1>
-    <p class="muted">Currently-live games from the configured live-streaming source, refreshed on demand from the <a href="/">dashboard</a>. This is "what's live right now," separate from the scheduled fixtures on <a href="/browse">Browse all</a> — it goes stale the moment a game ends.</p>
+    <p class="muted">Currently-live games from the configured live-streaming source, refreshed on demand from the <a href="/">dashboard</a>. This is "what's live right now," separate from the scheduled fixtures on <a href="/browse">Browse all</a>. A game stays visible marked "Ended" for a few hours after it drops off the source's live list, then disappears — also exported at <a href="/live.csv">live.csv</a> / <a href="/live.json">live.json</a>, same column format as fixtures.csv.</p>
     <p class="muted">Only YouTube links from an <a href="/youtube-channels">approved channel</a> are shown as embeddable. Everything else is either pending review or a non-YouTube source that's intentionally never resolved to a URL.</p>
     <div class="card" style="overflow-x:auto">
       ${
         rows.length
-          ? `<table><tr><th>Date</th><th>Time</th><th>Match</th><th>League</th><th>Type</th><th>Sources</th></tr>${tableRows}</table>`
+          ? `<table><tr><th>Date</th><th>Time</th><th>Match</th><th>League</th><th>Type</th><th>Status</th><th>Sources</th></tr>${tableRows}</table>`
           : '<p class="muted">No live games fetched yet — click "Fetch live streams now" on the dashboard.</p>'
       }
     </div>
@@ -691,7 +695,23 @@ function createServer({
     res.json(rows);
   });
 
+  app.get('/live.csv', (req, res) => {
+    const { outputLiveCsvPath } = getConfig();
+    if (!fs.existsSync(outputLiveCsvPath)) {
+      return res.status(404).send('No live CSV generated yet — fetch live streams has not completed a run.');
+    }
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="live.csv"');
+    fs.createReadStream(outputLiveCsvPath).pipe(res);
+  });
+
+  app.get('/live.json', (req, res) => {
+    const rows = getState().liveRowsNormalized;
+    if (!rows) return res.status(404).json({ error: 'No data yet — fetch live streams has not completed a run.' });
+    res.json(rows);
+  });
+
   return app;
 }
 
-module.exports = { createServer };
+module.exports = { createServer, renderLive };

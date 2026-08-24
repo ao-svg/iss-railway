@@ -25,6 +25,7 @@ function envDefaults() {
     // and pointing it at the wrong/any domain is a real content-provenance
     // decision, not something to default to a hardcoded value for.
     liveTvDomain: process.env.LIVETV_DOMAIN || '',
+    outputLiveCsvPath: process.env.OUTPUT_LIVE_CSV_PATH || './data/live.csv',
   };
 }
 
