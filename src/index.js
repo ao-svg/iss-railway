@@ -6,6 +6,8 @@ const { getConfig } = require('./config');
 const sourceChecks = require('./sourceChecks');
 const translate = require('./translate');
 const leagues = require('./leagues');
+const liveTv = require('./liveTv');
+const youtubeChannels = require('./youtubeChannels');
 const { writeCsv } = require('./csv');
 
 const port = process.env.PORT || 3000;
@@ -25,6 +27,11 @@ const state = {
   translateProgress: null, // { done, total }
   lastTranslateAt: null,
   lastTranslateSummary: null,
+  liveRunning: false,
+  liveProgress: null, // { done, total } — sports processed, not games
+  lastLiveAt: null,
+  lastLiveFailures: [],
+  liveRows: null, // separate from lastRows: "live right now", not schedule data
 };
 
 let cronTask = null;
@@ -153,6 +160,43 @@ function setLeagueAliasAndRefresh(rawName, canonicalName) {
   writeCsv(state.lastRows, outputCsvPath);
 }
 
+async function runLiveTvFetch() {
+  if (state.liveRunning) return state;
+  const { liveTvDomain } = getConfig();
+  state.liveRunning = true;
+  state.liveProgress = { done: 0, total: liveTv.SPORTS.length };
+  try {
+    const { rows, failures } = await liveTv.fetchLiveStreams(liveTvDomain, {
+      onProgress: (done, total) => {
+        state.liveProgress = { done, total };
+      },
+    });
+    state.liveRows = rows;
+    state.lastLiveFailures = failures;
+    state.lastLiveAt = new Date().toISOString();
+  } catch (err) {
+    console.error('[liveTv] run failed:', err.message);
+  } finally {
+    state.liveRunning = false;
+    state.liveProgress = null;
+  }
+  return state;
+}
+
+// Approving/rejecting a channel should show up immediately on already-
+// fetched live rows, not wait for the next "Fetch live streams" click.
+function setChannelStatusAndRefresh(channelUrl, status) {
+  youtubeChannels.setChannelStatus(channelUrl, status);
+  if (!state.liveRows) return;
+  for (const row of state.liveRows) {
+    for (const ch of row.channels || []) {
+      if (ch.type === 'youtube' && ch.channelUrl === channelUrl) {
+        ch.approved = youtubeChannels.isApproved(channelUrl);
+      }
+    }
+  }
+}
+
 function scheduleCron() {
   if (cronTask) cronTask.stop();
   const { cronExpr } = getConfig();
@@ -184,6 +228,9 @@ if (runOnlyFlag) {
     setManualTranslation: setManualTranslationAndRefresh,
     getLeagueOverrides: leagues.getOverrides,
     setLeagueAlias: setLeagueAliasAndRefresh,
+    runLiveTvFetch,
+    getAllYouTubeChannels: youtubeChannels.getAllChannels,
+    setChannelStatus: setChannelStatusAndRefresh,
   });
   app.listen(port, () => {
     console.log(`[index] server listening on :${port}`);

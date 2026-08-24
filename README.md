@@ -50,13 +50,29 @@ standalone pipeline you can deploy on Railway and pull CSV/JSON from.
   sheet), with a Beijing/Jerusalem toggle on `/browse` (`?tz=jerusalem`) for
   viewing — `fixtures.csv`/`fixtures.json` are always Beijing time
   regardless of that toggle, since exports need one consistent timezone.
+- ✅ Optionally pulls "what's live right now" from a live-sports-streaming
+  aggregator (`src/liveTv.js`, disabled unless `LIVETV_DOMAIN` is set — see
+  below), but **only the discovery part** of that site's mechanism: which
+  games are live, and which of their stream links are YouTube videos. Each
+  YouTube video's channel is looked up via YouTube's own public oEmbed
+  endpoint and must be manually approved on `/youtube-channels` before it
+  counts as usable anywhere — oEmbed confirms who uploaded a video, never
+  whether they're authorized to broadcast the content, so that call is a
+  human one, once per channel (approving covers all future videos from it
+  too). Non-YouTube stream links are counted (`type: 'other'`) but never
+  resolved to an actual URL — the original mechanism for that (fetch a
+  webplayer wrapper page, scrape whatever third-party CDN iframe it embeds)
+  is the exact pirate-mirror-resolution pattern described below, and this
+  port doesn't do it regardless of source.
 - ❌ Does **not** include the original plugin's aggregator web-scraper
-  (Sportsurge/StreamEast link extraction), nor the old Apps Script pipeline's
+  (Sportsurge/StreamEast link extraction), the old Apps Script pipeline's
   `channels`-sheet mapping to pirate-mirror stream URLs (tv-shihab.xyz,
-  freestreams-live1c.pk, dlhd.st, thedaddy.dad, acestream links, etc.) or its
-  `scraper_ltv.js` aggregator. Those scraped/linked unauthorized copies of
-  copyrighted live broadcasts and were intentionally left out of this port —
-  only the legitimate schedule/broadcaster-name scraping was ported.
+  freestreams-live1c.pk, dlhd.st, thedaddy.dad, acestream links, etc.), or
+  its `scraper_ltv.js` aggregator's own webplayer→third-party-CDN
+  resolution step. Those scraped/linked unauthorized copies of copyrighted
+  live broadcasts and were intentionally left out of this port — only the
+  legitimate schedule/broadcaster-name scraping (and, for `liveTv.js`, the
+  channel-verification-gated YouTube subset) was ported.
 
 ## Local dev
 
@@ -84,8 +100,11 @@ npm start             # runs once at boot, then on the PIPELINE_CRON schedule, s
 | `GET /browse`       | Every fixture with per-source status dots, Chinese names, timezone toggle, full-text filter (password-protected) |
 | `GET /leagues`      | Set canonical league-name groupings (password-protected) |
 | `GET /translations` | Set manual Simplified Chinese overrides (password-protected) |
+| `GET /live`          | Currently-live games from the live-streaming source, refreshed on demand (password-protected) |
+| `GET /youtube-channels` | Approve/reject YouTube channels the live-streaming source has surfaced (password-protected) |
 | `POST /api/check-sources` | Kicks off the reachability/iframe check job in the background (password-protected) |
 | `POST /api/translate-names` | Kicks off the translation job in the background (password-protected) |
+| `POST /api/fetch-live` | Kicks off the live-streaming fetch job in the background (password-protected) |
 | `GET /fixtures.csv`| Latest fixtures + matched channels, as CSV     |
 | `GET /fixtures.json` | Same data as JSON                            |
 

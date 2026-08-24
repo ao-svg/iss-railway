@@ -85,6 +85,9 @@ function layout(title, body) {
   .badge-manual { background: #1e3a8a; color: #93c5fd; }
   .badge-auto { background: #334155; color: #94a3b8; }
   .badge-none { background: #334155; color: #64748b; }
+  .badge-approved { background: #14532d; color: #4ade80; }
+  .badge-pending { background: #713f12; color: #fbbf24; }
+  .badge-rejected { background: #7f1d1d; color: #f87171; }
   .inline-form { display: flex; gap: 0.4rem; align-items: center; }
   .inline-form input[type=text] { width: auto; flex: 1; }
   .inline-form button { margin-top: 0; padding: 0.35rem 0.7rem; font-size: 0.8rem; }
@@ -92,7 +95,7 @@ function layout(title, body) {
 </head>
 <body>
 <main>
-<nav><a href="/">Dashboard</a><a href="/browse">Browse all</a><a href="/leagues">Leagues</a><a href="/translations">Translations</a><a href="/settings">Settings</a><a href="/fixtures.json">fixtures.json</a><a href="/fixtures.csv">fixtures.csv</a><a href="/health">health</a></nav>
+<nav><a href="/">Dashboard</a><a href="/browse">Browse all</a><a href="/live">Live now</a><a href="/youtube-channels">YouTube channels</a><a href="/leagues">Leagues</a><a href="/translations">Translations</a><a href="/settings">Settings</a><a href="/fixtures.json">fixtures.json</a><a href="/fixtures.csv">fixtures.csv</a><a href="/health">health</a></nav>
 ${body}
 </main>
 </body>
@@ -184,6 +187,27 @@ function renderDashboard(state, config) {
     translateStatusLine = '<span class="muted">Never run</span>';
   }
 
+  let liveStatusLine;
+  if (!config.liveTvDomain) {
+    liveStatusLine = '<span class="muted">Disabled — set LIVETV_DOMAIN to enable (see Settings)</span>';
+  } else if (state.liveRunning) {
+    const p = state.liveProgress;
+    liveStatusLine = `<span class="status-warn">● fetching… sport ${p ? `${p.done}/${p.total}` : ''}</span>`;
+  } else if (state.lastLiveAt) {
+    const liveCount = (state.liveRows || []).length;
+    const ytCount = (state.liveRows || []).reduce(
+      (n, r) => n + (r.channels || []).filter((c) => c.type === 'youtube').length,
+      0
+    );
+    const otherCount = (state.liveRows || []).reduce(
+      (n, r) => n + (r.channels || []).filter((c) => c.type === 'other').length,
+      0
+    );
+    liveStatusLine = `<span class="muted">Last fetched ${escapeHtml(state.lastLiveAt)} — ${liveCount} live games, ${ytCount} YouTube links, ${otherCount} other (not shown)</span>`;
+  } else {
+    liveStatusLine = '<span class="muted">Never fetched</span>';
+  }
+
   return layout(
     'iss-railway dashboard',
     `
@@ -231,6 +255,15 @@ function renderDashboard(state, config) {
         <button type="submit" name="force" value="1" class="secondary" ${state.translateRunning ? 'disabled' : ''}>Re-translate (ignore cache, keeps manual overrides)</button>
       </form>
       <p class="muted">Auto-translated via the free Google Translate endpoint and cached. Manual corrections on the <a href="/translations">Translations</a> page always win and are never overwritten by re-translation.</p>
+    </div>
+
+    <div class="card">
+      <strong>Live streaming (LTV)</strong> <span class="muted">— currently-live games, separate from the scheduled fixtures above</span>
+      <p>${liveStatusLine}</p>
+      <form method="POST" action="/api/fetch-live">
+        <button type="submit" ${state.liveRunning || !config.liveTvDomain ? 'disabled' : ''}>Fetch live streams now</button>
+      </form>
+      <p class="muted">YouTube links only count as usable once their uploading channel is approved on <a href="/youtube-channels">YouTube channels</a> — oEmbed confirms who uploaded a video, not whether they're authorized to broadcast it, so that call is made by a human, once per channel. Non-YouTube sources are counted but never resolved to an actual URL. See <a href="/live">Live now</a>.</p>
     </div>
 
     <div class="card">
@@ -329,6 +362,92 @@ function renderBrowse(state, getSourceStatus, tz = 'beijing') {
       }
       filterRows();
     </script>
+  `
+  );
+}
+
+function renderLive(state) {
+  const rows = state.liveRows || [];
+
+  const tableRows = rows
+    .map((r) => {
+      const { date, time } = formatBeijing(r.matchDateUTC);
+      const channelItems = (r.channels || [])
+        .map((ch) => {
+          if (ch.type === 'other') {
+            return `<li><span class="badge badge-none">other source (not shown)</span></li>`;
+          }
+          const badge = ch.approved
+            ? '<span class="badge badge-approved">approved</span>'
+            : '<span class="badge badge-pending">pending review</span>';
+          const link = ch.approved
+            ? `<a href="${escapeHtml(ch.url)}" target="_blank" rel="noopener">${escapeHtml(ch.channelName)}</a>`
+            : `${escapeHtml(ch.channelName)} <span class="no-url">(not embeddable until approved)</span>`;
+          return `<li>${link} ${badge}<br><span class="muted">${escapeHtml(ch.title || '')}</span></li>`;
+        })
+        .join('');
+      return `<tr>
+        <td>${escapeHtml(date)}</td>
+        <td>${escapeHtml(time)}</td>
+        <td>${escapeHtml(r.matchName)}</td>
+        <td>${escapeHtml(r.league)}</td>
+        <td>${escapeHtml(r.sportType || '')}</td>
+        <td><ul class="channel-list">${channelItems || '<li class="no-url">—</li>'}</ul></td>
+      </tr>`;
+    })
+    .join('');
+
+  return layout(
+    'iss-railway live now',
+    `
+    <h1>Live now</h1>
+    <p class="muted">Currently-live games from the configured live-streaming source, refreshed on demand from the <a href="/">dashboard</a>. This is "what's live right now," separate from the scheduled fixtures on <a href="/browse">Browse all</a> — it goes stale the moment a game ends.</p>
+    <p class="muted">Only YouTube links from an <a href="/youtube-channels">approved channel</a> are shown as embeddable. Everything else is either pending review or a non-YouTube source that's intentionally never resolved to a URL.</p>
+    <div class="card" style="overflow-x:auto">
+      ${
+        rows.length
+          ? `<table><tr><th>Date</th><th>Time</th><th>Match</th><th>League</th><th>Type</th><th>Sources</th></tr>${tableRows}</table>`
+          : '<p class="muted">No live games fetched yet — click "Fetch live streams now" on the dashboard.</p>'
+      }
+    </div>
+  `
+  );
+}
+
+function renderYouTubeChannels(getAllYouTubeChannels) {
+  const channels = getAllYouTubeChannels ? getAllYouTubeChannels() : {};
+  const entries = Object.entries(channels).sort((a, b) => (a[1].channelName || '').localeCompare(b[1].channelName || ''));
+
+  const rows = entries
+    .map(([url, info]) => {
+      const badgeClass = `badge-${info.status || 'pending'}`;
+      return `<tr>
+        <td><a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(info.channelName || url)}</a></td>
+        <td><span class="badge ${badgeClass}">${escapeHtml(info.status || 'pending')}</span></td>
+        <td class="muted">${escapeHtml(info.exampleTitle || '')}</td>
+        <td>
+          <form class="inline-form" method="POST" action="/api/youtube-channel">
+            <input type="hidden" name="channelUrl" value="${escapeHtml(url)}">
+            <button type="submit" name="status" value="approved">Approve</button>
+            <button type="submit" name="status" value="rejected" class="secondary">Reject</button>
+          </form>
+        </td>
+      </tr>`;
+    })
+    .join('');
+
+  return layout(
+    'iss-railway youtube channels',
+    `
+    <h1>YouTube channels</h1>
+    <p class="muted">Every YouTube channel the live-streaming source has surfaced a video from. Approving a channel here means every past and future video from it counts as usable — check the channel is genuinely the rightsholder's own official account before approving, not just that the current example video looks fine. Verified live via <a href="https://www.youtube.com/oembed" target="_blank" rel="noopener">YouTube's own oEmbed endpoint</a> — this confirms who uploaded a video, never whether they're authorized to broadcast the content.</p>
+    <div class="card" style="overflow-x:auto">
+      ${
+        entries.length
+          ? `<table><tr><th>Channel</th><th>Status</th><th>Example video seen</th><th>Action</th></tr>${rows}</table>`
+          : '<p class="muted">No channels seen yet — fetch live streams from the dashboard first.</p>'
+      }
+    </div>
   `
   );
 }
@@ -447,6 +566,9 @@ function renderSettings(config, saved) {
         <label for="wtmDays">wheresthematch.com lookahead (days)</label>
         <input type="text" id="wtmDays" name="wtmDays" value="${escapeHtml(config.wtmDays)}">
 
+        <label for="liveTvDomain">Live streaming source domain (blank = feature disabled)</label>
+        <input type="text" id="liveTvDomain" name="liveTvDomain" value="${escapeHtml(config.liveTvDomain || '')}" placeholder="e.g. http://example.com">
+
         <button type="submit">Save settings</button>
       </form>
     </div>
@@ -468,6 +590,9 @@ function createServer({
   setManualTranslation,
   getLeagueOverrides,
   setLeagueAlias,
+  runLiveTvFetch,
+  getAllYouTubeChannels,
+  setChannelStatus,
 }) {
   const app = express();
   app.use(express.urlencoded({ extended: false }));
@@ -505,6 +630,25 @@ function createServer({
     res.redirect('/leagues');
   });
 
+  app.get('/live', requireAuth, (req, res) => {
+    res.send(renderLive(getState()));
+  });
+
+  app.post('/api/fetch-live', requireAuth, (req, res) => {
+    runLiveTvFetch().catch((err) => console.error('[liveTv]', err.message));
+    res.redirect('/');
+  });
+
+  app.get('/youtube-channels', requireAuth, (req, res) => {
+    res.send(renderYouTubeChannels(getAllYouTubeChannels));
+  });
+
+  app.post('/api/youtube-channel', requireAuth, (req, res) => {
+    const { channelUrl, status } = req.body;
+    setChannelStatus(channelUrl, status);
+    res.redirect('/youtube-channels');
+  });
+
   app.get('/translations', requireAuth, (req, res) => {
     res.send(renderTranslations(getState(), getAllTranslations));
   });
@@ -520,8 +664,8 @@ function createServer({
   });
 
   app.post('/settings', requireAuth, (req, res) => {
-    const { apiKey, leagueIds, playlistUrl, cronExpr, wtmDays } = req.body;
-    updateConfig({ apiKey, leagueIds, playlistUrl, cronExpr, wtmDays });
+    const { apiKey, leagueIds, playlistUrl, cronExpr, wtmDays, liveTvDomain } = req.body;
+    updateConfig({ apiKey, leagueIds, playlistUrl, cronExpr, wtmDays, liveTvDomain });
     rescheduleCron();
     res.redirect('/settings?saved=1');
   });

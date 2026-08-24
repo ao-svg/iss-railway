@@ -20,6 +20,11 @@ function envDefaults() {
     cronExpr: process.env.PIPELINE_CRON || '0 */6 * * *',
     outputCsvPath: process.env.OUTPUT_CSV_PATH || './data/fixtures.csv',
     wtmDays: Number(process.env.WTM_DAYS) || 31,
+    // Empty by default — the "live streaming" feature (src/liveTv.js) is a
+    // no-op until this is deliberately set, since the source domain rotates
+    // and pointing it at the wrong/any domain is a real content-provenance
+    // decision, not something to default to a hardcoded value for.
+    liveTvDomain: process.env.LIVETV_DOMAIN || '',
   };
 }
 
