@@ -36,37 +36,62 @@ function requireAuth(minRole) {
   };
 }
 
-function layout(title, body) {
+function navLink(href, label, activePath) {
+  return `<a href="${href}" class="${href === activePath ? 'active' : ''}">${label}</a>`;
+}
+
+function layout(title, body, activePath = '') {
   return `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)}</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%E2%9A%BD</text></svg>">
 <style>
-  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; padding: 2rem; }
-  main { max-width: 960px; margin: 0 auto; }
+  :root {
+    --bg: #0f172a; --sidebar-bg: #0b1120; --surface: #1e293b; --border: #334155;
+    --text: #e2e8f0; --text-muted: #94a3b8; --accent: #3b82f6; --accent-dim: #2563eb;
+    --radius: 10px; --radius-sm: 6px; --shadow: 0 1px 3px rgba(0,0,0,.4);
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; }
   h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
-  nav { margin-bottom: 1.5rem; }
-  nav a { color: #93c5fd; text-decoration: none; margin-right: 1rem; font-size: 0.9rem; }
-  .card { background: #1e293b; border-radius: 10px; padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
+  .topbar { display: none; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; background: var(--sidebar-bg); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 20; }
+  .menu-btn { margin: 0; background: transparent; border: 1px solid var(--border); color: var(--text); padding: 0.35rem 0.6rem; font-size: 1rem; line-height: 1; }
+  .topbar .brand { font-weight: 600; font-size: 0.95rem; }
+  .shell { display: flex; min-height: 100vh; }
+  .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 25; }
+  .sidebar { width: 220px; flex-shrink: 0; background: var(--sidebar-bg); border-right: 1px solid var(--border); padding: 1.25rem 1rem; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+  .sidebar .brand-full { font-weight: 700; font-size: 1rem; margin-bottom: 1.5rem; }
+  .nav-group { margin-bottom: 1.25rem; }
+  .nav-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 0.4rem; padding: 0 0.5rem; }
+  .sidebar a { display: block; color: var(--text-muted); text-decoration: none; font-size: 0.88rem; padding: 0.4rem 0.5rem; border-radius: var(--radius-sm); margin-bottom: 0.1rem; }
+  .sidebar a:hover { background: var(--surface); color: var(--text); }
+  .sidebar a.active { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: inset 2px 0 0 var(--accent); }
+  main { flex: 1; min-width: 0; max-width: 1100px; margin: 0 auto; padding: 2rem; }
+  .card { background: var(--surface); border-radius: var(--radius); padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; box-shadow: var(--shadow); overflow-x: auto; }
+  .card > strong { font-size: 1rem; }
   .status-ok { color: #4ade80; }
   .status-warn { color: #facc15; }
   .status-err { color: #f87171; }
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-  th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #334155; vertical-align: top; }
-  th { color: #94a3b8; font-weight: 600; }
-  label { display: block; margin: 0.75rem 0 0.25rem; font-size: 0.85rem; color: #94a3b8; }
-  input[type=text], input[type=password], select { width: 100%; box-sizing: border-box; padding: 0.5rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: 0.9rem; }
-  button { margin-top: 1rem; background: #2563eb; color: white; border: none; padding: 0.55rem 1.1rem; border-radius: 6px; cursor: pointer; font-size: 0.9rem; }
-  button.secondary { background: #334155; }
-  .muted { color: #94a3b8; font-size: 0.85rem; }
-  code { background: #0f172a; padding: 0.1rem 0.35rem; border-radius: 4px; }
+  th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--text-muted); font-weight: 600; }
+  label { display: block; margin: 0.75rem 0 0.25rem; font-size: 0.85rem; color: var(--text-muted); }
+  input[type=text], input[type=password], select { width: 100%; box-sizing: border-box; padding: 0.5rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 0.9rem; }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button { margin-top: 1rem; background: var(--accent-dim); color: white; border: none; padding: 0.55rem 1.1rem; border-radius: var(--radius-sm); cursor: pointer; font-size: 0.9rem; }
+  button:hover { background: var(--accent); }
+  button.secondary { background: var(--border); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .muted { color: var(--text-muted); font-size: 0.85rem; }
+  code { background: var(--bg); padding: 0.1rem 0.35rem; border-radius: 4px; }
   .channel-list { list-style: none; margin: 0; padding: 0; }
   .channel-list li { margin-bottom: 0.15rem; }
   .channel-list a { color: #93c5fd; }
-  .channel-list .no-url { color: #94a3b8; }
-  .channel-name { color: #e2e8f0; margin-right: 0.3rem; }
+  .channel-list .no-url { color: var(--text-muted); }
+  .channel-name { color: var(--text); margin-right: 0.3rem; }
   .source-list { list-style: none; margin: 0.15rem 0 0.35rem 0.9rem; padding: 0; }
   .source-list li { margin-bottom: 0.1rem; }
   .source-list a { color: #93c5fd; font-size: 0.8rem; }
@@ -76,7 +101,7 @@ function layout(title, body) {
   .dot-blocked, .dot-dead { background: #f87171; }
   .dot-unchecked { background: #475569; }
   #search-box { margin-bottom: 1rem; }
-  #row-count { font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.5rem; }
+  #row-count { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem; }
   .badge { display: inline-block; font-size: 0.7rem; padding: 0.05rem 0.4rem; border-radius: 4px; margin-left: 0.4rem; }
   .badge-manual { background: #1e3a8a; color: #93c5fd; }
   .badge-auto { background: #334155; color: #94a3b8; }
@@ -86,16 +111,55 @@ function layout(title, body) {
   .badge-rejected { background: #7f1d1d; color: #f87171; }
   .badge-admin { background: #4c1d95; color: #c4b5fd; }
   .badge-viewer { background: #164e63; color: #67e8f9; }
-  .inline-form { display: flex; gap: 0.4rem; align-items: center; }
-  .inline-form input[type=text] { width: auto; flex: 1; }
+  .inline-form { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
+  .inline-form input[type=text] { width: auto; flex: 1; min-width: 120px; }
   .inline-form button { margin-top: 0; padding: 0.35rem 0.7rem; font-size: 0.8rem; }
+  @media (max-width: 900px) {
+    .topbar { display: flex; }
+    .sidebar { position: fixed; left: -260px; top: 0; z-index: 30; transition: left 0.2s ease; box-shadow: var(--shadow); }
+    body.nav-open .sidebar { left: 0; }
+    body.nav-open .overlay { display: block; }
+    main { padding: 1.25rem; }
+    table { font-size: 0.8rem; }
+  }
 </style>
 </head>
 <body>
-<main>
-<nav><a href="/">Dashboard</a><a href="/browse">Browse all</a><a href="/live">Live now</a><a href="/youtube-channels">YouTube channels</a><a href="/leagues">Leagues</a><a href="/translations">Translations</a><a href="/settings">Settings</a><a href="/users">Users</a><a href="/fixtures.json">fixtures.json</a><a href="/fixtures.csv">fixtures.csv</a><a href="/live.json">live.json</a><a href="/live.csv">live.csv</a><a href="/health">health</a></nav>
+<div class="topbar">
+  <button class="menu-btn" type="button" onclick="document.body.classList.toggle('nav-open')" aria-label="Toggle menu">&#9776;</button>
+  <span class="brand">ISS Fixture Pipeline</span>
+</div>
+<div class="shell">
+  <div class="overlay" onclick="document.body.classList.remove('nav-open')"></div>
+  <nav class="sidebar">
+    <div class="brand-full">ISS Fixture Pipeline</div>
+    <div class="nav-group">
+      <div class="nav-label">Pipeline</div>
+      ${navLink('/', 'Dashboard', activePath)}
+      ${navLink('/browse', 'Browse all', activePath)}
+      ${navLink('/live', 'Live now', activePath)}
+    </div>
+    <div class="nav-group">
+      <div class="nav-label">Admin</div>
+      ${navLink('/leagues', 'Leagues', activePath)}
+      ${navLink('/translations', 'Translations', activePath)}
+      ${navLink('/youtube-channels', 'YouTube channels', activePath)}
+      ${navLink('/users', 'Users', activePath)}
+      ${navLink('/settings', 'Settings', activePath)}
+    </div>
+    <div class="nav-group">
+      <div class="nav-label">Exports</div>
+      ${navLink('/fixtures.json', 'fixtures.json', activePath)}
+      ${navLink('/fixtures.csv', 'fixtures.csv', activePath)}
+      ${navLink('/live.json', 'live.json', activePath)}
+      ${navLink('/live.csv', 'live.csv', activePath)}
+      ${navLink('/health', 'health', activePath)}
+    </div>
+  </nav>
+  <main>
 ${body}
-</main>
+  </main>
+</div>
 </body>
 </html>`;
 }
@@ -268,7 +332,8 @@ function renderDashboard(state, config) {
           : '<p class="muted">No fixtures yet — click "Run pipeline now" above.</p>'
       }
     </div>
-  `
+  `,
+    '/'
   );
 }
 
@@ -336,7 +401,7 @@ function renderBrowse(state, getSourceStatus, tz = 'beijing') {
     <p class="muted">Times shown: <a href="/browse?tz=beijing" ${tz === 'beijing' ? 'style="color:#e2e8f0;font-weight:600"' : ''}>Beijing (UTC+8)</a> · <a href="/browse?tz=jerusalem" ${tz === 'jerusalem' ? 'style="color:#e2e8f0;font-weight:600"' : ''}>Jerusalem</a> — exports (fixtures.csv/fixtures.json) are always Beijing time regardless of this toggle. Chinese columns are blank until "Translate names" has run — see the <a href="/">dashboard</a>.</p>
     <input type="text" id="search-box" placeholder="Filter by team, league, channel..." oninput="filterRows()">
     <p id="row-count"></p>
-    <div class="card" style="overflow-x:auto">
+    <div class="card">
       <table id="fixtures-table">
         <thead><tr><th>Date</th><th>Time</th><th>Match</th><th>Match (中文)</th><th>League</th><th>League (中文)</th><th>Type</th><th>Src</th><th>Channels</th></tr></thead>
         <tbody>${tableRows}</tbody>
@@ -356,7 +421,8 @@ function renderBrowse(state, getSourceStatus, tz = 'beijing') {
       }
       filterRows();
     </script>
-  `
+  `,
+    '/browse'
   );
 }
 
@@ -405,14 +471,15 @@ function renderLive(state) {
     <h1>Live now</h1>
     <p class="muted">Currently-live games from the configured live-streaming source, refreshed on demand from the <a href="/">dashboard</a>. This is "what's live right now," separate from the scheduled fixtures on <a href="/browse">Browse all</a>. A game stays visible marked "Ended" for a few hours after it drops off the source's live list, then disappears — also exported at <a href="/live.csv">live.csv</a> / <a href="/live.json">live.json</a>, same column format as fixtures.csv.</p>
     <p class="muted">Only YouTube links from an <a href="/youtube-channels">approved channel</a> are shown as embeddable. Everything else is either pending review or a non-YouTube source that's intentionally never resolved to a URL.</p>
-    <div class="card" style="overflow-x:auto">
+    <div class="card">
       ${
         rows.length
           ? `<table><tr><th>Date</th><th>Time</th><th>Match</th><th>League</th><th>Type</th><th>Status</th><th>Sources</th></tr>${tableRows}</table>`
           : '<p class="muted">No live games fetched yet — click "Fetch live streams now" on the dashboard.</p>'
       }
     </div>
-  `
+  `,
+    '/live'
   );
 }
 
@@ -441,7 +508,7 @@ function renderUsers(getAllUsers, flash) {
     ${flash === 'saved' ? '<p class="status-ok">Saved.</p>' : ''}
     ${flash === 'deleted' ? '<p class="status-ok">Deleted.</p>' : ''}
     ${flash && flash.startsWith('error:') ? `<p class="status-err">${escapeHtml(flash.slice(6))}</p>` : ''}
-    <div class="card" style="overflow-x:auto">
+    <div class="card">
       ${
         users.length
           ? `<table><tr><th>Username</th><th>Role</th><th>Updated</th><th></th></tr>${rows}</table>`
@@ -464,7 +531,8 @@ function renderUsers(getAllUsers, flash) {
         <button type="submit">Save account</button>
       </form>
     </div>
-  `
+  `,
+    '/users'
   );
 }
 
@@ -495,14 +563,15 @@ function renderYouTubeChannels(getAllYouTubeChannels) {
     `
     <h1>YouTube channels</h1>
     <p class="muted">Every YouTube channel the live-streaming source has surfaced a video from. Approving a channel here means every past and future video from it counts as usable — check the channel is genuinely the rightsholder's own official account before approving, not just that the current example video looks fine. Verified live via <a href="https://www.youtube.com/oembed" target="_blank" rel="noopener">YouTube's own oEmbed endpoint</a> — this confirms who uploaded a video, never whether they're authorized to broadcast the content.</p>
-    <div class="card" style="overflow-x:auto">
+    <div class="card">
       ${
         entries.length
           ? `<table><tr><th>Channel</th><th>Status</th><th>Example video seen</th><th>Action</th></tr>${rows}</table>`
           : '<p class="muted">No channels seen yet — fetch live streams from the dashboard first.</p>'
       }
     </div>
-  `
+  `,
+    '/youtube-channels'
   );
 }
 
@@ -540,14 +609,15 @@ function renderLeagues(state, getLeagueOverrides) {
     `
     <h1>League grouping</h1>
     <p class="muted">Different sources word the same league differently (e.g. SportsDB's "English Premier League" vs wheresthematch's "Premier League"). Set the canonical name each raw name should resolve to — it applies immediately to the current dataset and persists for future runs.</p>
-    <div class="card" style="overflow-x:auto">
+    <div class="card">
       ${
         rows.length
           ? `<table><tr><th>Raw league name</th><th>Currently resolves to</th><th>Set canonical name</th></tr>${rows}</table>`
           : '<p class="muted">No fixtures yet — run the pipeline first.</p>'
       }
     </div>
-  `
+  `,
+    '/leagues'
   );
 }
 
@@ -586,14 +656,15 @@ function renderTranslations(state, getAllTranslations) {
     `
     <h1>Translations</h1>
     <p class="muted">League and team names, Simplified Chinese. Saving here sets a manual override that always wins over auto-translation and is never overwritten by "Re-translate" on the <a href="/">dashboard</a>.</p>
-    <div class="card" style="overflow-x:auto">
+    <div class="card">
       ${
         rows.length
           ? `<table><tr><th>Original</th><th>Source</th><th>Simplified Chinese</th></tr>${rows}</table>`
           : '<p class="muted">No fixtures yet — run the pipeline first.</p>'
       }
     </div>
-  `
+  `,
+    '/translations'
   );
 }
 
@@ -629,7 +700,8 @@ function renderSettings(config, saved) {
     <p class="muted">Note: settings saved here live on this container's disk and apply immediately, but a Railway
     redeploy resets them back to the service's environment variables. Set the env vars too if you want a change
     to survive a redeploy.</p>
-  `
+  `,
+    '/settings'
   );
 }
 
