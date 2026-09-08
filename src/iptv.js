@@ -35,10 +35,16 @@ function parseM3U(content) {
 /**
  * Fetch (and cache) the public iptv-org playlist.
  * Mirrors ISS_IPTV_Scraper::get_playlist()
+ *
+ * `force: true` bypasses the TTL and always re-fetches — used once at the
+ * start of each pipeline run so "up to date" tracks the pipeline's own
+ * "Last run" timestamp rather than an independent, easily-stale clock.
+ * Every per-event matchChannels() call during that same run then reuses
+ * this run's cached copy instead of re-fetching per event.
  */
-async function getPlaylist(playlistUrl) {
+async function getPlaylist(playlistUrl, { force = false } = {}) {
   const now = Date.now();
-  if (_cache.playlist && now - _cache.fetchedAt < CACHE_TTL_MS) {
+  if (!force && _cache.playlist && now - _cache.fetchedAt < CACHE_TTL_MS) {
     return _cache.playlist;
   }
 
@@ -47,6 +53,15 @@ async function getPlaylist(playlistUrl) {
   _cache = { playlist: parsed, fetchedAt: now };
   console.log(`[iptv] refreshed playlist: ${parsed.length} channels`);
   return parsed;
+}
+
+/**
+ * { channelCount, fetchedAt } for display (e.g. the dashboard), or null if
+ * the playlist has never been fetched yet.
+ */
+function getPlaylistStatus() {
+  if (!_cache.playlist) return null;
+  return { channelCount: _cache.playlist.length, fetchedAt: new Date(_cache.fetchedAt).toISOString() };
 }
 
 // Below this length a substring match is too likely to be a coincidental
@@ -133,4 +148,4 @@ async function matchChannels(channelNames, playlistUrl, limit = 10) {
   return found;
 }
 
-module.exports = { parseM3U, getPlaylist, findChannelSources, matchChannels };
+module.exports = { parseM3U, getPlaylist, getPlaylistStatus, findChannelSources, matchChannels };

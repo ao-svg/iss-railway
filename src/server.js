@@ -168,7 +168,7 @@ function channelNames(row) {
   return (row.channels || []).map((c) => c.name).join(', ') || '—';
 }
 
-function renderDashboard(state, config) {
+function renderDashboard(state, config, getPlaylistStatus) {
   const failures = state.lastRunFailures || [];
   let statusLine;
   if (state.running) {
@@ -266,6 +266,11 @@ function renderDashboard(state, config) {
     liveStatusLine = '<span class="muted">Never fetched</span>';
   }
 
+  const playlistStatus = getPlaylistStatus ? getPlaylistStatus() : null;
+  const playlistLine = playlistStatus
+    ? `${playlistStatus.channelCount.toLocaleString()} channels (refreshed ${escapeHtml(playlistStatus.fetchedAt)}, with the last pipeline run)`
+    : 'Not fetched yet — runs automatically with the pipeline';
+
   return layout(
     'iss-railway dashboard',
     `
@@ -280,6 +285,7 @@ function renderDashboard(state, config) {
         <tr><th>Schedule</th><td><code>${escapeHtml(config.cronExpr)}</code></td></tr>
         <tr><th>Leagues configured</th><td>${config.leagueIds.length}</td></tr>
         <tr><th>wheresthematch.com lookahead</th><td>${config.wtmDays} days</td></tr>
+        <tr><th>iptv-org channel list</th><td>${playlistLine}</td></tr>
       </table>
       <form method="POST" action="/api/run">
         <button type="submit" ${state.running ? 'disabled' : ''}>Run pipeline now</button>
@@ -719,6 +725,7 @@ function createServer({
   runLiveTvFetch,
   getAllYouTubeChannels,
   setChannelStatus,
+  getPlaylistStatus,
 }) {
   const app = express();
   app.use(express.urlencoded({ extended: false }));
@@ -726,7 +733,7 @@ function createServer({
   app.get('/health', (req, res) => res.json({ ok: true }));
 
   app.get('/', requireAuth('admin'), (req, res) => {
-    res.send(renderDashboard(getState(), getConfig()));
+    res.send(renderDashboard(getState(), getConfig(), getPlaylistStatus));
   });
 
   app.get('/browse', requireAuth('viewer'), (req, res) => {

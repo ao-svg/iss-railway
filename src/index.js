@@ -9,6 +9,7 @@ const leagues = require('./leagues');
 const liveTv = require('./liveTv');
 const liveTvStore = require('./liveTvStore');
 const youtubeChannels = require('./youtubeChannels');
+const iptv = require('./iptv');
 const { writeCsv } = require('./csv');
 
 const port = process.env.PORT || 3000;
@@ -249,6 +250,7 @@ if (runOnlyFlag) {
     runLiveTvFetch,
     getAllYouTubeChannels: youtubeChannels.getAllChannels,
     setChannelStatus: setChannelStatusAndRefresh,
+    getPlaylistStatus: iptv.getPlaylistStatus,
   });
   app.listen(port, () => {
     console.log(`[index] server listening on :${port}`);

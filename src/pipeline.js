@@ -26,6 +26,12 @@ const { writeCsv } = require('./csv');
 async function runPipeline({ apiKey, leagueIds, playlistUrl, outputCsvPath, wtmDays }) {
   console.log(`[pipeline] starting run for ${leagueIds.length} leagues`);
 
+  // Force-refresh the iptv-org channel list once per run, bypassing its own
+  // TTL, so "up to date" tracks this run's timestamp rather than an
+  // independent clock that could lag behind by up to a full day. Every
+  // matchChannels() call below reuses this run's cached copy.
+  await iptv.getPlaylist(playlistUrl, { force: true });
+
   const { events: rawEvents, failures } = await sportsdb.fetchAllFixtures(apiKey, leagueIds);
   const rows = [];
 
