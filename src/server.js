@@ -72,6 +72,9 @@ function layout(title, body, activePath = '') {
   main { flex: 1; min-width: 0; max-width: 1100px; margin: 0 auto; padding: 2rem; }
   .card { background: var(--surface); border-radius: var(--radius); padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; box-shadow: var(--shadow); overflow-x: auto; }
   .card > strong { font-size: 1rem; }
+  .section-heading { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 1.75rem 0 0.6rem; }
+  .alert-banner { background: #7f1d1d; color: #fecaca; border: 1px solid #f87171; border-radius: var(--radius); padding: 1rem 1.25rem; margin-bottom: 1.25rem; font-weight: 600; }
+  .alert-banner a { color: #fecaca; }
   .status-ok { color: #4ade80; }
   .status-warn { color: #facc15; }
   .status-err { color: #f87171; }
@@ -143,7 +146,6 @@ function layout(title, body, activePath = '') {
       <div class="nav-label">Admin</div>
       ${navLink('/leagues', 'Leagues', activePath)}
       ${navLink('/translations', 'Translations', activePath)}
-      ${navLink('/youtube-channels', 'YouTube channels', activePath)}
       ${navLink('/users', 'Users', activePath)}
       ${navLink('/settings', 'Settings', activePath)}
     </div>
@@ -277,6 +279,12 @@ function renderDashboard(state, config, getPlaylistStatus) {
     <h1>ISS Fixture Pipeline</h1>
     <p class="muted">${statusLine}</p>
 
+    ${
+      state.liveSourceDown && config.liveTvDomain
+        ? `<div class="alert-banner">⚠ Live-streaming source is not responding — the last "Fetch live streams" attempt failed for every sport. Check the configured domain on <a href="/settings">Settings</a> or verify the site is reachable.</div>`
+        : ''
+    }
+
     <div class="card">
       <table>
         <tr><th>Last run</th><td>${state.lastRunAt ? escapeHtml(state.lastRunAt) : '—'}</td></tr>
@@ -301,6 +309,17 @@ function renderDashboard(state, config, getPlaylistStatus) {
         : ''
     }
 
+    <h2 class="section-heading">Live streaming</h2>
+    <div class="card">
+      <strong>Live streaming (LTV)</strong> <span class="muted">— currently-live games, separate from the scheduled fixtures above</span>
+      <p>${liveStatusLine}</p>
+      <form method="POST" action="/api/fetch-live">
+        <button type="submit" ${state.liveRunning || !config.liveTvDomain ? 'disabled' : ''}>Fetch live streams now</button>
+      </form>
+      <p class="muted">YouTube links only count as usable once their uploading channel is approved on <a href="/youtube-channels">YouTube channels</a> — oEmbed confirms who uploaded a video, not whether they're authorized to broadcast it, so that call is made by a human, once per channel. Non-YouTube sources are counted but never resolved to an actual URL. See <a href="/live">Live now</a>.</p>
+    </div>
+
+    <h2 class="section-heading">Maintenance</h2>
     <div class="card">
       <strong>Source (iframe) checks</strong> <span class="muted">— ${uniqueSourceCount} unique stream URLs across all fixtures</span>
       <p>${checkStatusLine}</p>
@@ -316,18 +335,8 @@ function renderDashboard(state, config, getPlaylistStatus) {
       <p>${translateStatusLine}</p>
       <form method="POST" action="/api/translate-names">
         <button type="submit" ${state.translateRunning ? 'disabled' : ''}>Translate names now</button>
-        <button type="submit" name="force" value="1" class="secondary" ${state.translateRunning ? 'disabled' : ''}>Re-translate (ignore cache, keeps manual overrides)</button>
       </form>
-      <p class="muted">Auto-translated via the free Google Translate endpoint and cached. Manual corrections on the <a href="/translations">Translations</a> page always win and are never overwritten by re-translation.</p>
-    </div>
-
-    <div class="card">
-      <strong>Live streaming (LTV)</strong> <span class="muted">— currently-live games, separate from the scheduled fixtures above</span>
-      <p>${liveStatusLine}</p>
-      <form method="POST" action="/api/fetch-live">
-        <button type="submit" ${state.liveRunning || !config.liveTvDomain ? 'disabled' : ''}>Fetch live streams now</button>
-      </form>
-      <p class="muted">YouTube links only count as usable once their uploading channel is approved on <a href="/youtube-channels">YouTube channels</a> — oEmbed confirms who uploaded a video, not whether they're authorized to broadcast it, so that call is made by a human, once per channel. Non-YouTube sources are counted but never resolved to an actual URL. See <a href="/live">Live now</a>.</p>
+      <p class="muted">Runs automatically after every pipeline run for any newly-seen names. Manual corrections on the <a href="/translations">Translations</a> page always win and are never overwritten by auto-translation.</p>
     </div>
 
     <div class="card">
@@ -627,48 +636,53 @@ function renderLeagues(state, getLeagueOverrides) {
   );
 }
 
+function translationRow(text, cache) {
+  const entry = cache[text];
+  const badge = entry
+    ? `<span class="badge ${entry.source === 'manual' ? 'badge-manual' : 'badge-auto'}">${entry.source}</span>`
+    : '<span class="badge badge-none">untranslated</span>';
+  return `<tr>
+    <td>${escapeHtml(text)}</td>
+    <td>${badge}</td>
+    <td>
+      <form class="inline-form" method="POST" action="/api/translation">
+        <input type="hidden" name="text" value="${escapeHtml(text)}">
+        <input type="text" name="zh" value="${escapeHtml(entry ? entry.zh : '')}" placeholder="Simplified Chinese">
+        <button type="submit">Save</button>
+      </form>
+    </td>
+  </tr>`;
+}
+
+function translationCard(title, names, cache) {
+  const rows = [...names].sort().map((text) => translationRow(text, cache)).join('');
+  return `<div class="card">
+    <strong>${escapeHtml(title)}</strong>
+    ${
+      names.size
+        ? `<table><tr><th>Original</th><th>Source</th><th>Simplified Chinese</th></tr>${rows}</table>`
+        : '<p class="muted">No fixtures yet — run the pipeline first.</p>'
+    }
+  </div>`;
+}
+
 function renderTranslations(state, getAllTranslations) {
   const cache = getAllTranslations ? getAllTranslations() : {};
-  const names = new Set();
+  const leagueNames = new Set();
+  const teamNames = new Set();
   for (const r of state.lastRows || []) {
-    if (r.league) names.add(r.league);
-    if (r.homeTeam) names.add(r.homeTeam);
-    if (r.awayTeam) names.add(r.awayTeam);
+    if (r.league) leagueNames.add(r.league);
+    if (r.homeTeam) teamNames.add(r.homeTeam);
+    if (r.awayTeam) teamNames.add(r.awayTeam);
   }
-
-  const rows = [...names]
-    .sort()
-    .map((text) => {
-      const entry = cache[text];
-      const badge = entry
-        ? `<span class="badge ${entry.source === 'manual' ? 'badge-manual' : 'badge-auto'}">${entry.source}</span>`
-        : '<span class="badge badge-none">untranslated</span>';
-      return `<tr>
-        <td>${escapeHtml(text)}</td>
-        <td>${badge}</td>
-        <td>
-          <form class="inline-form" method="POST" action="/api/translation">
-            <input type="hidden" name="text" value="${escapeHtml(text)}">
-            <input type="text" name="zh" value="${escapeHtml(entry ? entry.zh : '')}" placeholder="Simplified Chinese">
-            <button type="submit">Save</button>
-          </form>
-        </td>
-      </tr>`;
-    })
-    .join('');
 
   return layout(
     'iss-railway translations',
     `
     <h1>Translations</h1>
-    <p class="muted">League and team names, Simplified Chinese. Saving here sets a manual override that always wins over auto-translation and is never overwritten by "Re-translate" on the <a href="/">dashboard</a>.</p>
-    <div class="card">
-      ${
-        rows.length
-          ? `<table><tr><th>Original</th><th>Source</th><th>Simplified Chinese</th></tr>${rows}</table>`
-          : '<p class="muted">No fixtures yet — run the pipeline first.</p>'
-      }
-    </div>
+    <p class="muted">League and team names, Simplified Chinese. New names are translated automatically after every pipeline run; saving here sets a manual override that always wins and is never overwritten by auto-translation.</p>
+    ${translationCard('Leagues', leagueNames, cache)}
+    ${translationCard('Teams', teamNames, cache)}
   `,
     '/translations'
   );
@@ -749,7 +763,7 @@ function createServer({
   });
 
   app.post('/api/translate-names', requireAuth('admin'), (req, res) => {
-    runTranslate(req.body.force === '1').catch((err) => console.error('[translate]', err.message));
+    runTranslate().catch((err) => console.error('[translate]', err.message));
     res.redirect('/');
   });
 

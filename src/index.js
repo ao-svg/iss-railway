@@ -35,6 +35,7 @@ const state = {
   lastLiveFailures: [],
   liveRows: null, // separate from lastRows: "live right now", not schedule data
   liveRowsNormalized: null, // backs /live.csv and /live.json, mirrors lastRows -> fixtures.csv/json
+  liveSourceDown: false, // true when the last "Fetch live streams" attempt failed for every sport
 };
 
 let cronTask = null;
@@ -50,6 +51,14 @@ async function runOnce() {
     state.lastRunFailures = failures;
     state.lastRows = rows;
     state.lastError = null;
+    // Auto-translate any newly-seen names right after a run, without
+    // blocking on it — same "never block the pipeline" reasoning as
+    // source checks/live fetch already running as their own jobs. Skipped
+    // in --once mode so a fire-and-forget job never gets killed mid-flight
+    // by the process.exit() that follows a --once run.
+    if (!runOnlyFlag) {
+      runTranslate().catch((err) => console.error('[translate]', err.message));
+    }
   } catch (err) {
     console.error('[pipeline] run failed:', err.message);
     state.lastError = err.message;
@@ -191,6 +200,11 @@ async function runLiveTvFetch() {
     state.liveRows = liveTvStore.applyFetch(rows, successfulSports);
     state.lastLiveFailures = failures;
     state.lastLiveAt = new Date().toISOString();
+    // Every single sport failing to fetch is a strong signal the source
+    // site itself is unreachable, as opposed to a normal partial failure.
+    // Resets to false automatically the next time at least one sport
+    // succeeds — no separate "clear" action needed.
+    state.liveSourceDown = Boolean(liveTvDomain) && successfulSports.size === 0;
     refreshLiveCsv();
   } catch (err) {
     console.error('[liveTv] run failed:', err.message);
