@@ -316,7 +316,7 @@ function renderDashboard(state, config, getPlaylistStatus) {
       <form method="POST" action="/api/fetch-live">
         <button type="submit" ${state.liveRunning || !config.liveTvDomain ? 'disabled' : ''}>Fetch live streams now</button>
       </form>
-      <p class="muted">YouTube links only count as usable once their uploading channel is approved on <a href="/youtube-channels">YouTube channels</a> — oEmbed confirms who uploaded a video, not whether they're authorized to broadcast it, so that call is made by a human, once per channel. Non-YouTube sources are counted but never resolved to an actual URL. See <a href="/live">Live now</a>.</p>
+      <p class="muted">Every YouTube link found is shown as embeddable. Non-YouTube sources are counted but never resolved to an actual URL. See <a href="/live">Live now</a>.</p>
     </div>
 
     <h2 class="section-heading">Maintenance</h2>
@@ -459,13 +459,8 @@ function renderLive(state) {
           if (ch.type === 'other') {
             return `<li><span class="badge badge-none">other source (not shown)</span></li>`;
           }
-          const badge = ch.approved
-            ? '<span class="badge badge-approved">approved</span>'
-            : '<span class="badge badge-pending">pending review</span>';
-          const link = ch.approved
-            ? `<a href="${escapeHtml(ch.url)}" target="_blank" rel="noopener">${escapeHtml(ch.channelName)}</a>`
-            : `${escapeHtml(ch.channelName)} <span class="no-url">(not embeddable until approved)</span>`;
-          return `<li>${link} ${badge}<br><span class="muted">${escapeHtml(ch.title || '')}</span></li>`;
+          const link = `<a href="${escapeHtml(ch.url)}" target="_blank" rel="noopener">${escapeHtml(ch.channelName)}</a>`;
+          return `<li>${link}<br><span class="muted">${escapeHtml(ch.title || '')}</span></li>`;
         })
         .join('');
       return `<tr>
@@ -485,7 +480,7 @@ function renderLive(state) {
     `
     <h1>Live now</h1>
     <p class="muted">Currently-live games from the configured live-streaming source, refreshed on demand from the <a href="/">dashboard</a>. This is "what's live right now," separate from the scheduled fixtures on <a href="/browse">Browse all</a>. A game stays visible marked "Ended" for a few hours after it drops off the source's live list, then disappears — also exported at <a href="/live.csv">live.csv</a> / <a href="/live.json">live.json</a>, same column format as fixtures.csv.</p>
-    <p class="muted">Only YouTube links from an <a href="/youtube-channels">approved channel</a> are shown as embeddable. Everything else is either pending review or a non-YouTube source that's intentionally never resolved to a URL.</p>
+    <p class="muted">Every YouTube link found is shown as embeddable. Non-YouTube sources are counted but intentionally never resolved to a URL.</p>
     <div class="card">
       ${
         rows.length

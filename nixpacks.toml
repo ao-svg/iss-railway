@@ -1,0 +1,12 @@
+# Puppeteer (src/liveTv.js) needs a real Chromium binary at runtime. Rather
+# than trying to enumerate the exact shared libraries Puppeteer's own
+# downloaded Chromium needs (fragile, version-dependent), use Nix's own
+# hermetic `chromium` package instead — it bundles all its own runtime deps
+# correctly. PUPPETEER_SKIP_DOWNLOAD only affects this Railway build, never
+# local `npm install`, which keeps downloading Puppeteer's own Chromium for
+# local dev as normal.
+[phases.setup]
+nixPkgs = ["chromium"]
+
+[variables]
+PUPPETEER_SKIP_DOWNLOAD = "true"

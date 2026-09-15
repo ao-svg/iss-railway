@@ -23,7 +23,7 @@ function baseRow(overrides = {}) {
   };
 }
 
-test('approved YouTube channel shape', () => {
+test('YouTube channel shape is always fully embeddable', () => {
   const row = baseRow({
     channels: [{ type: 'youtube', approved: true, channelName: 'Sky Sports', url: 'https://www.youtube.com/watch?v=abc' }],
   });
@@ -31,13 +31,12 @@ test('approved YouTube channel shape', () => {
   assert.deepEqual(out.channels[0], { name: 'Sky Sports', sources: ['https://www.youtube.com/watch?v=abc'] });
 });
 
-test('pending YouTube channel shape has no source url', () => {
+test('YouTube channel shape ignores approval status — no gate anymore', () => {
   const row = baseRow({
     channels: [{ type: 'youtube', approved: false, channelName: 'Random Channel', url: 'https://www.youtube.com/watch?v=xyz' }],
   });
   const out = normalizeLiveRow(row, fakeDeps);
-  assert.deepEqual(out.channels[0], { name: 'Random Channel (pending review)', sources: [] });
-  assert.ok(!('url' in out.channels[0]));
+  assert.deepEqual(out.channels[0], { name: 'Random Channel', sources: ['https://www.youtube.com/watch?v=xyz'] });
   assert.ok(!('channelUrl' in out.channels[0]));
 });
 

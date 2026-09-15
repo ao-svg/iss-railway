@@ -19,6 +19,7 @@
 //     exists, but no URL for it is ever produced or stored.
 
 const axios = require('axios');
+const puppeteer = require('puppeteer');
 const youtubeChannels = require('./youtubeChannels');
 const { splitTeams } = require('./teamSplit');
 const leagues = require('./leagues');
@@ -28,8 +29,8 @@ const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36',
   Accept: 'text/html,application/xhtml+xml,*/*;q=0.8',
 };
-const REQUEST_TIMEOUT_MS = 10000;
-const MAX_RUNTIME_MS = 4.5 * 60 * 1000;
+const REQUEST_TIMEOUT_MS = 15000; // was 10s — real headroom for browser launch + the one-time fingerprint redirect below
+const MAX_RUNTIME_MS = 8 * 60 * 1000; // was 4.5min — browser-based fetches are inherently slower than plain HTTP
 const SITE_GMT_OFFSET = 1; // hours; the source site displays times in this zone
 
 const SPORTS = [
@@ -76,10 +77,31 @@ function decodeEntities(text) {
     .replace(/&#\d+;/g, '');
 }
 
-async function fetchHtml(url) {
+// The source site gates every fresh session behind a client-side JS
+// anti-bot challenge before serving real content — confirmed to come in at
+// least two different vendor-specific variants (one using FingerprintJS,
+// one using a "cheq"/clicktrue ad-verification script), so detecting on
+// either vendor's script name by itself isn't reliable. Both variants
+// share the actual mechanism that matters: some client-side check resolves
+// (or a setTimeout fallback fires regardless, so it always eventually
+// resolves) and then the page does `window.location.replace(...)` to the
+// real page. Detecting on that literal call, rather than any one vendor's
+// script, is what makes this robust across variants (and hopefully future
+// ones). A plain HTTP client never runs this JS and only ever sees the
+// ~1-3KB challenge page — 200 OK, but no real content — which is why this
+// uses a headless browser instead of axios for this one domain. Pages in
+// the same Puppeteer browser share cookies, so the gate is normally only
+// actually hit once per fetchLiveStreams() run — every request after the
+// first should sail through directly.
+async function fetchHtmlViaBrowser(page, url) {
   try {
-    const res = await axios.get(url, { headers: HEADERS, timeout: REQUEST_TIMEOUT_MS });
-    return res.status === 200 ? res.data : null;
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: REQUEST_TIMEOUT_MS });
+    let html = await page.content();
+    if (html.includes('window.location.replace(')) {
+      await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: REQUEST_TIMEOUT_MS }).catch(() => {});
+      html = await page.content();
+    }
+    return html;
   } catch {
     return null;
   }
@@ -113,8 +135,8 @@ function convertDateTime(dateStr, timeStr) {
   }
 }
 
-async function fetchGameList(domain, sportId, sportName) {
-  const html = await fetchHtml(`${domain}/enx/allupcomingsports/${sportId}/`);
+async function fetchGameList(page, domain, sportId, sportName) {
+  const html = await fetchHtmlViaBrowser(page, `${domain}/enx/allupcomingsports/${sportId}/`);
   if (!html) return null;
 
   const games = [];
@@ -164,8 +186,8 @@ async function fetchGameList(domain, sportId, sportName) {
  * { youtubeIds: string[], otherCount: number } — 'other' links are counted,
  * never resolved to an actual URL (see module comment).
  */
-async function fetchStreamRefs(eventUrl) {
-  const html = await fetchHtml(eventUrl);
+async function fetchStreamRefs(page, eventUrl) {
+  const html = await fetchHtmlViaBrowser(page, eventUrl);
   if (!html || html.indexOf('LiveStreams are currently not available') !== -1) {
     return { youtubeIds: [], otherCount: 0 };
   }
@@ -242,74 +264,103 @@ async function fetchLiveStreams(domain, { onProgress } = {}) {
   // anymore" apart from "we just didn't get a look this round".
   const successfulSports = new Set();
 
-  for (let s = 0; s < SPORTS.length; s++) {
-    if (Date.now() - startTime > MAX_RUNTIME_MS) {
-      failures.push({ sport: null, message: 'stopped early: time budget exceeded' });
-      break;
-    }
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      headless: true,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    });
+  } catch (err) {
+    return {
+      rows: [],
+      failures: [{ sport: null, message: `browser launch failed: ${err.message}` }],
+      successfulSports: new Set(),
+    };
+  }
 
-    const sport = SPORTS[s];
-    let games;
-    let alreadyRecordedFailure = false;
-    try {
-      games = await fetchGameList(domain, sport.id, sport.name);
-    } catch (err) {
-      games = null;
-      failures.push({ sport: sport.name, message: err.message });
-      alreadyRecordedFailure = true;
-    }
-    if (games !== null) {
-      successfulSports.add(sport.name);
-    } else if (!alreadyRecordedFailure) {
-      // fetchGameList can also return null "softly" (fetchHtml swallowed a
-      // non-200/network error) without throwing — make sure that shows up
-      // as a failure too, not just the thrown-exception case above.
-      failures.push({ sport: sport.name, message: 'fetch failed' });
-    }
-    if (onProgress) onProgress(s + 1, SPORTS.length);
-    if (!games || !games.length) continue;
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent(HEADERS['User-Agent']);
+    // The fingerprint script and page HTML are all that matter here — block
+    // everything else so navigations stay fast despite the browser overhead.
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) req.abort();
+      else req.continue();
+    });
 
-    for (const game of games) {
-      if (seenEventUrls.has(game.eventUrl)) continue;
-      seenEventUrls.add(game.eventUrl);
-
-      let refs;
-      try {
-        refs = await fetchStreamRefs(game.eventUrl);
-      } catch (err) {
-        failures.push({ sport: sport.name, message: `${game.matchName}: ${err.message}` });
-        continue;
+    for (let s = 0; s < SPORTS.length; s++) {
+      if (Date.now() - startTime > MAX_RUNTIME_MS) {
+        failures.push({ sport: null, message: 'stopped early: time budget exceeded' });
+        break;
       }
-      if (!refs.youtubeIds.length && !refs.otherCount) continue;
 
-      const channels = [];
-      for (const videoId of refs.youtubeIds) {
-        const info = await lookupYouTubeVideo(videoId);
-        if (!info) continue;
-        youtubeChannels.recordChannelSeen(info.channelUrl, info.channelName, info.title);
-        channels.push({
-          type: 'youtube',
-          videoId,
-          url: `https://www.youtube.com/watch?v=${videoId}`,
-          channelName: info.channelName,
-          channelUrl: info.channelUrl,
-          title: info.title,
-          approved: youtubeChannels.isApproved(info.channelUrl),
+      const sport = SPORTS[s];
+      let games;
+      let alreadyRecordedFailure = false;
+      try {
+        games = await fetchGameList(page, domain, sport.id, sport.name);
+      } catch (err) {
+        games = null;
+        failures.push({ sport: sport.name, message: err.message });
+        alreadyRecordedFailure = true;
+      }
+      if (games !== null) {
+        successfulSports.add(sport.name);
+      } else if (!alreadyRecordedFailure) {
+        // fetchGameList can also return null "softly" (fetchHtmlViaBrowser
+        // swallowed a nav/timeout error) without throwing — make sure that
+        // shows up as a failure too, not just the thrown-exception case above.
+        failures.push({ sport: sport.name, message: 'fetch failed' });
+      }
+      if (onProgress) onProgress(s + 1, SPORTS.length);
+      if (!games || !games.length) continue;
+
+      for (const game of games) {
+        if (seenEventUrls.has(game.eventUrl)) continue;
+        seenEventUrls.add(game.eventUrl);
+
+        let refs;
+        try {
+          refs = await fetchStreamRefs(page, game.eventUrl);
+        } catch (err) {
+          failures.push({ sport: sport.name, message: `${game.matchName}: ${err.message}` });
+          continue;
+        }
+        if (!refs.youtubeIds.length && !refs.otherCount) continue;
+
+        const channels = [];
+        for (const videoId of refs.youtubeIds) {
+          const info = await lookupYouTubeVideo(videoId);
+          if (!info) continue;
+          youtubeChannels.recordChannelSeen(info.channelUrl, info.channelName, info.title);
+          channels.push({
+            type: 'youtube',
+            videoId,
+            url: `https://www.youtube.com/watch?v=${videoId}`,
+            channelName: info.channelName,
+            channelUrl: info.channelUrl,
+            title: info.title,
+            approved: youtubeChannels.isApproved(info.channelUrl),
+          });
+        }
+        for (let i = 0; i < refs.otherCount; i++) {
+          channels.push({ type: 'other' });
+        }
+
+        rows.push({
+          eventId: `livetv-${game.eventUrl}`,
+          sportType: game.sport,
+          league: game.league,
+          matchName: game.matchName,
+          matchDateUTC: game.isoDate,
+          channels,
         });
       }
-      for (let i = 0; i < refs.otherCount; i++) {
-        channels.push({ type: 'other' });
-      }
-
-      rows.push({
-        eventId: `livetv-${game.eventUrl}`,
-        sportType: game.sport,
-        league: game.league,
-        matchName: game.matchName,
-        matchDateUTC: game.isoDate,
-        channels,
-      });
     }
+  } finally {
+    await browser.close().catch(() => {});
   }
 
   return { rows, failures, successfulSports };
@@ -317,8 +368,7 @@ async function fetchLiveStreams(domain, { onProgress } = {}) {
 
 function normalizeLiveChannel(ch) {
   if (ch.type === 'other') return { name: 'Other source (not shown)', sources: [] };
-  if (ch.approved) return { name: ch.channelName || '', sources: [ch.url] };
-  return { name: `${ch.channelName || 'Unknown channel'} (pending review)`, sources: [] };
+  return { name: ch.channelName || 'Unknown channel', sources: [ch.url] };
 }
 
 /**
