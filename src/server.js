@@ -4,6 +4,7 @@ const { getConfig, updateConfig } = require('./config');
 const { formatBeijing, formatInTimezone } = require('./csv');
 const auth = require('./auth');
 const sourceChecks = require('./sourceChecks');
+const iptv = require('./iptv');
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({
@@ -142,6 +143,7 @@ function layout(title, body, activePath = '') {
       ${navLink('/', 'Dashboard', activePath)}
       ${navLink('/browse', 'Browse all', activePath)}
       ${navLink('/live', 'Live now', activePath)}
+      ${navLink('/iptv-channels', 'iptv-org channels', activePath)}
     </div>
     <div class="nav-group">
       <div class="nav-label">Admin</div>
@@ -439,6 +441,48 @@ function renderBrowse(state, getSourceStatus, tz = 'beijing') {
     </script>
   `,
     '/browse'
+  );
+}
+
+function renderChannels(playlist, playlistUrl) {
+  const rows = playlist
+    .map(
+      (c) => `<tr>
+        <td>${escapeHtml(c.name)}</td>
+        <td><a href="${escapeHtml(c.url)}" target="_blank" rel="noopener">${escapeHtml(c.url)}</a></td>
+      </tr>`
+    )
+    .join('');
+
+  return layout(
+    'iss-railway iptv-org channels',
+    `
+    <h1>iptv-org channel list</h1>
+    <p class="muted">Every channel currently in the free public playlist at <a href="${escapeHtml(playlistUrl)}" target="_blank" rel="noopener">${escapeHtml(playlistUrl)}</a> (source: <a href="https://github.com/iptv-org/iptv" target="_blank" rel="noopener">github.com/iptv-org/iptv</a>) — fetched fresh right now, bypassing the pipeline's cache, so this is exactly what's really there this second. This is the same list "Run pipeline now" and channel matching search against — if a channel you expect isn't findable here, it genuinely isn't in the free list right now, not a matching bug.</p>
+    <input type="text" id="search-box" placeholder="Filter by channel name..." oninput="filterRows()">
+    <p id="row-count"></p>
+    <div class="card">
+      <table id="channels-table">
+        <thead><tr><th>Channel name</th><th>Stream URL</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <script>
+      function filterRows() {
+        const q = document.getElementById('search-box').value.toLowerCase();
+        const rows = document.querySelectorAll('#channels-table tbody tr');
+        let visible = 0;
+        rows.forEach((row) => {
+          const match = row.textContent.toLowerCase().includes(q);
+          row.style.display = match ? '' : 'none';
+          if (match) visible++;
+        });
+        document.getElementById('row-count').textContent = visible + ' of ' + rows.length + ' channels shown';
+      }
+      filterRows();
+    </script>
+  `,
+    '/iptv-channels'
   );
 }
 
@@ -749,6 +793,16 @@ function createServer({
   app.get('/browse', requireAuth('viewer'), (req, res) => {
     const tz = req.query.tz === 'jerusalem' ? 'jerusalem' : 'beijing';
     res.send(renderBrowse(getState(), getSourceStatus, tz));
+  });
+
+  app.get('/iptv-channels', requireAuth('admin'), async (req, res) => {
+    const { playlistUrl } = getConfig();
+    try {
+      const playlist = await iptv.getPlaylist(playlistUrl, { force: true });
+      res.send(renderChannels(playlist, playlistUrl));
+    } catch (err) {
+      res.status(502).send(`Failed to fetch the live playlist: ${escapeHtml(err.message)}`);
+    }
   });
 
   app.post('/api/check-sources', requireAuth('admin'), (req, res) => {

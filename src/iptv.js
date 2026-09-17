@@ -19,8 +19,14 @@ function parseM3U(content) {
   for (let rawLine of lines) {
     const line = rawLine.trim();
     if (line.startsWith('#EXTINF')) {
-      const m = line.match(/,(.*)$/);
-      if (m) current = { name: m[1].trim() };
+      // The LAST comma on the line separates the attribute block from the
+      // title, per the M3U spec — NOT the first. An attribute value (e.g.
+      // an embedded http-user-agent string like "...AppleWebKit/537.36
+      // (KHTML, like Gecko) Chrome/...") can itself contain a comma, which
+      // used to get mistaken for that separator and corrupt the parsed
+      // name into a User-Agent fragment instead of the real channel name.
+      const idx = line.lastIndexOf(',');
+      if (idx !== -1) current = { name: line.slice(idx + 1).trim() };
     } else if (line && !line.startsWith('#')) {
       if (current) {
         current.url = line;
