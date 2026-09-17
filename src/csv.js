@@ -25,6 +25,10 @@ const HEADER = [
   'AwayTeam',
   'MatchDateUTC',
   'Status', // 'live' | 'ended' for livetv rows; blank for scheduled fixtures
+  // Appended at the end (not interleaved with Source1..10) so no existing
+  // column shifts position for anyone parsing by index. Populated by
+  // sourceChecks.enrichRowsWithSourceStatus() — blank if never checked.
+  ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Status`),
 ];
 
 function escapeCsvField(value) {
@@ -116,6 +120,8 @@ function rowsToCsv(rows) {
     for (const ch of channels) {
       const sources = (ch.sources || []).slice(0, MAX_SOURCES);
       const sourceCols = Array.from({ length: MAX_SOURCES }, (_, i) => sources[i] || '');
+      const statuses = (ch.sourceStatuses || []).slice(0, MAX_SOURCES);
+      const statusCols = Array.from({ length: MAX_SOURCES }, (_, i) => statuses[i] || '');
       lines.push(
         [
           date,
@@ -134,6 +140,7 @@ function rowsToCsv(rows) {
           r.awayTeam,
           r.matchDateUTC,
           r.status || '',
+          ...statusCols,
         ]
           .map(escapeCsvField)
           .join(',')

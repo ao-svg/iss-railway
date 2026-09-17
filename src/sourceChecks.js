@@ -124,24 +124,48 @@ function extractFirstReference(text, baseUrl) {
 }
 
 /**
- * Reachability + CORS check only (no further manifest parsing) — used to
- * verify the actual video content a manifest points to is real, not just
- * the manifest text itself. A master playlist can be perfectly reachable
- * while every segment it references is dead.
+ * Reachability + CORS check that also returns the fetched bytes, so the
+ * caller can inspect WHAT was fetched (another playlist? real media?) not
+ * just whether it responded. Used to verify the actual video content a
+ * manifest points to is real, not just the manifest text itself — a
+ * master playlist can be perfectly reachable while every segment it
+ * references is dead.
  */
-async function checkNestedReachable(url) {
+async function probeOnce(url) {
   try {
     const res = await axios.get(url, {
       timeout: REQUEST_TIMEOUT_MS,
       maxRedirects: 5,
       validateStatus: () => true,
-      headers: { Range: 'bytes=0-2047' },
+      headers: { Range: 'bytes=0-16383' },
       responseType: 'arraybuffer',
     });
-    return res.status < 400 && hasCorsHeader(res.headers);
+    return {
+      ok: res.status < 400 && hasCorsHeader(res.headers),
+      contentType: res.headers['content-type'] || null,
+      data: res.data,
+    };
   } catch {
-    return false;
+    return { ok: false, contentType: null, data: null };
   }
+}
+
+// Best-effort — MPEG-TS segments start with sync byte 0x47; fMP4 segments
+// have an 'ftyp'/'moof'/'styp' box near the start. Neither is a perfect
+// test, so this only returns false for content that's CLEARLY not media
+// (declared as text/HTML, or looks like printable text) — null means
+// inconclusive (e.g. empty body), which callers should NOT penalize.
+function looksLikeBinaryMedia(buffer, contentType) {
+  if (!buffer || !buffer.length) return null;
+  const ct = (contentType || '').toLowerCase();
+  if (ct.startsWith('text/') || ct.includes('html')) return false;
+  const bytes = Buffer.from(buffer);
+  if (bytes[0] === 0x47) return true; // MPEG-TS sync byte
+  const head = bytes.slice(0, 64).toString('latin1');
+  if (head.includes('ftyp') || head.includes('moof') || head.includes('styp')) return true; // fMP4 box signatures
+  const sample = bytes.slice(0, 256);
+  const printable = sample.filter((b) => b >= 32 && b < 127).length;
+  return printable / sample.length < 0.85; // mostly non-printable -> treat as binary/media
 }
 
 /**
@@ -151,11 +175,14 @@ async function checkNestedReachable(url) {
  *
  * status is one of:
  *   'ok'      - HTML page, reachable, not blocked from framing
- *   'stream'  - HLS manifest AND (when one could be found) its first
- *               referenced sub-playlist/segment, both reachable + CORS-open
- *               — needs a video player on the user's site, NOT a bare iframe
+ *   'stream'  - HLS manifest, reachable + CORS-open, AND (when found) its
+ *               referenced content verified up to two hops deep: a variant
+ *               sub-playlist, then a real video segment (confirmed
+ *               reachable + CORS-open + looks like actual binary media,
+ *               not text/HTML) — needs a video player on the user's site,
+ *               NOT a bare iframe
  *   'blocked' - HTML page blocked from framing, a manifest with no CORS, or
- *               (HLS only) its first referenced segment failed reachability
+ *               (HLS only) a confirmed-bad hop somewhere in that chain
  *   'dead'    - unreachable (4xx/5xx, timeout, network error)
  */
 async function checkUrl(url) {
@@ -181,6 +208,8 @@ async function checkUrl(url) {
       let status = corsOk && !blockedByHeaders ? 'stream' : 'blocked';
       let nestedUrl = null;
       let nestedOk = null;
+      let segmentUrl = null;
+      let segmentOk = null;
 
       // Only bother verifying the referenced content for HLS (.m3u8) — the
       // extractor understands its plain-text format; DASH's XML segment
@@ -189,8 +218,35 @@ async function checkUrl(url) {
         const text = Buffer.from(res.data).toString('utf8');
         nestedUrl = extractFirstReference(text, url);
         if (nestedUrl) {
-          nestedOk = await checkNestedReachable(nestedUrl);
-          if (!nestedOk) status = 'blocked';
+          const hop1 = await probeOnce(nestedUrl);
+          nestedOk = hop1.ok;
+          if (!nestedOk) {
+            status = 'blocked';
+          } else {
+            // hop1 is usually another (variant) playlist, not real video
+            // bytes yet — if so, follow one more hop to an actual segment.
+            // A confirmed-false verdict (not null/inconclusive) is the only
+            // thing allowed to flip status to 'blocked' here.
+            const hop1IsManifest = bodyLooksLikeManifest(hop1.data);
+            if (hop1IsManifest && urlPathname(nestedUrl).endsWith('.m3u8')) {
+              const hop1Text = Buffer.from(hop1.data).toString('utf8');
+              segmentUrl = extractFirstReference(hop1Text, nestedUrl);
+              if (segmentUrl) {
+                const hop2 = await probeOnce(segmentUrl);
+                const mediaCheck = looksLikeBinaryMedia(hop2.data, hop2.contentType);
+                segmentOk = hop2.ok && mediaCheck !== false;
+                if (hop2.ok && mediaCheck === false) status = 'blocked';
+                else if (!hop2.ok) status = 'blocked';
+              }
+            } else if (hop1IsManifest === false) {
+              // hop1 wasn't a nested playlist — treat it as the segment itself.
+              segmentUrl = nestedUrl;
+              const mediaCheck = looksLikeBinaryMedia(hop1.data, hop1.contentType);
+              segmentOk = mediaCheck !== false;
+              if (mediaCheck === false) status = 'blocked';
+            }
+            // hop1IsManifest === null (inconclusive/empty body) -> leave as-is
+          }
         }
         // No reference found at all (e.g. empty/truncated playlist) — keep
         // the outer 'stream' result rather than penalizing an inconclusive read.
@@ -203,6 +259,8 @@ async function checkUrl(url) {
         isManifest: true,
         nestedUrl,
         nestedOk,
+        segmentUrl,
+        segmentOk,
         checkedAt,
       };
     }
@@ -272,4 +330,33 @@ async function checkAll(urls, { force = false, onProgress } = {}) {
   return summary;
 }
 
-module.exports = { getStatus, checkAll, checkUrl };
+/**
+ * Returns NEW row objects (never mutates `rows`) with a `sourceStatuses`
+ * array added to each channel, parallel to and the same length as
+ * `sources` — one status string ('ok'/'stream'/'blocked'/'dead') or null
+ * (never checked) per source URL. Used to label fixtures.csv/fixtures.json
+ * exports with responding/not-responding info, not just the /browse page's
+ * dots. `getSourceStatus` is injectable so this is testable with fakes.
+ */
+function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus) {
+  return rows.map((r) => ({
+    ...r,
+    channels: (r.channels || []).map((ch) => ({
+      ...ch,
+      sourceStatuses: (ch.sources || []).map((url) => getSourceStatus(url)?.status || null),
+    })),
+  }));
+}
+
+module.exports = {
+  getStatus,
+  checkAll,
+  checkUrl,
+  enrichRowsWithSourceStatus,
+  bodyLooksLikeManifest,
+  looksLikeBinaryMedia,
+  isManifestUrl,
+  isBlockedByHeaders,
+  hasCorsHeader,
+  extractFirstReference,
+};

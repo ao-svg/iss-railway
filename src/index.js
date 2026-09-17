@@ -58,6 +58,7 @@ async function runOnce() {
     // by the process.exit() that follows a --once run.
     if (!runOnlyFlag) {
       runTranslate().catch((err) => console.error('[translate]', err.message));
+      runSourceCheck().catch((err) => console.error('[sourceChecks]', err.message));
     }
   } catch (err) {
     console.error('[pipeline] run failed:', err.message);
@@ -78,6 +79,16 @@ function allSourceUrls() {
   return urls;
 }
 
+// Single shared write path for fixtures.csv so it always carries current
+// source-check statuses (Source1Status..Source10Status) no matter what
+// triggered the rewrite — a source check, a translation, or a league
+// alias change all go through this instead of a raw writeCsv() call.
+function writeFixturesCsv() {
+  if (!state.lastRows) return;
+  const { outputCsvPath } = getConfig();
+  writeCsv(sourceChecks.enrichRowsWithSourceStatus(state.lastRows), outputCsvPath);
+}
+
 async function runSourceCheck(force = false) {
   if (state.checkRunning) return state;
   const urls = allSourceUrls();
@@ -93,6 +104,7 @@ async function runSourceCheck(force = false) {
     });
     state.lastCheckAt = new Date().toISOString();
     state.lastCheckSummary = summary;
+    writeFixturesCsv();
   } catch (err) {
     console.error('[sourceChecks] run failed:', err.message);
   } finally {
@@ -125,8 +137,7 @@ function refreshTranslationsOnRows() {
     r.homeTeamZH = translate.getCached(r.homeTeam)?.zh || null;
     r.awayTeamZH = r.awayTeam ? translate.getCached(r.awayTeam)?.zh || null : null;
   }
-  const { outputCsvPath } = getConfig();
-  writeCsv(state.lastRows, outputCsvPath);
+  writeFixturesCsv();
 }
 
 async function runTranslate(force = false) {
@@ -169,8 +180,7 @@ function setLeagueAliasAndRefresh(rawName, canonicalName) {
     for (const r of state.lastRows) {
       if (r.rawLeague) r.league = leagues.canonicalLeague(r.rawLeague);
     }
-    const { outputCsvPath } = getConfig();
-    writeCsv(state.lastRows, outputCsvPath);
+    writeFixturesCsv();
   }
   refreshLiveCsv();
 }
@@ -183,7 +193,9 @@ function refreshLiveCsv() {
   if (!state.liveRows) return;
   const { outputLiveCsvPath } = getConfig();
   state.liveRowsNormalized = liveTv.normalizeLiveRows(state.liveRows);
-  writeCsv(state.liveRowsNormalized, outputLiveCsvPath);
+  // In practice always blank here (YouTube URLs are never source-checked),
+  // but keeps live.csv's column layout identical to fixtures.csv's.
+  writeCsv(sourceChecks.enrichRowsWithSourceStatus(state.liveRowsNormalized), outputLiveCsvPath);
 }
 
 async function runLiveTvFetch() {

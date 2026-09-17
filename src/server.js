@@ -3,6 +3,7 @@ const fs = require('fs');
 const { getConfig, updateConfig } = require('./config');
 const { formatBeijing, formatInTimezone } = require('./csv');
 const auth = require('./auth');
+const sourceChecks = require('./sourceChecks');
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({
@@ -848,7 +849,7 @@ function createServer({
   app.get('/fixtures.json', (req, res) => {
     const rows = getState().lastRows;
     if (!rows) return res.status(404).json({ error: 'No data yet — pipeline has not completed a run.' });
-    res.json(rows);
+    res.json(sourceChecks.enrichRowsWithSourceStatus(rows, getSourceStatus));
   });
 
   app.get('/live.csv', (req, res) => {
@@ -864,7 +865,7 @@ function createServer({
   app.get('/live.json', (req, res) => {
     const rows = getState().liveRowsNormalized;
     if (!rows) return res.status(404).json({ error: 'No data yet — fetch live streams has not completed a run.' });
-    res.json(rows);
+    res.json(sourceChecks.enrichRowsWithSourceStatus(rows, getSourceStatus));
   });
 
   return app;
