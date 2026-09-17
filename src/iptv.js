@@ -132,20 +132,23 @@ function findChannelSources(name, playlist, limit = 10) {
 }
 
 /**
- * Given a list of channel names, return every one that resolves to at least
- * one iptv-org stream, each with up to `limit` candidate source URLs (not
- * just the single best guess — a channel is genuinely carried on more than
- * one mirror sometimes, and callers want alternates to fall back to).
+ * Given a list of channel names, return one entry per name — each with up
+ * to `limit` candidate source URLs (not just the single best guess — a
+ * channel is genuinely carried on more than one mirror sometimes, and
+ * callers want alternates to fall back to), or an empty `sources` array if
+ * nothing in the free iptv-org playlist matches it.
+ *
+ * A broadcaster with no free stream is still a broadcaster the source
+ * genuinely reported — dropping it here used to make a fixture with a
+ * known-but-unmatched channel (e.g. a paywalled "Sky Sports"/"HBO Max"
+ * mention) look identical to one where nothing was extracted at all. The
+ * caller (src/server.js's renderBrowse) already had a "(no stream match)"
+ * fallback for exactly this shape; it just never received one to render.
  */
 async function matchChannels(channelNames, playlistUrl, limit = 10) {
   if (!channelNames.length) return [];
   const playlist = await getPlaylist(playlistUrl);
-  const found = [];
-  for (const name of channelNames) {
-    const sources = findChannelSources(name, playlist, limit);
-    if (sources.length) found.push({ label: name, sources });
-  }
-  return found;
+  return channelNames.map((name) => ({ label: name, sources: findChannelSources(name, playlist, limit) }));
 }
 
 module.exports = { parseM3U, getPlaylist, getPlaylistStatus, findChannelSources, matchChannels };
