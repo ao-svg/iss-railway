@@ -44,8 +44,8 @@ async function runOnce() {
   if (state.running) return state;
   state.running = true;
   try {
-    const { apiKey, leagueIds, playlistUrl, outputCsvPath, wtmDays } = getConfig();
-    const { rows, failures } = await runPipeline({ apiKey, leagueIds, playlistUrl, outputCsvPath, wtmDays });
+    const { apiKey, leagueIds, playlistUrl, outputCsvPath, wtmDays, livesportsontvLeagues } = getConfig();
+    const { rows, failures } = await runPipeline({ apiKey, leagueIds, playlistUrl, outputCsvPath, wtmDays, livesportsontvLeagues });
     state.lastRunAt = new Date().toISOString();
     state.lastRunCount = rows.length;
     state.lastRunFailures = failures;

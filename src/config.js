@@ -26,6 +26,13 @@ function envDefaults() {
     // decision, not something to default to a hardcoded value for.
     liveTvDomain: process.env.LIVETV_DOMAIN || '',
     outputLiveCsvPath: process.env.OUTPUT_LIVE_CSV_PATH || './data/live.csv',
+    // "Big 5" US pro leagues by default — the rest of the site's ~16
+    // league pages are mostly NCAA sub-variants, noisier/lower-value by
+    // default, opt-in via Settings same as SPORTSDB_LEAGUE_IDS already works.
+    livesportsontvLeagues: (process.env.LIVESPORTSONTV_LEAGUES || 'nfl,nba,mlb,nhl,mls')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
   };
 }
 
@@ -48,6 +55,12 @@ function updateConfig(patch) {
   const normalized = { ...patch };
   if (typeof normalized.leagueIds === 'string') {
     normalized.leagueIds = normalized.leagueIds
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  if (typeof normalized.livesportsontvLeagues === 'string') {
+    normalized.livesportsontvLeagues = normalized.livesportsontvLeagues
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);

@@ -751,6 +751,9 @@ function renderSettings(config, saved) {
         <label for="wtmDays">wheresthematch.com lookahead (days)</label>
         <input type="text" id="wtmDays" name="wtmDays" value="${escapeHtml(config.wtmDays)}">
 
+        <label for="livesportsontvLeagues">livesportsontv.com leagues (comma-separated slugs, blank = disabled)</label>
+        <input type="text" id="livesportsontvLeagues" name="livesportsontvLeagues" value="${escapeHtml((config.livesportsontvLeagues || []).join(','))}" placeholder="e.g. nfl,nba,mlb,nhl,mls">
+
         <label for="liveTvDomain">Live streaming source domain (blank = feature disabled)</label>
         <input type="text" id="liveTvDomain" name="liveTvDomain" value="${escapeHtml(config.liveTvDomain || '')}" placeholder="e.g. http://example.com">
 
@@ -861,8 +864,8 @@ function createServer({
   });
 
   app.post('/settings', requireAuth('admin'), (req, res) => {
-    const { apiKey, leagueIds, playlistUrl, cronExpr, wtmDays, liveTvDomain } = req.body;
-    updateConfig({ apiKey, leagueIds, playlistUrl, cronExpr, wtmDays, liveTvDomain });
+    const { apiKey, leagueIds, playlistUrl, cronExpr, wtmDays, liveTvDomain, livesportsontvLeagues } = req.body;
+    updateConfig({ apiKey, leagueIds, playlistUrl, cronExpr, wtmDays, liveTvDomain, livesportsontvLeagues });
     rescheduleCron();
     res.redirect('/settings?saved=1');
   });

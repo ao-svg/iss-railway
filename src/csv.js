@@ -158,4 +158,4 @@ function writeCsv(rows, outputPath) {
   console.log(`[csv] wrote ${rowCount} rows (${rows.length} fixtures) -> ${outputPath}`);
 }
 
-module.exports = { rowsToCsv, writeCsv, HEADER, formatBeijing, formatInTimezone, TIMEZONES };
+module.exports = { rowsToCsv, writeCsv, HEADER, formatBeijing, formatInTimezone, TIMEZONES, parseMatchDate };
