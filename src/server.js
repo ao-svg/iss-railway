@@ -271,10 +271,15 @@ function renderDashboard(state, config, getPlaylistStatus) {
     liveStatusLine = '<span class="muted">Never fetched</span>';
   }
 
-  const playlistStatus = getPlaylistStatus ? getPlaylistStatus() : null;
-  const playlistLine = playlistStatus
-    ? `${playlistStatus.channelCount.toLocaleString()} channels (refreshed ${escapeHtml(playlistStatus.fetchedAt)}, with the last pipeline run)`
-    : 'Not fetched yet — runs automatically with the pipeline';
+  const playlistLine = (playlistUrl) => {
+    const status = getPlaylistStatus && playlistUrl ? getPlaylistStatus(playlistUrl) : null;
+    if (!playlistUrl) return 'Disabled (blank in Settings)';
+    return status
+      ? `${status.channelCount.toLocaleString()} channels (refreshed ${escapeHtml(status.fetchedAt)}, with the last pipeline run)`
+      : 'Not fetched yet — runs automatically with the pipeline';
+  };
+  const iptvOrgPlaylistLine = playlistLine(config.playlistUrl);
+  const doms9PlaylistLine = playlistLine(config.doms9PlaylistUrl);
 
   return layout(
     'iss-railway dashboard',
@@ -296,7 +301,8 @@ function renderDashboard(state, config, getPlaylistStatus) {
         <tr><th>Schedule</th><td><code>${escapeHtml(config.cronExpr)}</code></td></tr>
         <tr><th>Leagues configured</th><td>${config.leagueIds.length}</td></tr>
         <tr><th>wheresthematch.com lookahead</th><td>${config.wtmDays} days</td></tr>
-        <tr><th>iptv-org channel list</th><td>${playlistLine}</td></tr>
+        <tr><th>iptv-org channel list</th><td>${iptvOrgPlaylistLine}</td></tr>
+        <tr><th>doms9/iptv channel list</th><td>${doms9PlaylistLine}</td></tr>
       </table>
       <form method="POST" action="/api/run">
         <button type="submit" ${state.running ? 'disabled' : ''}>Run pipeline now</button>
@@ -444,26 +450,31 @@ function renderBrowse(state, getSourceStatus, tz = 'beijing') {
   );
 }
 
-function renderChannels(playlist, playlistUrl) {
-  const rows = playlist
+function renderChannels(taggedPlaylist, sources) {
+  const rows = taggedPlaylist
     .map(
       (c) => `<tr>
+        <td>${escapeHtml(c.source)}</td>
         <td>${escapeHtml(c.name)}</td>
         <td><a href="${escapeHtml(c.url)}" target="_blank" rel="noopener">${escapeHtml(c.url)}</a></td>
       </tr>`
     )
     .join('');
 
+  const sourceList = sources
+    .map((s) => `<a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.label)}</a>`)
+    .join(', ');
+
   return layout(
-    'iss-railway iptv-org channels',
+    'iss-railway iptv channels',
     `
-    <h1>iptv-org channel list</h1>
-    <p class="muted">Every channel currently in the free public playlist at <a href="${escapeHtml(playlistUrl)}" target="_blank" rel="noopener">${escapeHtml(playlistUrl)}</a> (source: <a href="https://github.com/iptv-org/iptv" target="_blank" rel="noopener">github.com/iptv-org/iptv</a>) — fetched fresh right now, bypassing the pipeline's cache, so this is exactly what's really there this second. This is the same list "Run pipeline now" and channel matching search against — if a channel you expect isn't findable here, it genuinely isn't in the free list right now, not a matching bug.</p>
+    <h1>iptv channel list</h1>
+    <p class="muted">Every channel currently in the free public playlists — ${sourceList} — fetched fresh right now, bypassing the pipeline's cache, so this is exactly what's really there this second. This is the same combined list "Run pipeline now" and channel matching search against (doms9 prioritized over iptv-org when a channel is in both) — if a channel you expect isn't findable here, it genuinely isn't in either free list right now, not a matching bug.</p>
     <input type="text" id="search-box" placeholder="Filter by channel name..." oninput="filterRows()">
     <p id="row-count"></p>
     <div class="card">
       <table id="channels-table">
-        <thead><tr><th>Channel name</th><th>Stream URL</th></tr></thead>
+        <thead><tr><th>Source</th><th>Channel name</th><th>Stream URL</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -745,6 +756,9 @@ function renderSettings(config, saved) {
         <label for="playlistUrl">iptv-org playlist URL</label>
         <input type="text" id="playlistUrl" name="playlistUrl" value="${escapeHtml(config.playlistUrl)}">
 
+        <label for="doms9PlaylistUrl">doms9/iptv playlist URL (prioritized over iptv-org, blank = disabled)</label>
+        <input type="text" id="doms9PlaylistUrl" name="doms9PlaylistUrl" value="${escapeHtml(config.doms9PlaylistUrl)}">
+
         <label for="cronExpr">Cron schedule</label>
         <input type="text" id="cronExpr" name="cronExpr" value="${escapeHtml(config.cronExpr)}">
 
@@ -799,10 +813,17 @@ function createServer({
   });
 
   app.get('/iptv-channels', requireAuth('admin'), async (req, res) => {
-    const { playlistUrl } = getConfig();
+    const { playlistUrl, doms9PlaylistUrl } = getConfig();
+    const sources = [
+      doms9PlaylistUrl ? { label: 'doms9/iptv', url: doms9PlaylistUrl } : null,
+      { label: 'iptv-org', url: playlistUrl },
+    ].filter(Boolean);
     try {
-      const playlist = await iptv.getPlaylist(playlistUrl, { force: true });
-      res.send(renderChannels(playlist, playlistUrl));
+      const playlists = await Promise.all(
+        sources.map(async (s) => ({ source: s.label, channels: await iptv.getPlaylist(s.url, { force: true }) }))
+      );
+      const taggedPlaylist = playlists.flatMap((p) => p.channels.map((c) => ({ ...c, source: p.source })));
+      res.send(renderChannels(taggedPlaylist, sources));
     } catch (err) {
       res.status(502).send(`Failed to fetch the live playlist: ${escapeHtml(err.message)}`);
     }
@@ -864,8 +885,8 @@ function createServer({
   });
 
   app.post('/settings', requireAuth('admin'), (req, res) => {
-    const { apiKey, leagueIds, playlistUrl, cronExpr, wtmDays, liveTvDomain, livesportsontvLeagues } = req.body;
-    updateConfig({ apiKey, leagueIds, playlistUrl, cronExpr, wtmDays, liveTvDomain, livesportsontvLeagues });
+    const { apiKey, leagueIds, playlistUrl, doms9PlaylistUrl, cronExpr, wtmDays, liveTvDomain, livesportsontvLeagues } = req.body;
+    updateConfig({ apiKey, leagueIds, playlistUrl, doms9PlaylistUrl, cronExpr, wtmDays, liveTvDomain, livesportsontvLeagues });
     rescheduleCron();
     res.redirect('/settings?saved=1');
   });

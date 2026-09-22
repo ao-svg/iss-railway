@@ -17,6 +17,11 @@ function envDefaults() {
       .map((s) => s.trim())
       .filter(Boolean),
     playlistUrl: process.env.IPTV_ORG_PLAYLIST_URL || 'https://iptv-org.github.io/iptv/index.m3u',
+    // Second playlist, matched alongside iptv-org and prioritized ahead of
+    // it (see iptv.js's matchChannels) — same free-M3U-aggregator shape as
+    // iptv-org, just a second list for more coverage per channel.
+    doms9PlaylistUrl:
+      process.env.DOMS9_PLAYLIST_URL || 'https://raw.githubusercontent.com/doms9/iptv/default/M3U8/TV.m3u8',
     cronExpr: process.env.PIPELINE_CRON || '0 */6 * * *',
     outputCsvPath: process.env.OUTPUT_CSV_PATH || './data/fixtures.csv',
     wtmDays: Number(process.env.WTM_DAYS) || 31,

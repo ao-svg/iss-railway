@@ -6,7 +6,9 @@ const axios = require('axios');
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours, same as the plugin's CACHE_TTL
 
-let _cache = { playlist: null, fetchedAt: 0 };
+// Keyed by playlist URL so more than one playlist (iptv-org, doms9/iptv,
+// ...) can each cache independently under the same TTL/force-refresh logic.
+const _cacheByUrl = new Map();
 
 /**
  * Simple M3U parser — line-for-line port of ISS_IPTV_Scraper::parse_m3u()
@@ -50,24 +52,26 @@ function parseM3U(content) {
  */
 async function getPlaylist(playlistUrl, { force = false } = {}) {
   const now = Date.now();
-  if (!force && _cache.playlist && now - _cache.fetchedAt < CACHE_TTL_MS) {
-    return _cache.playlist;
+  const cached = _cacheByUrl.get(playlistUrl);
+  if (!force && cached && now - cached.fetchedAt < CACHE_TTL_MS) {
+    return cached.playlist;
   }
 
   const { data } = await axios.get(playlistUrl, { timeout: 30000 });
   const parsed = parseM3U(data);
-  _cache = { playlist: parsed, fetchedAt: now };
-  console.log(`[iptv] refreshed playlist: ${parsed.length} channels`);
+  _cacheByUrl.set(playlistUrl, { playlist: parsed, fetchedAt: now });
+  console.log(`[iptv] refreshed playlist (${playlistUrl}): ${parsed.length} channels`);
   return parsed;
 }
 
 /**
  * { channelCount, fetchedAt } for display (e.g. the dashboard), or null if
- * the playlist has never been fetched yet.
+ * this specific playlist URL has never been fetched yet.
  */
-function getPlaylistStatus() {
-  if (!_cache.playlist) return null;
-  return { channelCount: _cache.playlist.length, fetchedAt: new Date(_cache.fetchedAt).toISOString() };
+function getPlaylistStatus(playlistUrl) {
+  const cached = _cacheByUrl.get(playlistUrl);
+  if (!cached) return null;
+  return { channelCount: cached.playlist.length, fetchedAt: new Date(cached.fetchedAt).toISOString() };
 }
 
 // Below this length a substring match is too likely to be a coincidental
@@ -138,11 +142,41 @@ function findChannelSources(name, playlist, limit = 10) {
 }
 
 /**
+ * Same as findChannelSources, but searches multiple already-parsed
+ * playlists in priority order and stacks the results together: each
+ * playlist is searched in turn, matches are concatenated (higher-priority
+ * playlist's URLs first), deduped by URL (a URL appearing in more than one
+ * playlist only counts once, keeping its first — higher-priority —
+ * position), capped at `limit` total. Pure, no I/O — the network fetch
+ * happens in matchChannels below, not here, so this is directly testable
+ * with plain fixture arrays.
+ */
+function findChannelSourcesAcrossPlaylists(name, playlists, limit = 10) {
+  const out = [];
+  const seen = new Set();
+  for (const playlist of playlists) {
+    if (out.length >= limit) break;
+    for (const url of findChannelSources(name, playlist, limit)) {
+      if (seen.has(url)) continue;
+      seen.add(url);
+      out.push(url);
+      if (out.length >= limit) break;
+    }
+  }
+  return out;
+}
+
+/**
  * Given a list of channel names, return one entry per name — each with up
  * to `limit` candidate source URLs (not just the single best guess — a
  * channel is genuinely carried on more than one mirror sometimes, and
  * callers want alternates to fall back to), or an empty `sources` array if
- * nothing in the free iptv-org playlist matches it.
+ * nothing in any of the free playlists matches it.
+ *
+ * `playlistUrls` is an array of playlist URLs in priority order — when a
+ * channel matches in more than one, their candidate URLs are stacked
+ * together (see findChannelSourcesAcrossPlaylists) with the earlier
+ * playlist's URLs preferred first.
  *
  * A broadcaster with no free stream is still a broadcaster the source
  * genuinely reported — dropping it here used to make a fixture with a
@@ -151,10 +185,21 @@ function findChannelSources(name, playlist, limit = 10) {
  * caller (src/server.js's renderBrowse) already had a "(no stream match)"
  * fallback for exactly this shape; it just never received one to render.
  */
-async function matchChannels(channelNames, playlistUrl, limit = 10) {
+async function matchChannels(channelNames, playlistUrls, limit = 10) {
   if (!channelNames.length) return [];
-  const playlist = await getPlaylist(playlistUrl);
-  return channelNames.map((name) => ({ label: name, sources: findChannelSources(name, playlist, limit) }));
+  const urls = (Array.isArray(playlistUrls) ? playlistUrls : [playlistUrls]).filter(Boolean);
+  const playlists = await Promise.all(urls.map((url) => getPlaylist(url)));
+  return channelNames.map((name) => ({
+    label: name,
+    sources: findChannelSourcesAcrossPlaylists(name, playlists, limit),
+  }));
 }
 
-module.exports = { parseM3U, getPlaylist, getPlaylistStatus, findChannelSources, matchChannels };
+module.exports = {
+  parseM3U,
+  getPlaylist,
+  getPlaylistStatus,
+  findChannelSources,
+  findChannelSourcesAcrossPlaylists,
+  matchChannels,
+};
