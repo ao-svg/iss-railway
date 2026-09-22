@@ -5,6 +5,7 @@ const { formatBeijing, formatInTimezone } = require('./csv');
 const auth = require('./auth');
 const sourceChecks = require('./sourceChecks');
 const iptv = require('./iptv');
+const manualChannels = require('./manualChannels');
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({
@@ -148,6 +149,7 @@ function layout(title, body, activePath = '') {
     <div class="nav-group">
       <div class="nav-label">Admin</div>
       ${navLink('/leagues', 'Leagues', activePath)}
+      ${navLink('/manual-channels', 'Manual channels', activePath)}
       ${navLink('/translations', 'Translations', activePath)}
       ${navLink('/users', 'Users', activePath)}
       ${navLink('/settings', 'Settings', activePath)}
@@ -393,7 +395,7 @@ function renderBrowse(state, getSourceStatus, tz = 'beijing') {
                     `<li>${statusDot(url, getSourceStatus)}<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a></li>`
                 )
                 .join('');
-              return `<li><span class="channel-name">${escapeHtml(ch.name)}</span>${sources.length ? '' : '<span class="no-url">(no stream match)</span>'}
+              return `<li><span class="channel-name">${escapeHtml(ch.name)}</span>${ch.manual ? ' <span class="badge badge-manual">manual</span>' : ''}${sources.length ? '' : '<span class="no-url">(no stream match)</span>'}
                 ${sources.length ? `<ul class="source-list">${sourceItems}</ul>` : ''}
               </li>`;
             })
@@ -687,6 +689,83 @@ function renderLeagues(state, getLeagueOverrides) {
   );
 }
 
+function renderManualChannels(state, getManualChannelsAllFn) {
+  const rows = state.lastRows || [];
+  const store = getManualChannelsAllFn ? getManualChannelsAllFn() : {};
+
+  const noStreamRows = rows
+    .filter((r) => !(r.channels || []).some((ch) => (ch.sources || []).length > 0))
+    .map((r) => {
+      const key = manualChannels.gameKey(r);
+      const { date, time } = formatBeijing(r.matchDateUTC);
+      return `<tr>
+        <td>${escapeHtml(date)} ${escapeHtml(time)}</td>
+        <td>${escapeHtml(r.homeTeam)}${r.awayTeam ? ' v ' + escapeHtml(r.awayTeam) : ''}</td>
+        <td>${escapeHtml(r.league)}</td>
+        <td>
+          <form class="inline-form" method="POST" action="/api/manual-channel">
+            <input type="hidden" name="gameKey" value="${escapeHtml(key)}">
+            <input type="hidden" name="homeTeam" value="${escapeHtml(r.homeTeam)}">
+            <input type="hidden" name="awayTeam" value="${escapeHtml(r.awayTeam || '')}">
+            <input type="hidden" name="league" value="${escapeHtml(r.league)}">
+            <input type="hidden" name="matchDateUTC" value="${escapeHtml(r.matchDateUTC)}">
+            <input type="text" name="name" placeholder="Channel name" required>
+            <input type="text" name="url" placeholder="Stream URL" required>
+            <button type="submit">Add</button>
+          </form>
+        </td>
+      </tr>`;
+    })
+    .join('');
+
+  const manualRows = Object.entries(store)
+    .flatMap(([key, entry]) =>
+      entry.channels.map((ch, index) => {
+        const { date, time } = formatBeijing(entry.matchDateUTC);
+        return `<tr>
+          <td>${escapeHtml(date)} ${escapeHtml(time)}</td>
+          <td>${escapeHtml(entry.homeTeam)}${entry.awayTeam ? ' v ' + escapeHtml(entry.awayTeam) : ''}</td>
+          <td>${escapeHtml(entry.league)}</td>
+          <td>${escapeHtml(ch.name)}</td>
+          <td><a href="${escapeHtml(ch.url)}" target="_blank" rel="noopener">${escapeHtml(ch.url)}</a></td>
+          <td>
+            <form class="inline-form" method="POST" action="/api/manual-channel/remove">
+              <input type="hidden" name="gameKey" value="${escapeHtml(key)}">
+              <input type="hidden" name="index" value="${index}">
+              <button type="submit" class="secondary">Remove</button>
+            </form>
+          </td>
+        </tr>`;
+      })
+    )
+    .join('');
+
+  return layout(
+    'iss-railway manual channels',
+    `
+    <h1>Manual channel adding</h1>
+    <p class="muted">Games where no channel resolved to a stream from any automated source. Add a channel name and a stream URL here — it applies immediately and persists across future pipeline runs (matched back to the game by team names + date, not by a source's internal ID).</p>
+    <div class="card">
+      <strong>Games with no stream</strong>
+      ${
+        noStreamRows
+          ? `<table><tr><th>Date/Time (Beijing)</th><th>Match</th><th>League</th><th>Add a channel</th></tr>${noStreamRows}</table>`
+          : '<p class="muted">None right now — every game has at least one matched stream.</p>'
+      }
+    </div>
+    <div class="card">
+      <strong>Manually added streams</strong>
+      ${
+        manualRows
+          ? `<table><tr><th>Date/Time (Beijing)</th><th>Match</th><th>League</th><th>Channel</th><th>URL</th><th></th></tr>${manualRows}</table>`
+          : '<p class="muted">None added yet.</p>'
+      }
+    </div>
+  `,
+    '/manual-channels'
+  );
+}
+
 function translationRow(text, cache) {
   const entry = cache[text];
   const badge = entry
@@ -793,6 +872,9 @@ function createServer({
   setManualTranslation,
   getLeagueOverrides,
   setLeagueAlias,
+  getManualChannelsAll,
+  addManualChannel,
+  removeManualChannel,
   runLiveTvFetch,
   getAllYouTubeChannels,
   setChannelStatus,
@@ -849,6 +931,22 @@ function createServer({
     const { rawName, canonicalName } = req.body;
     setLeagueAlias(rawName, canonicalName);
     res.redirect('/leagues');
+  });
+
+  app.get('/manual-channels', requireAuth('admin'), (req, res) => {
+    res.send(renderManualChannels(getState(), getManualChannelsAll));
+  });
+
+  app.post('/api/manual-channel', requireAuth('admin'), (req, res) => {
+    const { gameKey, homeTeam, awayTeam, league, matchDateUTC, name, url } = req.body;
+    addManualChannel(gameKey, { homeTeam, awayTeam, league, matchDateUTC }, name, url);
+    res.redirect('/manual-channels');
+  });
+
+  app.post('/api/manual-channel/remove', requireAuth('admin'), (req, res) => {
+    const { gameKey, index } = req.body;
+    removeManualChannel(gameKey, Number(index));
+    res.redirect('/manual-channels');
   });
 
   app.get('/live', requireAuth('admin'), (req, res) => {

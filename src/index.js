@@ -10,6 +10,7 @@ const liveTv = require('./liveTv');
 const liveTvStore = require('./liveTvStore');
 const youtubeChannels = require('./youtubeChannels');
 const iptv = require('./iptv');
+const manualChannels = require('./manualChannels');
 const { writeCsv } = require('./csv');
 
 const port = process.env.PORT || 3000;
@@ -59,6 +60,11 @@ async function runOnce() {
     state.lastRunFailures = failures;
     state.lastRows = rows;
     state.lastError = null;
+    // Manually-added streams (see /manual-channels) aren't part of any
+    // automated source, so re-apply them onto this run's freshly-fetched
+    // rows right away — otherwise a game that already has a manual stream
+    // would show as "no stream" again until the next manual edit.
+    applyManualChannelsAndRefresh();
     // Auto-translate any newly-seen names right after a run, without
     // blocking on it — same "never block the pipeline" reasoning as
     // source checks/live fetch already running as their own jobs. Skipped
@@ -95,6 +101,28 @@ function writeFixturesCsv() {
   if (!state.lastRows) return;
   const { outputCsvPath } = getConfig();
   writeCsv(sourceChecks.enrichRowsWithSourceStatus(state.lastRows), outputCsvPath);
+}
+
+// Re-applies every manually-added stream (see /manual-channels) onto
+// state.lastRows — safe to call repeatedly (see manualChannels.js's
+// applyManualChannels doc comment for why it's idempotent), so this is
+// the single path used both right after a pipeline run and after any
+// manual add/remove, same "show up without waiting" reasoning as
+// refreshTranslationsOnRows() below.
+function applyManualChannelsAndRefresh() {
+  if (!state.lastRows) return;
+  state.lastRows = manualChannels.applyManualChannels(state.lastRows, manualChannels.getAll());
+  writeFixturesCsv();
+}
+
+function addManualChannelAndRefresh(gameKey, meta, name, url) {
+  manualChannels.addManualChannel(gameKey, meta, name, url);
+  applyManualChannelsAndRefresh();
+}
+
+function removeManualChannelAndRefresh(gameKey, index) {
+  manualChannels.removeManualChannel(gameKey, index);
+  applyManualChannelsAndRefresh();
 }
 
 async function runSourceCheck(force = false) {
@@ -281,6 +309,9 @@ if (runOnlyFlag) {
     setManualTranslation: setManualTranslationAndRefresh,
     getLeagueOverrides: leagues.getOverrides,
     setLeagueAlias: setLeagueAliasAndRefresh,
+    getManualChannelsAll: manualChannels.getAll,
+    addManualChannel: addManualChannelAndRefresh,
+    removeManualChannel: removeManualChannelAndRefresh,
     runLiveTvFetch,
     getAllYouTubeChannels: youtubeChannels.getAllChannels,
     setChannelStatus: setChannelStatusAndRefresh,
