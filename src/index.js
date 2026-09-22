@@ -60,10 +60,10 @@ async function runOnce() {
     state.lastRunFailures = failures;
     state.lastRows = rows;
     state.lastError = null;
-    // Manually-added streams (see /manual-channels) aren't part of any
-    // automated source, so re-apply them onto this run's freshly-fetched
-    // rows right away — otherwise a game that already has a manual stream
-    // would show as "no stream" again until the next manual edit.
+    // Manual channel-name -> URL mappings (see /manual-channels) aren't part
+    // of any playlist, so re-apply them onto this run's freshly-fetched rows
+    // right away — otherwise a channel that already has a manual stream
+    // would show as "no stream match" again until the next manual edit.
     applyManualChannelsAndRefresh();
     // Auto-translate any newly-seen names right after a run, without
     // blocking on it — same "never block the pipeline" reasoning as
@@ -115,13 +115,13 @@ function applyManualChannelsAndRefresh() {
   writeFixturesCsv();
 }
 
-function addManualChannelAndRefresh(gameKey, meta, name, url) {
-  manualChannels.addManualChannel(gameKey, meta, name, url);
+function addManualChannelAndRefresh(name, url) {
+  manualChannels.addManualChannel(name, url);
   applyManualChannelsAndRefresh();
 }
 
-function removeManualChannelAndRefresh(gameKey, index) {
-  manualChannels.removeManualChannel(gameKey, index);
+function removeManualChannelAndRefresh(name, index) {
+  manualChannels.removeManualChannel(name, index);
   applyManualChannelsAndRefresh();
 }
 

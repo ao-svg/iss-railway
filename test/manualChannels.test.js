@@ -1,85 +1,76 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { gameKey, applyManualChannels } = require('../src/manualChannels');
+const { channelKey, applyManualChannels } = require('../src/manualChannels');
 
-function row(overrides = {}) {
+function row(channels) {
   return {
     eventId: 'e1',
     source: 'wheresthematch',
-    league: 'Premier League',
-    homeTeam: 'Chelsea',
-    awayTeam: 'Brentford',
-    matchDateUTC: '2026-09-18T19:00:00Z',
-    sportType: 'Football',
-    channels: [],
-    ...overrides,
+    league: 'World Snooker',
+    homeTeam: 'Snooker Scottish Open',
+    awayTeam: '',
+    matchDateUTC: '2026-09-22T10:00:00+01:00',
+    sportType: 'Snooker',
+    channels,
   };
 }
 
-test('gameKey: normalizes team names and truncates to date-only (ignores exact kickoff time)', () => {
-  const a = gameKey(row({ homeTeam: 'Chelsea FC', awayTeam: 'Brentford', matchDateUTC: '2026-09-18T19:00:00Z' }));
-  const b = gameKey(row({ homeTeam: 'chelsea', awayTeam: 'Brentford', matchDateUTC: '2026-09-18T20:30:00+01:00' }));
-  assert.equal(a, b);
+const store = { 'wst play': { name: 'WST Play', urls: ['https://manual.example/wst.m3u8'] } };
+
+test('channelKey: lowercases, trims, collapses whitespace', () => {
+  assert.equal(channelKey('  WST   Play '), 'wst play');
+  assert.equal(channelKey(''), '');
+  assert.equal(channelKey(undefined), '');
 });
 
-test('gameKey: different dates produce different keys, even for the same teams', () => {
-  const a = gameKey(row({ matchDateUTC: '2026-09-18T19:00:00Z' }));
-  const b = gameKey(row({ matchDateUTC: '2026-10-02T19:00:00Z' }));
-  assert.notEqual(a, b);
+test('applyManualChannels: a channel with no playlist match gets the manual URL', () => {
+  const [merged] = applyManualChannels([row([{ name: 'WST Play', sources: [] }])], store);
+  assert.deepEqual(merged.channels[0].sources, ['https://manual.example/wst.m3u8']);
+  assert.deepEqual(merged.channels[0].manualUrls, ['https://manual.example/wst.m3u8']);
 });
 
-test('applyManualChannels: adds a new channel to a row that had none', () => {
-  const r = row({ channels: [] });
-  const key = gameKey(r);
-  const store = { [key]: { homeTeam: r.homeTeam, awayTeam: r.awayTeam, league: r.league, matchDateUTC: r.matchDateUTC, channels: [{ name: 'ESPN', url: 'https://example.com/espn.m3u8', addedAt: 'x' }] } };
-  const [merged] = applyManualChannels([r], store);
-  assert.equal(merged.channels.length, 1);
-  assert.deepEqual(merged.channels[0], { name: 'ESPN', sources: ['https://example.com/espn.m3u8'], manual: true });
+test('applyManualChannels: name match is case/whitespace-insensitive and applies to every game listing it', () => {
+  const rows = [row([{ name: 'wst  play', sources: [] }]), row([{ name: 'WST PLAY', sources: [] }])];
+  const merged = applyManualChannels(rows, store);
+  assert.equal(merged[0].channels[0].sources.length, 1);
+  assert.equal(merged[1].channels[0].sources.length, 1);
 });
 
-test('applyManualChannels: merges into an existing same-named channel that has empty sources, rather than duplicating it', () => {
-  const r = row({ channels: [{ name: 'Sky Sports', sources: [] }] });
-  const key = gameKey(r);
-  const store = { [key]: { homeTeam: r.homeTeam, awayTeam: r.awayTeam, league: r.league, matchDateUTC: r.matchDateUTC, channels: [{ name: 'sky sports', url: 'https://example.com/sky.m3u8', addedAt: 'x' }] } };
-  const [merged] = applyManualChannels([r], store);
-  assert.equal(merged.channels.length, 1);
-  assert.equal(merged.channels[0].name, 'Sky Sports');
-  assert.deepEqual(merged.channels[0].sources, ['https://example.com/sky.m3u8']);
-  assert.equal(merged.channels[0].manual, true);
+test('applyManualChannels: manual URL goes first, existing playlist matches are kept after it', () => {
+  const [merged] = applyManualChannels([row([{ name: 'WST Play', sources: ['https://iptv.example/a.m3u8'] }])], store);
+  assert.deepEqual(merged.channels[0].sources, ['https://manual.example/wst.m3u8', 'https://iptv.example/a.m3u8']);
 });
 
-test('applyManualChannels: is idempotent — applying twice with the same store produces the same result, no duplicate entries', () => {
-  const r = row({ channels: [] });
-  const key = gameKey(r);
-  const store = { [key]: { homeTeam: r.homeTeam, awayTeam: r.awayTeam, league: r.league, matchDateUTC: r.matchDateUTC, channels: [{ name: 'ESPN', url: 'https://example.com/espn.m3u8', addedAt: 'x' }] } };
-  const once = applyManualChannels([r], store);
+test('applyManualChannels: channels without an entry are untouched (no manualUrls field added)', () => {
+  const [merged] = applyManualChannels([row([{ name: 'HBO Max', sources: [] }])], store);
+  assert.deepEqual(merged.channels[0], { name: 'HBO Max', sources: [] });
+});
+
+test('applyManualChannels: idempotent — applying twice yields the same sources, no duplicates', () => {
+  const once = applyManualChannels([row([{ name: 'WST Play', sources: ['https://iptv.example/a.m3u8'] }])], store);
   const twice = applyManualChannels(once, store);
-  assert.equal(twice[0].channels.length, 1);
-  assert.deepEqual(twice[0].channels[0].sources, ['https://example.com/espn.m3u8']);
+  assert.deepEqual(twice[0].channels[0].sources, ['https://manual.example/wst.m3u8', 'https://iptv.example/a.m3u8']);
 });
 
-test('applyManualChannels: a channel no longer present in the store (removed) is dropped on the next apply', () => {
-  const r = row({ channels: [] });
-  const key = gameKey(r);
-  const storeWithEntry = { [key]: { homeTeam: r.homeTeam, awayTeam: r.awayTeam, league: r.league, matchDateUTC: r.matchDateUTC, channels: [{ name: 'ESPN', url: 'https://example.com/espn.m3u8', addedAt: 'x' }] } };
-  const [withManual] = applyManualChannels([r], storeWithEntry);
-  assert.equal(withManual.channels.length, 1);
-
-  const [afterRemoval] = applyManualChannels([withManual], {}); // store no longer has the entry
-  assert.equal(afterRemoval.channels.length, 0);
+test('applyManualChannels: removing the entry strips the manual URL and leaves playlist matches', () => {
+  const withManual = applyManualChannels([row([{ name: 'WST Play', sources: ['https://iptv.example/a.m3u8'] }])], store);
+  const [afterRemoval] = applyManualChannels(withManual, {});
+  assert.deepEqual(afterRemoval.channels[0].sources, ['https://iptv.example/a.m3u8']);
+  assert.equal(afterRemoval.channels[0].manualUrls, undefined);
 });
 
-test('applyManualChannels: a manual entry for a game not present in rows is simply skipped, no crash', () => {
-  const r = row({ channels: [] });
-  const store = { 'unrelated|team|pair|2026-01-01': { homeTeam: 'X', awayTeam: 'Y', league: 'Z', matchDateUTC: '2026-01-01T00:00:00Z', channels: [{ name: 'ESPN', url: 'https://example.com/espn.m3u8', addedAt: 'x' }] } };
-  const [merged] = applyManualChannels([r], store);
-  assert.equal(merged.channels.length, 0);
+test('regression: splicing the store urls array in place (what removeManualChannel does) must not leak into already-applied rows', () => {
+  const liveStore = { 'wst play': { name: 'WST Play', urls: ['https://manual.example/wst.m3u8'] } };
+  const applied = applyManualChannels([row([{ name: 'WST Play', sources: ['https://iptv.example/a.m3u8'] }])], liveStore);
+  liveStore['wst play'].urls.splice(0, 1);
+  delete liveStore['wst play'];
+  assert.deepEqual(applied[0].channels[0].manualUrls, ['https://manual.example/wst.m3u8']);
+  const [after] = applyManualChannels(applied, liveStore);
+  assert.deepEqual(after.channels[0].sources, ['https://iptv.example/a.m3u8']);
 });
 
 test('applyManualChannels: never mutates the input rows', () => {
-  const r = row({ channels: [{ name: 'Sky Sports', sources: [] }] });
-  const key = gameKey(r);
-  const store = { [key]: { homeTeam: r.homeTeam, awayTeam: r.awayTeam, league: r.league, matchDateUTC: r.matchDateUTC, channels: [{ name: 'Sky Sports', url: 'https://example.com/sky.m3u8', addedAt: 'x' }] } };
-  applyManualChannels([r], store);
-  assert.deepEqual(r.channels, [{ name: 'Sky Sports', sources: [] }]);
+  const input = row([{ name: 'WST Play', sources: [] }]);
+  applyManualChannels([input], store);
+  assert.deepEqual(input.channels, [{ name: 'WST Play', sources: [] }]);
 });

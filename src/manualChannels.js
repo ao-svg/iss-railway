@@ -1,15 +1,11 @@
-// Manual stream additions for games with no matched channel at all —
-// admin-entered via the /manual-channels page when a game has no working
-// stream from any of the automated sources/playlists.
-//
-// Keyed by a stable "game key" (normalized team pair + date), not a row's
-// eventId — eventId can pick a different winning source run-to-run (see
-// matchMerge.js's pickPrimaryRow), which would silently orphan an entry
-// keyed to a specific eventId that stops being the winner.
+// Manual stream URLs for channel names that no playlist matches — admin-
+// entered via the /manual-channels page. Keyed by channel NAME (the
+// broadcaster the sources already report, e.g. "WST Play"), so one entry
+// applies to every game that lists that channel, now and in future runs.
+// Effectively a hand-maintained playlist layered on top of iptv-org/doms9.
 
 const fs = require('fs');
 const path = require('path');
-const { normalizeTeamName } = require('./matchMerge');
 
 const STORE_PATH = path.join(__dirname, '..', 'data', 'manual-channels.json');
 
@@ -28,38 +24,27 @@ function saveStore(store) {
 
 let _store = loadStore();
 
-// Date-only (not exact kickoff time) so small time-reporting differences
-// between runs/sources don't orphan an entry, while still distinguishing
-// the same two teams playing on different dates.
-function gameKey(row) {
-  return `${normalizeTeamName(row.homeTeam)}|${normalizeTeamName(row.awayTeam)}|${(row.matchDateUTC || '').slice(0, 10)}`;
+function channelKey(name) {
+  return (name || '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-function addManualChannel(key, meta, name, url) {
-  if (!key || !name || !name.trim() || !url || !url.trim()) return;
-  if (!_store[key]) {
-    _store[key] = {
-      homeTeam: meta.homeTeam || '',
-      awayTeam: meta.awayTeam || '',
-      league: meta.league || '',
-      matchDateUTC: meta.matchDateUTC || '',
-      channels: [],
-    };
-  }
-  _store[key].channels.push({ name: name.trim(), url: url.trim(), addedAt: new Date().toISOString() });
+function addManualChannel(name, url) {
+  const key = channelKey(name);
+  const cleanUrl = (url || '').trim();
+  if (!key || !cleanUrl) return;
+  if (!_store[key]) _store[key] = { name: name.trim(), urls: [] };
+  if (!_store[key].urls.includes(cleanUrl)) _store[key].urls.push(cleanUrl);
+  _store[key].updatedAt = new Date().toISOString();
   saveStore(_store);
 }
 
-function removeManualChannel(key, index) {
+function removeManualChannel(name, index) {
+  const key = channelKey(name);
   const entry = _store[key];
-  if (!entry || !entry.channels[index]) return;
-  entry.channels.splice(index, 1);
-  if (!entry.channels.length) delete _store[key];
+  if (!entry || entry.urls[index] === undefined) return;
+  entry.urls.splice(index, 1);
+  if (!entry.urls.length) delete _store[key];
   saveStore(_store);
-}
-
-function getEntry(key) {
-  return _store[key] || null;
 }
 
 function getAll() {
@@ -67,34 +52,33 @@ function getAll() {
 }
 
 /**
- * Merge manually-added channels into `rows`. Pure, no I/O — takes the
- * store as plain data so it's directly testable with fixtures. Returns
+ * Merge manual URLs into every channel whose name has an entry. Pure, no
+ * I/O — takes the store as plain data so it's directly testable. Returns
  * NEW row objects (never mutates `rows`).
  *
- * For each row, any existing channel flagged `manual: true` is dropped
- * first, then the current store entry's channels are re-added — merging
- * into an existing same-named channel (e.g. one a real source reported
- * with an empty `sources` array) if present, otherwise appended as a new
- * channel. Idempotent by construction: add/edit/remove all funnel through
- * the same re-application, so calling this repeatedly with an unchanged
- * store is a no-op, and a removed entry simply stops being re-added.
+ * Each channel remembers which of its URLs came from here (`manualUrls`),
+ * so on every apply those are stripped first and the current store's URLs
+ * re-added at the front — manual streams are curated by a person, so they
+ * outrank playlist matches. Idempotent by construction: add/remove both
+ * just re-run this, and a removed entry simply stops being re-added.
  */
 function applyManualChannels(rows, store) {
-  return rows.map((row) => {
-    const key = gameKey(row);
-    const entry = store[key];
-    const channels = (row.channels || []).filter((ch) => !ch.manual).map((ch) => ({ ...ch }));
-    for (const m of entry ? entry.channels : []) {
-      const existing = channels.find((ch) => ch.name.toLowerCase() === m.name.toLowerCase());
-      if (existing) {
-        existing.sources = existing.sources.includes(m.url) ? existing.sources : [m.url, ...existing.sources];
-        existing.manual = true;
-      } else {
-        channels.push({ name: m.name, sources: [m.url], manual: true });
-      }
-    }
-    return { ...row, channels };
-  });
+  return rows.map((row) => ({
+    ...row,
+    channels: (row.channels || []).map((ch) => {
+      const previousManual = ch.manualUrls || [];
+      const auto = (ch.sources || []).filter((u) => !previousManual.includes(u));
+      const entry = store[channelKey(ch.name)];
+      // Copy, never alias: removeManualChannel splices the store's array in
+      // place, which would silently empty every channel's marker too and
+      // leave the removed URL behind in `sources` on the next apply.
+      const manualUrls = entry ? [...entry.urls] : [];
+      const { manualUrls: _drop, ...rest } = ch;
+      const merged = { ...rest, sources: [...manualUrls, ...auto.filter((u) => !manualUrls.includes(u))] };
+      if (manualUrls.length) merged.manualUrls = manualUrls;
+      return merged;
+    }),
+  }));
 }
 
-module.exports = { gameKey, addManualChannel, removeManualChannel, getEntry, getAll, applyManualChannels };
+module.exports = { channelKey, addManualChannel, removeManualChannel, getAll, applyManualChannels };

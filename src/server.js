@@ -395,7 +395,7 @@ function renderBrowse(state, getSourceStatus, tz = 'beijing') {
                     `<li>${statusDot(url, getSourceStatus)}<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a></li>`
                 )
                 .join('');
-              return `<li><span class="channel-name">${escapeHtml(ch.name)}</span>${ch.manual ? ' <span class="badge badge-manual">manual</span>' : ''}${sources.length ? '' : '<span class="no-url">(no stream match)</span>'}
+              return `<li><span class="channel-name">${escapeHtml(ch.name)}</span>${(ch.manualUrls || []).length ? ' <span class="badge badge-manual">manual</span>' : ''}${sources.length ? '' : '<span class="no-url">(no stream match)</span>'}
                 ${sources.length ? `<ul class="source-list">${sourceItems}</ul>` : ''}
               </li>`;
             })
@@ -693,24 +693,61 @@ function renderManualChannels(state, getManualChannelsAllFn) {
   const rows = state.lastRows || [];
   const store = getManualChannelsAllFn ? getManualChannelsAllFn() : {};
 
-  const noStreamRows = rows
-    .filter((r) => !(r.channels || []).some((ch) => (ch.sources || []).length > 0))
-    .map((r) => {
-      const key = manualChannels.gameKey(r);
-      const { date, time } = formatBeijing(r.matchDateUTC);
-      return `<tr>
-        <td>${escapeHtml(date)} ${escapeHtml(time)}</td>
-        <td>${escapeHtml(r.homeTeam)}${r.awayTeam ? ' v ' + escapeHtml(r.awayTeam) : ''}</td>
-        <td>${escapeHtml(r.league)}</td>
+  // Distinct channel names that no playlist matched, with how many games
+  // list them — a channel used by 40 games is worth fixing before one used
+  // by 1. Names that already have a manual entry have sources by now, so
+  // they naturally fall out of this list.
+  const unmatched = new Map();
+  for (const r of rows) {
+    for (const ch of r.channels || []) {
+      if ((ch.sources || []).length) continue;
+      const key = manualChannels.channelKey(ch.name);
+      if (!key) continue;
+      const entry = unmatched.get(key) || { name: ch.name, games: 0 };
+      entry.games += 1;
+      unmatched.set(key, entry);
+    }
+  }
+
+  const unmatchedRows = [...unmatched.values()]
+    .sort((a, b) => b.games - a.games || a.name.localeCompare(b.name))
+    .map(
+      (c) => `<tr>
+        <td>${escapeHtml(c.name)}</td>
+        <td>${c.games}</td>
         <td>
           <form class="inline-form" method="POST" action="/api/manual-channel">
-            <input type="hidden" name="gameKey" value="${escapeHtml(key)}">
-            <input type="hidden" name="homeTeam" value="${escapeHtml(r.homeTeam)}">
-            <input type="hidden" name="awayTeam" value="${escapeHtml(r.awayTeam || '')}">
-            <input type="hidden" name="league" value="${escapeHtml(r.league)}">
-            <input type="hidden" name="matchDateUTC" value="${escapeHtml(r.matchDateUTC)}">
-            <input type="text" name="name" placeholder="Channel name" required>
-            <input type="text" name="url" placeholder="Stream URL" required>
+            <input type="hidden" name="name" value="${escapeHtml(c.name)}">
+            <input type="text" name="url" placeholder="Stream URL (.m3u8 etc.)" required>
+            <button type="submit">Add</button>
+          </form>
+        </td>
+      </tr>`
+    )
+    .join('');
+
+  const manualRows = Object.values(store)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((entry) => {
+      const urlItems = entry.urls
+        .map(
+          (url, index) => `<li>
+            <a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a>
+            <form class="inline-form" method="POST" action="/api/manual-channel/remove" style="display:inline">
+              <input type="hidden" name="name" value="${escapeHtml(entry.name)}">
+              <input type="hidden" name="index" value="${index}">
+              <button type="submit" class="secondary">Remove</button>
+            </form>
+          </li>`
+        )
+        .join('');
+      return `<tr>
+        <td>${escapeHtml(entry.name)}</td>
+        <td><ul class="source-list" style="margin-left:0">${urlItems}</ul></td>
+        <td>
+          <form class="inline-form" method="POST" action="/api/manual-channel">
+            <input type="hidden" name="name" value="${escapeHtml(entry.name)}">
+            <input type="text" name="url" placeholder="Add another URL" required>
             <button type="submit">Add</button>
           </form>
         </td>
@@ -718,46 +755,24 @@ function renderManualChannels(state, getManualChannelsAllFn) {
     })
     .join('');
 
-  const manualRows = Object.entries(store)
-    .flatMap(([key, entry]) =>
-      entry.channels.map((ch, index) => {
-        const { date, time } = formatBeijing(entry.matchDateUTC);
-        return `<tr>
-          <td>${escapeHtml(date)} ${escapeHtml(time)}</td>
-          <td>${escapeHtml(entry.homeTeam)}${entry.awayTeam ? ' v ' + escapeHtml(entry.awayTeam) : ''}</td>
-          <td>${escapeHtml(entry.league)}</td>
-          <td>${escapeHtml(ch.name)}</td>
-          <td><a href="${escapeHtml(ch.url)}" target="_blank" rel="noopener">${escapeHtml(ch.url)}</a></td>
-          <td>
-            <form class="inline-form" method="POST" action="/api/manual-channel/remove">
-              <input type="hidden" name="gameKey" value="${escapeHtml(key)}">
-              <input type="hidden" name="index" value="${index}">
-              <button type="submit" class="secondary">Remove</button>
-            </form>
-          </td>
-        </tr>`;
-      })
-    )
-    .join('');
-
   return layout(
     'iss-railway manual channels',
     `
-    <h1>Manual channel adding</h1>
-    <p class="muted">Games where no channel resolved to a stream from any automated source. Add a channel name and a stream URL here — it applies immediately and persists across future pipeline runs (matched back to the game by team names + date, not by a source's internal ID).</p>
+    <h1>Manual channels</h1>
+    <p class="muted">Channel names the sources report but no playlist (doms9 / iptv-org) has a stream for. Give a channel a stream URL here and it applies to every game listing that channel — now and on every future run — ahead of any playlist match. Same idea as the <a href="/leagues">league</a> and <a href="/translations">translation</a> overrides.</p>
     <div class="card">
-      <strong>Games with no stream</strong>
+      <strong>Channels with no IPTV match</strong>
       ${
-        noStreamRows
-          ? `<table><tr><th>Date/Time (Beijing)</th><th>Match</th><th>League</th><th>Add a channel</th></tr>${noStreamRows}</table>`
-          : '<p class="muted">None right now — every game has at least one matched stream.</p>'
+        unmatchedRows
+          ? `<table><tr><th>Channel</th><th>Games</th><th>Add a stream URL</th></tr>${unmatchedRows}</table>`
+          : '<p class="muted">None right now — every reported channel has at least one stream.</p>'
       }
     </div>
     <div class="card">
-      <strong>Manually added streams</strong>
+      <strong>Manually added channels</strong>
       ${
         manualRows
-          ? `<table><tr><th>Date/Time (Beijing)</th><th>Match</th><th>League</th><th>Channel</th><th>URL</th><th></th></tr>${manualRows}</table>`
+          ? `<table><tr><th>Channel</th><th>Stream URLs</th><th></th></tr>${manualRows}</table>`
           : '<p class="muted">None added yet.</p>'
       }
     </div>
@@ -938,14 +953,14 @@ function createServer({
   });
 
   app.post('/api/manual-channel', requireAuth('admin'), (req, res) => {
-    const { gameKey, homeTeam, awayTeam, league, matchDateUTC, name, url } = req.body;
-    addManualChannel(gameKey, { homeTeam, awayTeam, league, matchDateUTC }, name, url);
+    const { name, url } = req.body;
+    addManualChannel(name, url);
     res.redirect('/manual-channels');
   });
 
   app.post('/api/manual-channel/remove', requireAuth('admin'), (req, res) => {
-    const { gameKey, index } = req.body;
-    removeManualChannel(gameKey, Number(index));
+    const { name, index } = req.body;
+    removeManualChannel(name, Number(index));
     res.redirect('/manual-channels');
   });
 
