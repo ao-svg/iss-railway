@@ -29,7 +29,18 @@ const HEADER = [
   // column shifts position for anyone parsing by index. Populated by
   // sourceChecks.enrichRowsWithSourceStatus() — blank if never checked.
   ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Status`),
+  // "Does it actually work" and "can a browser play it directly" as two
+  // separate yes/no columns per source (blank = unverified / never checked
+  // / not applicable), since a single status string can't say both.
+  ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Working`),
+  ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Cors`),
 ];
+
+function yesNo(value) {
+  if (value === true) return 'yes';
+  if (value === false) return 'no';
+  return '';
+}
 
 function escapeCsvField(value) {
   const s = value === null || value === undefined ? '' : String(value);
@@ -122,6 +133,10 @@ function rowsToCsv(rows) {
       const sourceCols = Array.from({ length: MAX_SOURCES }, (_, i) => sources[i] || '');
       const statuses = (ch.sourceStatuses || []).slice(0, MAX_SOURCES);
       const statusCols = Array.from({ length: MAX_SOURCES }, (_, i) => statuses[i] || '');
+      const working = ch.sourceWorking || [];
+      const cors = ch.sourceCors || [];
+      const workingCols = Array.from({ length: MAX_SOURCES }, (_, i) => yesNo(working[i]));
+      const corsCols = Array.from({ length: MAX_SOURCES }, (_, i) => yesNo(cors[i]));
       lines.push(
         [
           date,
@@ -141,6 +156,8 @@ function rowsToCsv(rows) {
           r.matchDateUTC,
           r.status || '',
           ...statusCols,
+          ...workingCols,
+          ...corsCols,
         ]
           .map(escapeCsvField)
           .join(',')

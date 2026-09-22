@@ -105,6 +105,7 @@ function layout(title, body, activePath = '') {
   .dot-ok { background: #4ade80; }
   .dot-stream { background: #fbbf24; }
   .dot-blocked, .dot-dead { background: #f87171; }
+  .dot-nocors { background: #c084fc; }
   .dot-unchecked { background: #475569; }
   #search-box { margin-bottom: 1rem; }
   #row-count { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem; }
@@ -233,7 +234,7 @@ function renderDashboard(state, config, getPlaylistStatus) {
     checkStatusLine = `<span class="status-warn">● checking… ${p ? `${p.done}/${p.total}` : ''}</span>`;
   } else if (state.lastCheckSummary) {
     const s = state.lastCheckSummary;
-    checkStatusLine = `<span class="muted">Last checked ${escapeHtml(state.lastCheckAt)} — ok: ${s.ok}, stream: ${s.stream ?? 0}, blocked: ${s.blocked}, dead: ${s.dead}, skipped (fresh): ${s.skipped}</span>`;
+    checkStatusLine = `<span class="muted">Last checked ${escapeHtml(state.lastCheckAt)} — ok: ${s.ok}, stream: ${s.stream ?? 0}, nocors: ${s.nocors ?? 0}, blocked: ${s.blocked}, dead: ${s.dead}, skipped (fresh): ${s.skipped}</span>`;
   } else {
     checkStatusLine = '<span class="muted">Never checked</span>';
   }
@@ -368,7 +369,8 @@ function statusDot(url, getSourceStatus) {
   const cls = cached ? `dot-${cached.status}` : 'dot-unchecked';
   let title = 'not checked yet';
   if (cached) {
-    title = `${cached.status} (checked ${cached.checkedAt})`;
+    const fact = (v) => (v === true ? 'yes' : v === false ? 'no' : 'unverified');
+    title = `${cached.status} — working: ${fact(cached.working)}, CORS: ${cached.cors === null || cached.cors === undefined ? 'n/a' : fact(cached.cors)} (checked ${cached.checkedAt})`;
     if (cached.nestedUrl) {
       title += cached.nestedOk
         ? ' — first segment verified reachable'
@@ -423,7 +425,7 @@ function renderBrowse(state, getSourceStatus, tz = 'beijing') {
     'iss-railway browse',
     `
     <h1>All fixtures</h1>
-    <p class="muted">Every row from the last run. Each channel can have multiple candidate sources; the dot shows the last check (<span class="dot dot-ok"></span> ok — iframe-ready, <span class="dot dot-stream"></span> stream — needs a video player, not a bare iframe, <span class="dot dot-blocked"></span> blocked/dead, <span class="dot dot-unchecked"></span> not checked — run "Check sources" on the <a href="/">dashboard</a>).</p>
+    <p class="muted">Every row from the last run. Each channel can have multiple candidate sources; the dot shows the last check (<span class="dot dot-ok"></span> ok — iframe-ready, <span class="dot dot-stream"></span> stream — works and CORS-open, plays in a browser with a video player (hls.js), not a bare iframe, <span class="dot dot-nocors"></span> nocors — works, but no CORS header so a browser can't fetch it directly (native players only), <span class="dot dot-blocked"></span> blocked/dead — iframe-blocked, unreachable, or its video segments are broken, <span class="dot dot-unchecked"></span> not checked — run "Check sources" on the <a href="/">dashboard</a>). Hover a dot for the working / CORS detail; fixtures.csv carries the same as Source_N_Working and Source_N_Cors columns.</p>
     <p class="muted">Times shown: <a href="/browse?tz=beijing" ${tz === 'beijing' ? 'style="color:#e2e8f0;font-weight:600"' : ''}>Beijing (UTC+8)</a> · <a href="/browse?tz=jerusalem" ${tz === 'jerusalem' ? 'style="color:#e2e8f0;font-weight:600"' : ''}>Jerusalem</a> — exports (fixtures.csv/fixtures.json) are always Beijing time regardless of this toggle. Chinese columns are blank until "Translate names" has run — see the <a href="/">dashboard</a>.</p>
     <input type="text" id="search-box" placeholder="Filter by team, league, channel..." oninput="filterRows()">
     <p id="row-count"></p>

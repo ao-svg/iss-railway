@@ -8,7 +8,23 @@ const {
   hasCorsHeader,
   extractFirstReference,
   enrichRowsWithSourceStatus,
+  manifestStatus,
 } = require('../src/sourceChecks');
+
+test('manifestStatus: confirmed-broken content is dead regardless of CORS', () => {
+  assert.equal(manifestStatus(false, true), 'dead');
+  assert.equal(manifestStatus(false, false), 'dead');
+});
+
+test('manifestStatus: working or unverified + CORS is stream', () => {
+  assert.equal(manifestStatus(true, true), 'stream');
+  assert.equal(manifestStatus(null, true), 'stream');
+});
+
+test('manifestStatus: working or unverified without CORS is nocors, not blocked', () => {
+  assert.equal(manifestStatus(true, false), 'nocors');
+  assert.equal(manifestStatus(null, false), 'nocors');
+});
 
 test('bodyLooksLikeManifest: detects HLS by #EXTM3U prefix', () => {
   assert.equal(bodyLooksLikeManifest(Buffer.from('#EXTM3U\n#EXT-X-VERSION:3\n')), true);
@@ -99,12 +115,21 @@ test('enrichRowsWithSourceStatus: adds a parallel sourceStatuses array, never mu
       channels: [{ name: 'Sky', sources: ['http://a.m3u8', 'http://b.m3u8'] }],
     },
   ];
-  const fakeStatus = (url) => (url === 'http://a.m3u8' ? { status: 'stream' } : null);
+  const fakeStatus = (url) => (url === 'http://a.m3u8' ? { status: 'nocors', working: true, cors: false } : null);
   const out = enrichRowsWithSourceStatus(rows, fakeStatus);
 
-  assert.deepEqual(out[0].channels[0].sourceStatuses, ['stream', null]);
+  assert.deepEqual(out[0].channels[0].sourceStatuses, ['nocors', null]);
+  assert.deepEqual(out[0].channels[0].sourceWorking, [true, null]);
+  assert.deepEqual(out[0].channels[0].sourceCors, [false, null]);
   assert.equal(out[0].channels[0].sources[0], 'http://a.m3u8'); // sources unchanged
   assert.ok(!('sourceStatuses' in rows[0].channels[0])); // original row never mutated
+});
+
+test('enrichRowsWithSourceStatus: a cache entry from before working/cors existed maps to null, not false', () => {
+  const rows = [{ eventId: 'e1', channels: [{ name: 'Sky', sources: ['http://old.m3u8'] }] }];
+  const out = enrichRowsWithSourceStatus(rows, () => ({ status: 'stream' }));
+  assert.deepEqual(out[0].channels[0].sourceWorking, [null]);
+  assert.deepEqual(out[0].channels[0].sourceCors, [null]);
 });
 
 test('enrichRowsWithSourceStatus: row with no channels stays empty, no crash', () => {

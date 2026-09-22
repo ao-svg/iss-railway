@@ -124,12 +124,12 @@ function extractFirstReference(text, baseUrl) {
 }
 
 /**
- * Reachability + CORS check that also returns the fetched bytes, so the
- * caller can inspect WHAT was fetched (another playlist? real media?) not
- * just whether it responded. Used to verify the actual video content a
- * manifest points to is real, not just the manifest text itself — a
- * master playlist can be perfectly reachable while every segment it
- * references is dead.
+ * Fetch one hop and report reachability and CORS as SEPARATE facts, plus
+ * the fetched bytes so the caller can inspect WHAT came back (another
+ * playlist? real media?) — a master playlist can be perfectly reachable
+ * while every segment it references is dead. Kept separate because "does
+ * it work" and "can a browser fetch it" are different questions with
+ * different answers, and conflating them is what made 'blocked' useless.
  */
 async function probeOnce(url) {
   try {
@@ -141,13 +141,27 @@ async function probeOnce(url) {
       responseType: 'arraybuffer',
     });
     return {
-      ok: res.status < 400 && hasCorsHeader(res.headers),
+      reachable: res.status < 400,
+      cors: hasCorsHeader(res.headers),
       contentType: res.headers['content-type'] || null,
       data: res.data,
     };
   } catch {
-    return { ok: false, contentType: null, data: null };
+    return { reachable: false, cors: false, contentType: null, data: null };
   }
+}
+
+/**
+ * Status for a reachable manifest from the two separate facts. Pure, so
+ * the mapping is testable without any network.
+ *   working === false            -> 'dead'   (content confirmed broken)
+ *   cors                         -> 'stream' (works, browser-playable)
+ *   otherwise                    -> 'nocors' (works or unverified, but a
+ *                                             browser can't fetch it directly)
+ */
+function manifestStatus(working, cors) {
+  if (working === false) return 'dead';
+  return cors ? 'stream' : 'nocors';
 }
 
 // Best-effort — MPEG-TS segments start with sync byte 0x47; fMP4 segments
@@ -173,17 +187,26 @@ function looksLikeBinaryMedia(buffer, contentType) {
  * to avoid downloading the whole file — the range is generous (16KB) so a
  * full HLS manifest is captured even with many variants/segments listed.
  *
+ * Every result carries two separate facts, exported alongside `status`:
+ *   working - true  = a real media segment was fetched (HLS: verified up to
+ *                     two hops deep — variant playlist, then a segment that
+ *                     looks like actual binary media); HTML page: reachable
+ *             false = a hop was unreachable or clearly not media
+ *             null  = reachable but content unverified (no reference found,
+ *                     DASH, inconclusive/empty body)
+ *   cors    - true/false for manifests = every fetched hop sent
+ *             Access-Control-Allow-Origin, i.e. hls.js on another origin can
+ *             play it directly; null for HTML pages (iframes don't need it)
+ *
  * status is one of:
  *   'ok'      - HTML page, reachable, not blocked from framing
- *   'stream'  - HLS manifest, reachable + CORS-open, AND (when found) its
- *               referenced content verified up to two hops deep: a variant
- *               sub-playlist, then a real video segment (confirmed
- *               reachable + CORS-open + looks like actual binary media,
- *               not text/HTML) — needs a video player on the user's site,
- *               NOT a bare iframe
- *   'blocked' - HTML page blocked from framing, a manifest with no CORS, or
- *               (HLS only) a confirmed-bad hop somewhere in that chain
- *   'dead'    - unreachable (4xx/5xx, timeout, network error)
+ *   'stream'  - manifest that works (or is unverified) AND is CORS-open —
+ *               needs a video player on the user's site, NOT a bare iframe
+ *   'nocors'  - manifest that works (or is unverified) but some hop has no
+ *               CORS header — fine in a native player, not in a browser
+ *   'blocked' - HTML page blocked from framing (X-Frame-Options / CSP)
+ *   'dead'    - unreachable (4xx/5xx, timeout, network error), or a manifest
+ *               whose referenced content is confirmed broken
  */
 async function checkUrl(url) {
   try {
@@ -196,37 +219,38 @@ async function checkUrl(url) {
     });
     const checkedAt = new Date().toISOString();
     if (res.status >= 400) {
-      return { status: 'dead', httpStatus: res.status, checkedAt };
+      return { status: 'dead', working: false, cors: null, httpStatus: res.status, checkedAt };
     }
 
     const contentType = res.headers['content-type'] || null;
     const isManifest = isManifestUrl(url, contentType, res.data);
-    const blockedByHeaders = isBlockedByHeaders(res.headers);
 
     if (isManifest) {
-      const corsOk = hasCorsHeader(res.headers);
-      let status = corsOk && !blockedByHeaders ? 'stream' : 'blocked';
+      let cors = hasCorsHeader(res.headers);
+      let working = null;
       let nestedUrl = null;
       let nestedOk = null;
       let segmentUrl = null;
       let segmentOk = null;
 
-      // Only bother verifying the referenced content for HLS (.m3u8) — the
-      // extractor understands its plain-text format; DASH's XML segment
-      // templates are out of scope, so an .mpd only gets the outer check.
-      if (status === 'stream' && urlPathname(url).endsWith('.m3u8')) {
+      // Verify the referenced content for HLS (.m3u8) regardless of CORS —
+      // "does it work" is a separate question from "can a browser fetch
+      // it". DASH's XML segment templates are out of scope, so an .mpd
+      // only gets the outer check (working stays null).
+      if (urlPathname(url).endsWith('.m3u8')) {
         const text = Buffer.from(res.data).toString('utf8');
         nestedUrl = extractFirstReference(text, url);
         if (nestedUrl) {
           const hop1 = await probeOnce(nestedUrl);
-          nestedOk = hop1.ok;
-          if (!nestedOk) {
-            status = 'blocked';
+          nestedOk = hop1.reachable;
+          if (!hop1.reachable) {
+            working = false;
           } else {
+            cors = cors && hop1.cors;
             // hop1 is usually another (variant) playlist, not real video
             // bytes yet — if so, follow one more hop to an actual segment.
-            // A confirmed-false verdict (not null/inconclusive) is the only
-            // thing allowed to flip status to 'blocked' here.
+            // Only a confirmed-false media verdict (not null/inconclusive)
+            // marks a chain as not working.
             const hop1IsManifest = bodyLooksLikeManifest(hop1.data);
             if (hop1IsManifest && urlPathname(nestedUrl).endsWith('.m3u8')) {
               const hop1Text = Buffer.from(hop1.data).toString('utf8');
@@ -234,26 +258,30 @@ async function checkUrl(url) {
               if (segmentUrl) {
                 const hop2 = await probeOnce(segmentUrl);
                 const mediaCheck = looksLikeBinaryMedia(hop2.data, hop2.contentType);
-                segmentOk = hop2.ok && mediaCheck !== false;
-                if (hop2.ok && mediaCheck === false) status = 'blocked';
-                else if (!hop2.ok) status = 'blocked';
+                segmentOk = hop2.reachable && mediaCheck !== false;
+                if (!hop2.reachable || mediaCheck === false) {
+                  working = false;
+                } else {
+                  working = mediaCheck === true ? true : null;
+                  cors = cors && hop2.cors;
+                }
               }
             } else if (hop1IsManifest === false) {
               // hop1 wasn't a nested playlist — treat it as the segment itself.
               segmentUrl = nestedUrl;
               const mediaCheck = looksLikeBinaryMedia(hop1.data, hop1.contentType);
               segmentOk = mediaCheck !== false;
-              if (mediaCheck === false) status = 'blocked';
+              working = mediaCheck === false ? false : mediaCheck === true ? true : null;
             }
-            // hop1IsManifest === null (inconclusive/empty body) -> leave as-is
+            // hop1IsManifest === null (inconclusive/empty body) -> unverified
           }
         }
-        // No reference found at all (e.g. empty/truncated playlist) — keep
-        // the outer 'stream' result rather than penalizing an inconclusive read.
       }
 
       return {
-        status,
+        status: manifestStatus(working, cors),
+        working,
+        cors,
         httpStatus: res.status,
         contentType,
         isManifest: true,
@@ -266,7 +294,9 @@ async function checkUrl(url) {
     }
 
     return {
-      status: blockedByHeaders ? 'blocked' : 'ok',
+      status: isBlockedByHeaders(res.headers) ? 'blocked' : 'ok',
+      working: true,
+      cors: null,
       httpStatus: res.status,
       contentType,
       isManifest: false,
@@ -275,6 +305,8 @@ async function checkUrl(url) {
   } catch (err) {
     return {
       status: 'dead',
+      working: false,
+      cors: null,
       error: err.message,
       isManifest: MANIFEST_EXTENSIONS.some((ext) => urlPathname(url).endsWith(ext)),
       checkedAt: new Date().toISOString(),
@@ -306,6 +338,7 @@ async function checkAll(urls, { force = false, onProgress } = {}) {
     checked: 0,
     ok: 0,
     stream: 0,
+    nocors: 0,
     blocked: 0,
     dead: 0,
     skipped: unique.length - toCheck.length,
@@ -331,20 +364,27 @@ async function checkAll(urls, { force = false, onProgress } = {}) {
 }
 
 /**
- * Returns NEW row objects (never mutates `rows`) with a `sourceStatuses`
- * array added to each channel, parallel to and the same length as
- * `sources` — one status string ('ok'/'stream'/'blocked'/'dead') or null
- * (never checked) per source URL. Used to label fixtures.csv/fixtures.json
- * exports with responding/not-responding info, not just the /browse page's
- * dots. `getSourceStatus` is injectable so this is testable with fakes.
+ * Returns NEW row objects (never mutates `rows`) with three arrays added to
+ * each channel, each parallel to and the same length as `sources`:
+ *   sourceStatuses - status string ('ok'/'stream'/'nocors'/'blocked'/'dead')
+ *                    or null (never checked)
+ *   sourceWorking  - true / false / null (unverified or never checked)
+ *   sourceCors     - true / false / null (n/a for HTML pages, or never checked)
+ * Used to label fixtures.csv/fixtures.json exports, not just the /browse
+ * page's dots. `getSourceStatus` is injectable so this is testable with fakes.
  */
 function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus) {
   return rows.map((r) => ({
     ...r,
-    channels: (r.channels || []).map((ch) => ({
-      ...ch,
-      sourceStatuses: (ch.sources || []).map((url) => getSourceStatus(url)?.status || null),
-    })),
+    channels: (r.channels || []).map((ch) => {
+      const results = (ch.sources || []).map((url) => getSourceStatus(url) || null);
+      return {
+        ...ch,
+        sourceStatuses: results.map((s) => s?.status || null),
+        sourceWorking: results.map((s) => (s && s.working !== undefined ? s.working : null)),
+        sourceCors: results.map((s) => (s && s.cors !== undefined ? s.cors : null)),
+      };
+    }),
   }));
 }
 
@@ -352,6 +392,7 @@ module.exports = {
   getStatus,
   checkAll,
   checkUrl,
+  manifestStatus,
   enrichRowsWithSourceStatus,
   bodyLooksLikeManifest,
   looksLikeBinaryMedia,

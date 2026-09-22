@@ -16,19 +16,24 @@ function baseRow(overrides = {}) {
   };
 }
 
-test('HEADER has Status followed by 10 Source_Status columns', () => {
-  assert.equal(HEADER[HEADER.length - 11], 'Status');
-  assert.deepEqual(HEADER.slice(-10), [
-    'Source1Status', 'Source2Status', 'Source3Status', 'Source4Status', 'Source5Status',
-    'Source6Status', 'Source7Status', 'Source8Status', 'Source9Status', 'Source10Status',
-  ]);
+// Trailing per-source blocks, in order: 10 Status, 10 Working, 10 Cors.
+const TRAILING = 30;
+const statusBlock = (cols) => cols.slice(-30, -20);
+const workingBlock = (cols) => cols.slice(-20, -10);
+const corsBlock = (cols) => cols.slice(-10);
+
+test('HEADER has Status followed by 10 Source_Status, 10 Source_Working, 10 Source_Cors columns', () => {
+  assert.equal(HEADER[HEADER.length - TRAILING - 1], 'Status');
+  assert.deepEqual(statusBlock(HEADER), Array.from({ length: 10 }, (_, i) => `Source${i + 1}Status`));
+  assert.deepEqual(workingBlock(HEADER), Array.from({ length: 10 }, (_, i) => `Source${i + 1}Working`));
+  assert.deepEqual(corsBlock(HEADER), Array.from({ length: 10 }, (_, i) => `Source${i + 1}Cors`));
 });
 
-test('row with no sourceStatuses renders blank Source_Status columns', () => {
+test('row with no source check data renders blank Status/Working/Cors columns', () => {
   const out = rowsToCsv([baseRow({ channels: [{ name: 'Sky', sources: ['http://a.m3u8'] }] })]);
   const lines = out.trim().split('\n');
   const dataCols = lines[1].split(',');
-  assert.deepEqual(dataCols.slice(-10), Array(10).fill(''));
+  assert.deepEqual(dataCols.slice(-TRAILING), Array(TRAILING).fill(''));
 });
 
 test('row with sourceStatuses renders them in the matching Source_N_Status column', () => {
@@ -36,18 +41,36 @@ test('row with sourceStatuses renders them in the matching Source_N_Status colum
     baseRow({ channels: [{ name: 'Sky', sources: ['http://a.m3u8', 'http://b.m3u8'], sourceStatuses: ['stream', 'dead'] }] }),
   ]);
   const lines = out.trim().split('\n');
-  const dataCols = lines[1].split(',');
-  const statusCols = dataCols.slice(-10);
+  const statusCols = statusBlock(lines[1].split(','));
   assert.equal(statusCols[0], 'stream');
   assert.equal(statusCols[1], 'dead');
   assert.deepEqual(statusCols.slice(2), Array(8).fill(''));
+});
+
+test('sourceWorking/sourceCors render as yes/no, null or missing as blank', () => {
+  const out = rowsToCsv([
+    baseRow({
+      channels: [
+        {
+          name: 'Sky',
+          sources: ['http://a.m3u8', 'http://b.m3u8', 'http://c.m3u8'],
+          sourceStatuses: ['nocors', 'dead', 'stream'],
+          sourceWorking: [true, false, null],
+          sourceCors: [false, null, true],
+        },
+      ],
+    }),
+  ]);
+  const cols = out.trim().split('\n')[1].split(',');
+  assert.deepEqual(workingBlock(cols).slice(0, 3), ['yes', 'no', '']);
+  assert.deepEqual(corsBlock(cols).slice(0, 3), ['no', '', 'yes']);
 });
 
 test('row with no status renders blank Status column', () => {
   const out = rowsToCsv([baseRow()]);
   const lines = out.trim().split('\n');
   const dataCols = lines[1].split(',');
-  assert.equal(dataCols[dataCols.length - 11], '');
+  assert.equal(dataCols[dataCols.length - TRAILING - 1], '');
 });
 
 test('row with status live/ended renders verbatim', () => {
@@ -55,8 +78,8 @@ test('row with status live/ended renders verbatim', () => {
   const lines = out.trim().split('\n');
   const liveCols = lines[1].split(',');
   const endedCols = lines[2].split(',');
-  assert.equal(liveCols[liveCols.length - 11], 'live');
-  assert.equal(endedCols[endedCols.length - 11], 'ended');
+  assert.equal(liveCols[liveCols.length - TRAILING - 1], 'live');
+  assert.equal(endedCols[endedCols.length - TRAILING - 1], 'ended');
 });
 
 test('column count matches header count for every data row', () => {
