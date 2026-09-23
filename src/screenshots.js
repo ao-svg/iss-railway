@@ -20,7 +20,7 @@ const sourceChecks = require('./sourceChecks');
 
 const DIR = path.join(__dirname, '..', 'data', 'screenshots');
 const INDEX_PATH = path.join(__dirname, '..', 'data', 'screenshots.json');
-const CONCURRENCY = 4;
+const CONCURRENCY = 8;
 // A live stream needs the player script, the master + variant playlists
 // and usually 2–3 segments buffered before the first frame decodes — 8 s
 // lost most working streams to timeouts in the first real pass, 20 s did
@@ -54,6 +54,10 @@ function screenshotId(url) {
 
 function getScreenshot(url) {
   return _index[url] || null;
+}
+
+function getAllScreenshots() {
+  return _index;
 }
 
 /**
@@ -146,13 +150,21 @@ async function captureOne(page, url) {
 }
 
 /**
- * Capture every URL in `urls` (deduped). Entries for URLs not in this
- * pass are dropped from the index and their files pruned, so the folder
- * only ever holds the current dataset's latest captures.
+ * Capture every URL in `urls` (deduped). By default this is a full pass:
+ * entries for URLs not in it are dropped from the index and their files
+ * pruned, so the folder only holds the current dataset's latest captures.
+ * With `partial: true` (the retry pass for sources that have no good
+ * image yet) existing entries are kept untouched.
  */
-async function captureAll(urls, { onProgress } = {}) {
-  const unique = [...new Set(urls)];
-  const summary = { total: unique.length, captured: 0, failed: 0, stoppedEarly: false };
+async function captureAll(urls, { onProgress, partial = false } = {}) {
+  // Working sources first so the pictures that matter land in the first
+  // minute; the dead ones (fast failures) trail behind.
+  const rank = (url) => {
+    const c = sourceChecks.getStatus(url);
+    return c && c.working === true ? 0 : c && c.working === false ? 2 : 1;
+  };
+  const unique = [...new Set(urls)].sort((a, b) => rank(a) - rank(b));
+  const summary = { total: unique.length, captured: 0, failed: 0, stoppedEarly: false, partial };
   if (!unique.length) return summary;
   fs.mkdirSync(DIR, { recursive: true });
 
@@ -208,14 +220,13 @@ async function captureAll(urls, { onProgress } = {}) {
   }
 
   // Keep the previous capture for anything this pass didn't reach (time
-  // budget) rather than blanking it; drop everything outside the dataset.
-  const keep = new Set(unique);
-  const nextIndex = {};
+  // budget) rather than blanking it. A full pass also drops everything
+  // outside the dataset; a partial (retry) pass leaves the rest alone.
+  const nextIndex = partial ? { ..._index } : {};
   for (const url of unique) {
     if (results[url]) nextIndex[url] = results[url];
     else if (_index[url]) nextIndex[url] = _index[url];
   }
-  for (const url of Object.keys(_index)) if (!keep.has(url)) delete _index[url];
   _index = nextIndex;
   saveIndex(_index);
 
@@ -224,8 +235,8 @@ async function captureAll(urls, { onProgress } = {}) {
     if (name.endsWith('.jpg') && !referenced.has(name)) fs.unlinkSync(path.join(DIR, name));
   }
 
-  console.log(`[screenshots] ${summary.captured} captured, ${summary.failed} failed of ${summary.total}${summary.stoppedEarly ? ' (stopped early: time budget)' : ''}`);
+  console.log(`[screenshots] ${partial ? 'retry' : 'full'} pass: ${summary.captured} captured, ${summary.failed} failed of ${summary.total}${summary.stoppedEarly ? ' (stopped early: time budget)' : ''}`);
   return summary;
 }
 
-module.exports = { captureAll, captureOne, getScreenshot, screenshotId, playerHtml, DIR };
+module.exports = { captureAll, captureOne, getScreenshot, getAllScreenshots, screenshotId, playerHtml, DIR };

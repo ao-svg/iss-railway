@@ -104,10 +104,17 @@ function allSourceUrls() {
 // source-check statuses (Source1Status..Source10Status) no matter what
 // triggered the rewrite — a source check, a translation, or a league
 // alias change all go through this instead of a raw writeCsv() call.
+// Screenshot links in the exports are always absolute so they can be
+// pulled straight from the CSV/JSON — the configured public URL on
+// Railway, this process's own address otherwise.
+function exportBaseUrl() {
+  return getConfig().publicBaseUrl || `http://localhost:${port}`;
+}
+
 function enrichRows(rows) {
   return sourceChecks.enrichRowsWithSourceStatus(rows, sourceChecks.getStatus, {
     getScreenshot: screenshots.getScreenshot,
-    publicBaseUrl: getConfig().publicBaseUrl,
+    publicBaseUrl: exportBaseUrl(),
   });
 }
 
@@ -117,14 +124,25 @@ function writeFixturesCsv() {
   writeCsv(enrichRows(state.lastRows), outputCsvPath);
 }
 
-async function runScreenshots() {
+// Full pass = every source (dashboard button, every 3rd scheduled check).
+// retryOnly = just the sources with no good image yet — a failed capture
+// gets another go on the very next check instead of waiting for the next
+// full pass, and existing good images are left untouched.
+async function runScreenshots({ retryOnly = false } = {}) {
   if (state.screenshotRunning) return state;
-  const urls = allSourceUrls();
+  let urls = [...new Set(allSourceUrls())];
+  if (retryOnly) {
+    urls = urls.filter((url) => {
+      const shot = screenshots.getScreenshot(url);
+      return !(shot && shot.ok);
+    });
+  }
   if (!urls.length) return state;
   state.screenshotRunning = true;
-  state.screenshotProgress = { done: 0, total: new Set(urls).size };
+  state.screenshotProgress = { done: 0, total: urls.length };
   try {
     const summary = await screenshots.captureAll(urls, {
+      partial: retryOnly,
       onProgress: (done, total) => {
         state.screenshotProgress = { done, total };
       },
@@ -344,13 +362,12 @@ function scheduleCron() {
       if (state.checkRunning) return; // skipped ticks don't count toward the screenshot cadence
       await runSourceCheck().catch((err) => console.error('[sourceChecks]', err.message));
       state.sourceCheckRuns += 1;
-      // Every 3rd check (~9 min by default) also captures what each source
-      // shows. A pass takes longer than that for a big dataset, so a
-      // trigger that lands mid-pass is simply skipped by runScreenshots'
-      // own guard — passes run back to back, never stacked.
-      if (state.sourceCheckRuns % 3 === 0) {
-        runScreenshots().catch((err) => console.error('[screenshots]', err.message));
-      }
+      // Every 3rd check (~9 min by default) re-captures every source; the
+      // checks in between retry only the sources that still have no good
+      // image. A trigger that lands mid-pass is simply skipped by
+      // runScreenshots' own guard — passes run back to back, never stacked.
+      const retryOnly = state.sourceCheckRuns % 3 !== 0;
+      runScreenshots({ retryOnly }).catch((err) => console.error('[screenshots]', err.message));
     });
     console.log(`[index] source checks scheduled: ${getConfig().sourceCheckCronExpr}`);
   }
@@ -381,6 +398,7 @@ if (runOnlyFlag) {
     removeManualChannel: removeManualChannelAndRefresh,
     runScreenshots,
     getScreenshot: screenshots.getScreenshot,
+    getAllScreenshots: screenshots.getAllScreenshots,
     runLiveTvFetch,
     getAllYouTubeChannels: youtubeChannels.getAllChannels,
     setChannelStatus: setChannelStatusAndRefresh,

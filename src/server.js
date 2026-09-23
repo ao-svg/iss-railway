@@ -7,6 +7,7 @@ const auth = require('./auth');
 const sourceChecks = require('./sourceChecks');
 const iptv = require('./iptv');
 const manualChannels = require('./manualChannels');
+const { buildZip } = require('./zip');
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({
@@ -247,9 +248,9 @@ function renderDashboard(state, config, getPlaylistStatus) {
     screenshotStatusLine = `<span class="status-warn">● capturing… ${p ? `${p.done}/${p.total}` : ''}</span>`;
   } else if (state.lastScreenshotSummary) {
     const s = state.lastScreenshotSummary;
-    screenshotStatusLine = `<span class="muted">Last pass ${escapeHtml(state.lastScreenshotAt)} — ${s.captured} captured, ${s.failed} failed of ${s.total}${s.stoppedEarly ? ' (stopped early: time budget)' : ''}</span>`;
+    screenshotStatusLine = `<span class="muted">Last ${s.partial ? 'retry' : 'full'} pass ${escapeHtml(state.lastScreenshotAt)} — ${s.captured} captured, ${s.failed} failed of ${s.total}${s.stoppedEarly ? ' (stopped early: time budget)' : ''}</span>`;
   } else {
-    screenshotStatusLine = '<span class="muted">Never captured — runs on every 3rd scheduled source check</span>';
+    screenshotStatusLine = '<span class="muted">Never captured — a full pass runs on every 3rd scheduled source check, the checks in between retry sources with no image yet</span>';
   }
 
   const namesToTranslate = new Set();
@@ -354,9 +355,15 @@ function renderDashboard(state, config, getPlaylistStatus) {
         <button type="submit" name="force" value="1" class="secondary" ${state.checkRunning ? 'disabled' : ''}>Re-check all (ignore cache)</button>
       </form>
       <p><strong>Screenshots</strong> <span class="muted">— what each source actually shows, captured in a headless browser</span><br>${screenshotStatusLine}</p>
-      <form method="POST" action="/api/screenshots">
-        <button type="submit" ${state.screenshotRunning ? 'disabled' : ''}>Capture screenshots now</button>
-      </form>
+      <div class="inline-form">
+        <form method="POST" action="/api/screenshots">
+          <button type="submit" ${state.screenshotRunning ? 'disabled' : ''}>Capture screenshots now</button>
+        </form>
+        <form method="GET" action="/screenshots.zip">
+          <button type="submit" class="secondary" ${state.lastScreenshotSummary ? '' : 'disabled'}>Download all screenshots (.zip)</button>
+        </form>
+        <a href="/screenshots.json" class="muted">index (json)</a>
+      </div>
       <p class="muted">Green = HTML page, directly &lt;iframe&gt;-embeddable. Amber = live stream manifest (HLS/DASH) — reachable and CORS-open (for HLS, its first actual video segment is verified too, not just the master playlist), but needs a &lt;video&gt; player (hls.js/dash.js) on your page, not a bare iframe. Red = dead link, blocks framing (X-Frame-Options/CSP), a manifest with no CORS access, or (HLS) one whose first segment isn't reachable. See <a href="/browse">Browse all</a> for per-source status.</p>
     </div>
 
@@ -926,6 +933,7 @@ function createServer({
   removeManualChannel,
   runScreenshots,
   getScreenshot,
+  getAllScreenshots,
   runLiveTvFetch,
   getAllYouTubeChannels,
   setChannelStatus,
@@ -936,10 +944,12 @@ function createServer({
   // Public like fixtures.json/fixtures.csv — the exports link here.
   app.use('/screenshots', express.static(path.join(__dirname, '..', 'data', 'screenshots'), { maxAge: '1m' }));
 
-  const enrichExport = (rows) =>
+  // Screenshot links are always absolute — configured public URL, else
+  // the address this request came in on — so they're pullable as-is.
+  const enrichExport = (rows, req) =>
     sourceChecks.enrichRowsWithSourceStatus(rows, getSourceStatus, {
       getScreenshot,
-      publicBaseUrl: getConfig().publicBaseUrl,
+      publicBaseUrl: getConfig().publicBaseUrl || `${req.protocol}://${req.get('host')}`,
     });
 
   app.get('/health', (req, res) => res.json({ ok: true }));
@@ -956,6 +966,36 @@ function createServer({
   app.post('/api/screenshots', requireAuth('admin'), (req, res) => {
     runScreenshots().catch((err) => console.error('[screenshots]', err.message));
     res.redirect('/');
+  });
+
+  // Source URL -> { image, capturedAt, ok, error } for everything in the
+  // latest pass. Public like the exports (they already link the images).
+  app.get('/screenshots.json', (req, res) => {
+    const base = getConfig().publicBaseUrl || `${req.protocol}://${req.get('host')}`;
+    const index = getAllScreenshots ? getAllScreenshots() : {};
+    const out = {};
+    for (const [url, s] of Object.entries(index)) {
+      out[url] = { image: s.ok && s.file ? `${base}/screenshots/${s.file}` : null, capturedAt: s.capturedAt, ok: s.ok, error: s.error || null };
+    }
+    res.json(out);
+  });
+
+  // Every current capture in one archive, plus the index, for pulling
+  // them off the server in one click.
+  app.get('/screenshots.zip', requireAuth('admin'), (req, res) => {
+    const dir = path.join(__dirname, '..', 'data', 'screenshots');
+    const index = getAllScreenshots ? getAllScreenshots() : {};
+    const files = [];
+    for (const [url, s] of Object.entries(index)) {
+      if (!s.ok || !s.file) continue;
+      const full = path.join(dir, s.file);
+      if (!fs.existsSync(full)) continue;
+      files.push({ name: s.file, data: fs.readFileSync(full), mtime: new Date(s.capturedAt) });
+    }
+    files.push({ name: 'index.json', data: Buffer.from(JSON.stringify(index, null, 2)), mtime: new Date() });
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="screenshots-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.zip"`);
+    res.send(buildZip(files));
   });
 
   app.get('/iptv-channels', requireAuth('admin'), async (req, res) => {
@@ -1100,7 +1140,7 @@ function createServer({
   app.get('/fixtures.json', (req, res) => {
     const rows = getState().lastRows;
     if (!rows) return res.status(404).json({ error: 'No data yet — pipeline has not completed a run.' });
-    res.json(enrichExport(rows));
+    res.json(enrichExport(rows, req));
   });
 
   app.get('/live.csv', (req, res) => {
@@ -1116,7 +1156,7 @@ function createServer({
   app.get('/live.json', (req, res) => {
     const rows = getState().liveRowsNormalized;
     if (!rows) return res.status(404).json({ error: 'No data yet — fetch live streams has not completed a run.' });
-    res.json(enrichExport(rows));
+    res.json(enrichExport(rows, req));
   });
 
   return app;
