@@ -34,6 +34,9 @@ const HEADER = [
   // / not applicable), since a single status string can't say both.
   ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Working`),
   ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Cors`),
+  // The URL the host actually served after redirects (typically its
+  // tokenized per-session URL), only when it differs from Source_N.
+  ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Resolved`),
 ];
 
 function yesNo(value) {
@@ -137,6 +140,8 @@ function rowsToCsv(rows) {
       const cors = ch.sourceCors || [];
       const workingCols = Array.from({ length: MAX_SOURCES }, (_, i) => yesNo(working[i]));
       const corsCols = Array.from({ length: MAX_SOURCES }, (_, i) => yesNo(cors[i]));
+      const resolved = ch.sourceResolved || [];
+      const resolvedCols = Array.from({ length: MAX_SOURCES }, (_, i) => resolved[i] || '');
       lines.push(
         [
           date,
@@ -158,6 +163,7 @@ function rowsToCsv(rows) {
           ...statusCols,
           ...workingCols,
           ...corsCols,
+          ...resolvedCols,
         ]
           .map(escapeCsvField)
           .join(',')

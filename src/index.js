@@ -40,6 +40,7 @@ const state = {
 };
 
 let cronTask = null;
+let sourceCheckTask = null;
 
 async function runOnce() {
   if (state.running) return state;
@@ -287,6 +288,26 @@ function scheduleCron() {
   }
   cronTask = cron.schedule(getConfig().cronExpr, runOnce);
   console.log(`[index] pipeline scheduled: ${getConfig().cronExpr}`);
+
+  // Source checks on their own schedule. runSourceCheck() already no-ops
+  // while a check is in progress, so a tick that lands mid-run is simply
+  // skipped rather than piling up — a full pass over hundreds of dead URLs
+  // can take longer than the interval.
+  if (sourceCheckTask) sourceCheckTask.stop();
+  sourceCheckTask = null;
+  const { sourceCheckCronExpr } = getConfig();
+  if (!sourceCheckCronExpr) {
+    console.log('[index] source checks: no schedule (runs after pipeline runs / on demand only)');
+  } else if (!cron.validate(sourceCheckCronExpr)) {
+    console.error(`[index] invalid SOURCE_CHECK_CRON "${sourceCheckCronExpr}", falling back to every 3 min`);
+    getConfig().sourceCheckCronExpr = '*/3 * * * *';
+  }
+  if (getConfig().sourceCheckCronExpr) {
+    sourceCheckTask = cron.schedule(getConfig().sourceCheckCronExpr, () => {
+      runSourceCheck().catch((err) => console.error('[sourceChecks]', err.message));
+    });
+    console.log(`[index] source checks scheduled: ${getConfig().sourceCheckCronExpr}`);
+  }
 }
 
 const runOnlyFlag = process.argv.includes('--once');

@@ -24,7 +24,11 @@ const axios = require('axios');
 
 const CACHE_PATH = path.join(__dirname, '..', 'data', 'source-checks.json');
 const CHECK_TTL_MS = 12 * 60 * 60 * 1000; // HTML pages — comparatively stable
-const MANIFEST_TTL_MS = 2 * 60 * 60 * 1000; // manifests — these CDNs rotate/die within hours
+// Manifests rotate/die within hours, and the scheduled check (index.js,
+// SOURCE_CHECK_CRON, every 3 min by default) should actually re-verify
+// them each time rather than skip them as fresh — so the TTL matches
+// that cadence. HTML pages are comparatively stable and keep the long TTL.
+const MANIFEST_TTL_MS = 3 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 8000;
 const CONCURRENCY = 8;
 
@@ -218,8 +222,13 @@ async function checkUrl(url) {
       responseType: 'arraybuffer',
     });
     const checkedAt = new Date().toISOString();
+    // The URL the host actually served after redirects — stream CDNs
+    // commonly bounce a stable URL to a per-session tokenized one, and the
+    // token expires, so re-capturing it on every check (see the source
+    // check schedule in index.js) is what keeps the exported URL playable.
+    const resolvedUrl = res.request?.res?.responseUrl || url;
     if (res.status >= 400) {
-      return { status: 'dead', working: false, cors: null, httpStatus: res.status, checkedAt };
+      return { status: 'dead', working: false, cors: null, resolvedUrl, httpStatus: res.status, checkedAt };
     }
 
     const contentType = res.headers['content-type'] || null;
@@ -282,6 +291,7 @@ async function checkUrl(url) {
         status: manifestStatus(working, cors),
         working,
         cors,
+        resolvedUrl,
         httpStatus: res.status,
         contentType,
         isManifest: true,
@@ -297,6 +307,7 @@ async function checkUrl(url) {
       status: isBlockedByHeaders(res.headers) ? 'blocked' : 'ok',
       working: true,
       cors: null,
+      resolvedUrl,
       httpStatus: res.status,
       contentType,
       isManifest: false,
@@ -370,6 +381,9 @@ async function checkAll(urls, { force = false, onProgress } = {}) {
  *                    or null (never checked)
  *   sourceWorking  - true / false / null (unverified or never checked)
  *   sourceCors     - true / false / null (n/a for HTML pages, or never checked)
+ *   sourceResolved - the URL the host actually served after redirects (e.g.
+ *                    its tokenized per-session URL) when it differs from
+ *                    the source URL, else null
  * Used to label fixtures.csv/fixtures.json exports, not just the /browse
  * page's dots. `getSourceStatus` is injectable so this is testable with fakes.
  */
@@ -377,12 +391,14 @@ function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus) {
   return rows.map((r) => ({
     ...r,
     channels: (r.channels || []).map((ch) => {
-      const results = (ch.sources || []).map((url) => getSourceStatus(url) || null);
+      const sources = ch.sources || [];
+      const results = sources.map((url) => getSourceStatus(url) || null);
       return {
         ...ch,
         sourceStatuses: results.map((s) => s?.status || null),
         sourceWorking: results.map((s) => (s && s.working !== undefined ? s.working : null)),
         sourceCors: results.map((s) => (s && s.cors !== undefined ? s.cors : null)),
+        sourceResolved: results.map((s, i) => (s?.resolvedUrl && s.resolvedUrl !== sources[i] ? s.resolvedUrl : null)),
       };
     }),
   }));

@@ -115,12 +115,22 @@ test('enrichRowsWithSourceStatus: adds a parallel sourceStatuses array, never mu
       channels: [{ name: 'Sky', sources: ['http://a.m3u8', 'http://b.m3u8'] }],
     },
   ];
-  const fakeStatus = (url) => (url === 'http://a.m3u8' ? { status: 'nocors', working: true, cors: false } : null);
+  const fakeStatus = (url) =>
+    url === 'http://a.m3u8'
+      ? { status: 'nocors', working: true, cors: false, resolvedUrl: 'http://cdn.example/a.m3u8?token=abc' }
+      : null;
   const out = enrichRowsWithSourceStatus(rows, fakeStatus);
 
   assert.deepEqual(out[0].channels[0].sourceStatuses, ['nocors', null]);
   assert.deepEqual(out[0].channels[0].sourceWorking, [true, null]);
   assert.deepEqual(out[0].channels[0].sourceCors, [false, null]);
+  assert.deepEqual(out[0].channels[0].sourceResolved, ['http://cdn.example/a.m3u8?token=abc', null]);
+});
+
+test('enrichRowsWithSourceStatus: a resolvedUrl identical to the source is reported as null, not repeated', () => {
+  const rows = [{ eventId: 'e1', channels: [{ name: 'Sky', sources: ['http://a.m3u8'] }] }];
+  const out = enrichRowsWithSourceStatus(rows, () => ({ status: 'stream', resolvedUrl: 'http://a.m3u8' }));
+  assert.deepEqual(out[0].channels[0].sourceResolved, [null]);
   assert.equal(out[0].channels[0].sources[0], 'http://a.m3u8'); // sources unchanged
   assert.ok(!('sourceStatuses' in rows[0].channels[0])); // original row never mutated
 });

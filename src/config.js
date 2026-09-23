@@ -23,6 +23,11 @@ function envDefaults() {
     doms9PlaylistUrl:
       process.env.DOMS9_PLAYLIST_URL || 'https://raw.githubusercontent.com/doms9/iptv/default/M3U8/TV.m3u8',
     cronExpr: process.env.PIPELINE_CRON || '0 */6 * * *',
+    // Source checks get their own, much tighter schedule — stream URLs
+    // rotate/die within hours, so waiting for the next pipeline run leaves
+    // exports stale. Blank disables the schedule (checks then only run
+    // after a pipeline run or from the dashboard button).
+    sourceCheckCronExpr: process.env.SOURCE_CHECK_CRON ?? '*/3 * * * *',
     outputCsvPath: process.env.OUTPUT_CSV_PATH || './data/fixtures.csv',
     wtmDays: Number(process.env.WTM_DAYS) || 31,
     // Empty by default — the "live streaming" feature (src/liveTv.js) is a

@@ -302,6 +302,7 @@ function renderDashboard(state, config, getPlaylistStatus) {
         <tr><th>Fixtures written</th><td>${state.lastRunCount ?? '—'} (SportsDB: ${sourceCounts.sportsdb || 0}, wheresthematch: ${sourceCounts.wheresthematch || 0})</td></tr>
         <tr><th>Date coverage</th><td>${escapeHtml(coverage)}</td></tr>
         <tr><th>Schedule</th><td><code>${escapeHtml(config.cronExpr)}</code></td></tr>
+        <tr><th>Source check schedule</th><td>${config.sourceCheckCronExpr ? `<code>${escapeHtml(config.sourceCheckCronExpr)}</code>` : '<span class="muted">none — after pipeline runs / on demand</span>'}</td></tr>
         <tr><th>Leagues configured</th><td>${config.leagueIds.length}</td></tr>
         <tr><th>wheresthematch.com lookahead</th><td>${config.wtmDays} days</td></tr>
         <tr><th>iptv-org channel list</th><td>${iptvOrgPlaylistLine}</td></tr>
@@ -371,6 +372,7 @@ function statusDot(url, getSourceStatus) {
   if (cached) {
     const fact = (v) => (v === true ? 'yes' : v === false ? 'no' : 'unverified');
     title = `${cached.status} — working: ${fact(cached.working)}, CORS: ${cached.cors === null || cached.cors === undefined ? 'n/a' : fact(cached.cors)} (checked ${cached.checkedAt})`;
+    if (cached.resolvedUrl && cached.resolvedUrl !== url) title += ` — resolves to ${cached.resolvedUrl}`;
     if (cached.nestedUrl) {
       title += cached.nestedOk
         ? ' — first segment verified reachable'
@@ -858,6 +860,9 @@ function renderSettings(config, saved) {
         <label for="cronExpr">Cron schedule</label>
         <input type="text" id="cronExpr" name="cronExpr" value="${escapeHtml(config.cronExpr)}">
 
+        <label for="sourceCheckCronExpr">Source check schedule (cron, blank = only after pipeline runs / on demand)</label>
+        <input type="text" id="sourceCheckCronExpr" name="sourceCheckCronExpr" value="${escapeHtml(config.sourceCheckCronExpr || '')}" placeholder="*/3 * * * *">
+
         <label for="wtmDays">wheresthematch.com lookahead (days)</label>
         <input type="text" id="wtmDays" name="wtmDays" value="${escapeHtml(config.wtmDays)}">
 
@@ -1000,8 +1005,19 @@ function createServer({
   });
 
   app.post('/settings', requireAuth('admin'), (req, res) => {
-    const { apiKey, leagueIds, playlistUrl, doms9PlaylistUrl, cronExpr, wtmDays, liveTvDomain, livesportsontvLeagues } = req.body;
-    updateConfig({ apiKey, leagueIds, playlistUrl, doms9PlaylistUrl, cronExpr, wtmDays, liveTvDomain, livesportsontvLeagues });
+    const { apiKey, leagueIds, playlistUrl, doms9PlaylistUrl, cronExpr, sourceCheckCronExpr, wtmDays, liveTvDomain, livesportsontvLeagues } =
+      req.body;
+    updateConfig({
+      apiKey,
+      leagueIds,
+      playlistUrl,
+      doms9PlaylistUrl,
+      cronExpr,
+      sourceCheckCronExpr: (sourceCheckCronExpr || '').trim(),
+      wtmDays,
+      liveTvDomain,
+      livesportsontvLeagues,
+    });
     rescheduleCron();
     res.redirect('/settings?saved=1');
   });
