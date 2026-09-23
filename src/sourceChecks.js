@@ -384,10 +384,14 @@ async function checkAll(urls, { force = false, onProgress } = {}) {
  *   sourceResolved - the URL the host actually served after redirects (e.g.
  *                    its tokenized per-session URL) when it differs from
  *                    the source URL, else null
+ *   sourceScreenshot - link to the latest capture of what the source shows
+ *                    (screenshots.js), or null when there is none
  * Used to label fixtures.csv/fixtures.json exports, not just the /browse
- * page's dots. `getSourceStatus` is injectable so this is testable with fakes.
+ * page's dots. `getSourceStatus` / `getScreenshot` are injectable so this
+ * is testable with fakes (and screenshots.js can depend on this module
+ * without a require cycle).
  */
-function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus) {
+function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus, { getScreenshot = () => null, publicBaseUrl = '' } = {}) {
   return rows.map((r) => ({
     ...r,
     channels: (r.channels || []).map((ch) => {
@@ -399,6 +403,10 @@ function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus) {
         sourceWorking: results.map((s) => (s && s.working !== undefined ? s.working : null)),
         sourceCors: results.map((s) => (s && s.cors !== undefined ? s.cors : null)),
         sourceResolved: results.map((s, i) => (s?.resolvedUrl && s.resolvedUrl !== sources[i] ? s.resolvedUrl : null)),
+        sourceScreenshot: sources.map((url) => {
+          const shot = getScreenshot(url);
+          return shot && shot.ok && shot.file ? `${publicBaseUrl}/screenshots/${shot.file}` : null;
+        }),
       };
     }),
   }));

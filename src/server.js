@@ -1,5 +1,6 @@
 const express = require('express');
 const fs = require('fs');
+const path = require('path');
 const { getConfig, updateConfig } = require('./config');
 const { formatBeijing, formatInTimezone } = require('./csv');
 const auth = require('./auth');
@@ -107,6 +108,7 @@ function layout(title, body, activePath = '') {
   .dot-blocked, .dot-dead { background: #f87171; }
   .dot-nocors { background: #c084fc; }
   .dot-unchecked { background: #475569; }
+  .thumb { height: 40px; vertical-align: middle; margin-left: 0.4rem; border-radius: 3px; border: 1px solid var(--border); }
   #search-box { margin-bottom: 1rem; }
   #row-count { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem; }
   .badge { display: inline-block; font-size: 0.7rem; padding: 0.05rem 0.4rem; border-radius: 4px; margin-left: 0.4rem; }
@@ -239,6 +241,17 @@ function renderDashboard(state, config, getPlaylistStatus) {
     checkStatusLine = '<span class="muted">Never checked</span>';
   }
 
+  let screenshotStatusLine;
+  if (state.screenshotRunning) {
+    const p = state.screenshotProgress;
+    screenshotStatusLine = `<span class="status-warn">● capturing… ${p ? `${p.done}/${p.total}` : ''}</span>`;
+  } else if (state.lastScreenshotSummary) {
+    const s = state.lastScreenshotSummary;
+    screenshotStatusLine = `<span class="muted">Last pass ${escapeHtml(state.lastScreenshotAt)} — ${s.captured} captured, ${s.failed} failed of ${s.total}${s.stoppedEarly ? ' (stopped early: time budget)' : ''}</span>`;
+  } else {
+    screenshotStatusLine = '<span class="muted">Never captured — runs on every 3rd scheduled source check</span>';
+  }
+
   const namesToTranslate = new Set();
   for (const r of state.lastRows || []) {
     if (r.league) namesToTranslate.add(r.league);
@@ -340,6 +353,10 @@ function renderDashboard(state, config, getPlaylistStatus) {
         <button type="submit" ${state.checkRunning ? 'disabled' : ''}>Check sources now</button>
         <button type="submit" name="force" value="1" class="secondary" ${state.checkRunning ? 'disabled' : ''}>Re-check all (ignore cache)</button>
       </form>
+      <p><strong>Screenshots</strong> <span class="muted">— what each source actually shows, captured in a headless browser</span><br>${screenshotStatusLine}</p>
+      <form method="POST" action="/api/screenshots">
+        <button type="submit" ${state.screenshotRunning ? 'disabled' : ''}>Capture screenshots now</button>
+      </form>
       <p class="muted">Green = HTML page, directly &lt;iframe&gt;-embeddable. Amber = live stream manifest (HLS/DASH) — reachable and CORS-open (for HLS, its first actual video segment is verified too, not just the master playlist), but needs a &lt;video&gt; player (hls.js/dash.js) on your page, not a bare iframe. Red = dead link, blocks framing (X-Frame-Options/CSP), a manifest with no CORS access, or (HLS) one whose first segment isn't reachable. See <a href="/browse">Browse all</a> for per-source status.</p>
     </div>
 
@@ -382,7 +399,17 @@ function statusDot(url, getSourceStatus) {
   return `<span class="dot ${cls}" title="${escapeHtml(title)}"></span>`;
 }
 
-function renderBrowse(state, getSourceStatus, tz = 'beijing') {
+function screenshotThumb(url, getScreenshot) {
+  const shot = getScreenshot ? getScreenshot(url) : null;
+  if (!shot) return '';
+  if (!shot.ok || !shot.file) {
+    return ` <span class="no-url" title="${escapeHtml(shot.error || '')} (${escapeHtml(shot.capturedAt || '')})">(no frame)</span>`;
+  }
+  const src = `/screenshots/${encodeURIComponent(shot.file)}`;
+  return `<a href="${src}" target="_blank" rel="noopener"><img class="thumb" src="${src}" alt="" title="captured ${escapeHtml(shot.capturedAt || '')}"></a>`;
+}
+
+function renderBrowse(state, getSourceStatus, tz = 'beijing', getScreenshot = null) {
   const rows = state.lastRows || [];
 
   const tableRows = rows
@@ -396,7 +423,7 @@ function renderBrowse(state, getSourceStatus, tz = 'beijing') {
               const sourceItems = sources
                 .map(
                   (url) =>
-                    `<li>${statusDot(url, getSourceStatus)}<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a></li>`
+                    `<li>${statusDot(url, getSourceStatus)}<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a>${screenshotThumb(url, getScreenshot)}</li>`
                 )
                 .join('');
               return `<li><span class="channel-name">${escapeHtml(ch.name)}</span>${(ch.manualUrls || []).length ? ' <span class="badge badge-manual">manual</span>' : ''}${sources.length ? '' : '<span class="no-url">(no stream match)</span>'}
@@ -897,6 +924,8 @@ function createServer({
   getManualChannelsAll,
   addManualChannel,
   removeManualChannel,
+  runScreenshots,
+  getScreenshot,
   runLiveTvFetch,
   getAllYouTubeChannels,
   setChannelStatus,
@@ -904,6 +933,14 @@ function createServer({
 }) {
   const app = express();
   app.use(express.urlencoded({ extended: false }));
+  // Public like fixtures.json/fixtures.csv — the exports link here.
+  app.use('/screenshots', express.static(path.join(__dirname, '..', 'data', 'screenshots'), { maxAge: '1m' }));
+
+  const enrichExport = (rows) =>
+    sourceChecks.enrichRowsWithSourceStatus(rows, getSourceStatus, {
+      getScreenshot,
+      publicBaseUrl: getConfig().publicBaseUrl,
+    });
 
   app.get('/health', (req, res) => res.json({ ok: true }));
 
@@ -913,7 +950,12 @@ function createServer({
 
   app.get('/browse', requireAuth('viewer'), (req, res) => {
     const tz = req.query.tz === 'jerusalem' ? 'jerusalem' : 'beijing';
-    res.send(renderBrowse(getState(), getSourceStatus, tz));
+    res.send(renderBrowse(getState(), getSourceStatus, tz, getScreenshot));
+  });
+
+  app.post('/api/screenshots', requireAuth('admin'), (req, res) => {
+    runScreenshots().catch((err) => console.error('[screenshots]', err.message));
+    res.redirect('/');
   });
 
   app.get('/iptv-channels', requireAuth('admin'), async (req, res) => {
@@ -1058,7 +1100,7 @@ function createServer({
   app.get('/fixtures.json', (req, res) => {
     const rows = getState().lastRows;
     if (!rows) return res.status(404).json({ error: 'No data yet — pipeline has not completed a run.' });
-    res.json(sourceChecks.enrichRowsWithSourceStatus(rows, getSourceStatus));
+    res.json(enrichExport(rows));
   });
 
   app.get('/live.csv', (req, res) => {
@@ -1074,7 +1116,7 @@ function createServer({
   app.get('/live.json', (req, res) => {
     const rows = getState().liveRowsNormalized;
     if (!rows) return res.status(404).json({ error: 'No data yet — fetch live streams has not completed a run.' });
-    res.json(sourceChecks.enrichRowsWithSourceStatus(rows, getSourceStatus));
+    res.json(enrichExport(rows));
   });
 
   return app;

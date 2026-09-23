@@ -11,6 +11,7 @@ const liveTvStore = require('./liveTvStore');
 const youtubeChannels = require('./youtubeChannels');
 const iptv = require('./iptv');
 const manualChannels = require('./manualChannels');
+const screenshots = require('./screenshots');
 const { writeCsv } = require('./csv');
 
 const port = process.env.PORT || 3000;
@@ -37,6 +38,11 @@ const state = {
   liveRows: null, // separate from lastRows: "live right now", not schedule data
   liveRowsNormalized: null, // backs /live.csv and /live.json, mirrors lastRows -> fixtures.csv/json
   liveSourceDown: false, // true when the last "Fetch live streams" attempt failed for every sport
+  sourceCheckRuns: 0, // scheduled source-check ticks that actually ran — every 3rd one triggers screenshots
+  screenshotRunning: false,
+  screenshotProgress: null, // { done, total }
+  lastScreenshotAt: null,
+  lastScreenshotSummary: null,
 };
 
 let cronTask = null;
@@ -98,10 +104,41 @@ function allSourceUrls() {
 // source-check statuses (Source1Status..Source10Status) no matter what
 // triggered the rewrite — a source check, a translation, or a league
 // alias change all go through this instead of a raw writeCsv() call.
+function enrichRows(rows) {
+  return sourceChecks.enrichRowsWithSourceStatus(rows, sourceChecks.getStatus, {
+    getScreenshot: screenshots.getScreenshot,
+    publicBaseUrl: getConfig().publicBaseUrl,
+  });
+}
+
 function writeFixturesCsv() {
   if (!state.lastRows) return;
   const { outputCsvPath } = getConfig();
-  writeCsv(sourceChecks.enrichRowsWithSourceStatus(state.lastRows), outputCsvPath);
+  writeCsv(enrichRows(state.lastRows), outputCsvPath);
+}
+
+async function runScreenshots() {
+  if (state.screenshotRunning) return state;
+  const urls = allSourceUrls();
+  if (!urls.length) return state;
+  state.screenshotRunning = true;
+  state.screenshotProgress = { done: 0, total: new Set(urls).size };
+  try {
+    const summary = await screenshots.captureAll(urls, {
+      onProgress: (done, total) => {
+        state.screenshotProgress = { done, total };
+      },
+    });
+    state.lastScreenshotAt = new Date().toISOString();
+    state.lastScreenshotSummary = summary;
+    writeFixturesCsv();
+  } catch (err) {
+    console.error('[screenshots] run failed:', err.message);
+  } finally {
+    state.screenshotRunning = false;
+    state.screenshotProgress = null;
+  }
+  return state;
 }
 
 // Re-applies every manually-added stream (see /manual-channels) onto
@@ -232,7 +269,7 @@ function refreshLiveCsv() {
   state.liveRowsNormalized = liveTv.normalizeLiveRows(state.liveRows);
   // In practice always blank here (YouTube URLs are never source-checked),
   // but keeps live.csv's column layout identical to fixtures.csv's.
-  writeCsv(sourceChecks.enrichRowsWithSourceStatus(state.liveRowsNormalized), outputLiveCsvPath);
+  writeCsv(enrichRows(state.liveRowsNormalized), outputLiveCsvPath);
 }
 
 async function runLiveTvFetch() {
@@ -303,8 +340,17 @@ function scheduleCron() {
     getConfig().sourceCheckCronExpr = '*/3 * * * *';
   }
   if (getConfig().sourceCheckCronExpr) {
-    sourceCheckTask = cron.schedule(getConfig().sourceCheckCronExpr, () => {
-      runSourceCheck().catch((err) => console.error('[sourceChecks]', err.message));
+    sourceCheckTask = cron.schedule(getConfig().sourceCheckCronExpr, async () => {
+      if (state.checkRunning) return; // skipped ticks don't count toward the screenshot cadence
+      await runSourceCheck().catch((err) => console.error('[sourceChecks]', err.message));
+      state.sourceCheckRuns += 1;
+      // Every 3rd check (~9 min by default) also captures what each source
+      // shows. A pass takes longer than that for a big dataset, so a
+      // trigger that lands mid-pass is simply skipped by runScreenshots'
+      // own guard — passes run back to back, never stacked.
+      if (state.sourceCheckRuns % 3 === 0) {
+        runScreenshots().catch((err) => console.error('[screenshots]', err.message));
+      }
     });
     console.log(`[index] source checks scheduled: ${getConfig().sourceCheckCronExpr}`);
   }
@@ -333,6 +379,8 @@ if (runOnlyFlag) {
     getManualChannelsAll: manualChannels.getAll,
     addManualChannel: addManualChannelAndRefresh,
     removeManualChannel: removeManualChannelAndRefresh,
+    runScreenshots,
+    getScreenshot: screenshots.getScreenshot,
     runLiveTvFetch,
     getAllYouTubeChannels: youtubeChannels.getAllChannels,
     setChannelStatus: setChannelStatusAndRefresh,

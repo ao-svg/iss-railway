@@ -29,6 +29,12 @@ function envDefaults() {
     // after a pipeline run or from the dashboard button).
     sourceCheckCronExpr: process.env.SOURCE_CHECK_CRON ?? '*/3 * * * *',
     outputCsvPath: process.env.OUTPUT_CSV_PATH || './data/fixtures.csv',
+    // Prefix for links this app puts into its own exports (screenshot
+    // URLs in fixtures.csv/json). Railway injects RAILWAY_PUBLIC_DOMAIN;
+    // blank locally, so links come out relative.
+    publicBaseUrl:
+      process.env.PUBLIC_BASE_URL ||
+      (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : ''),
     wtmDays: Number(process.env.WTM_DAYS) || 31,
     // Empty by default — the "live streaming" feature (src/liveTv.js) is a
     // no-op until this is deliberately set, since the source domain rotates

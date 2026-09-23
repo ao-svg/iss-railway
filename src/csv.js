@@ -37,6 +37,8 @@ const HEADER = [
   // The URL the host actually served after redirects (typically its
   // tokenized per-session URL), only when it differs from Source_N.
   ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Resolved`),
+  // Link to the latest screenshot of what the source shows (blank = none).
+  ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Screenshot`),
 ];
 
 function yesNo(value) {
@@ -142,6 +144,8 @@ function rowsToCsv(rows) {
       const corsCols = Array.from({ length: MAX_SOURCES }, (_, i) => yesNo(cors[i]));
       const resolved = ch.sourceResolved || [];
       const resolvedCols = Array.from({ length: MAX_SOURCES }, (_, i) => resolved[i] || '');
+      const shots = ch.sourceScreenshot || [];
+      const screenshotCols = Array.from({ length: MAX_SOURCES }, (_, i) => shots[i] || '');
       lines.push(
         [
           date,
@@ -164,6 +168,7 @@ function rowsToCsv(rows) {
           ...workingCols,
           ...corsCols,
           ...resolvedCols,
+          ...screenshotCols,
         ]
           .map(escapeCsvField)
           .join(',')
