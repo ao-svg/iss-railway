@@ -22,6 +22,12 @@ standalone pipeline you can deploy on Railway and pull CSV/JSON from.
   `wheresthematch`), and each channel can carry **up to 10 candidate source
   URLs** (`Source1`..`Source10` in the CSV) — a channel isn't matched 1:1 to
   a single stream, since iptv-org sometimes carries several mirrors.
+  `Source1`..`Source10` are this app's own `/go?u=...` redirect links, not
+  the raw CDN URLs — many of those carry a per-session token that can
+  expire between when it was matched and when someone actually opens it,
+  so `/go` re-resolves the real destination live, at click time, and 302s
+  there. `Source1Resolved`..`Source10Resolved` still show what the last
+  periodic check saw, as an audit trail.
 - ✅ Checks whether each source URL is genuinely usable, via a manual "Check
   sources" job on the dashboard (`src/sourceChecks.js`). Classifies into
   four states: **ok** (HTML page, iframe-ready), **stream** (HLS/DASH
@@ -115,6 +121,7 @@ only). Manage accounts on `/users`.
 | `GET /fixtures.json` | Same data as JSON                            |
 | `GET /live.csv`     | Currently-live rows, same CSV format as fixtures.csv |
 | `GET /live.json`    | Same data as JSON                              |
+| `GET /go?u=<url>`   | Live redirect to a source URL's current destination — what `Source1`..`Source10` actually link to; `u` must be a source this app currently knows about |
 
 ## Pulling into your Google Sheet
 

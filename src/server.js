@@ -946,6 +946,21 @@ function createServer({
   // Public like fixtures.json/fixtures.csv — the exports link here.
   app.use('/screenshots', express.static(path.join(__dirname, '..', 'data', 'screenshots'), { maxAge: '1m' }));
 
+  // Every source URL currently in play, from BOTH raw (never-enriched)
+  // states — /go's allowlist, so it can't be used to redirect somewhere
+  // this app never actually matched.
+  function knownSourceUrls(state) {
+    const urls = new Set();
+    for (const rows of [state.lastRows, state.liveRowsNormalized]) {
+      for (const r of rows || []) {
+        for (const ch of r.channels || []) {
+          for (const url of ch.sources || []) urls.add(url);
+        }
+      }
+    }
+    return urls;
+  }
+
   // Screenshot links are always absolute — configured public URL, else
   // the address this request came in on — so they're pullable as-is.
   const enrichExport = (rows, req) =>
@@ -955,6 +970,25 @@ function createServer({
     });
 
   app.get('/health', (req, res) => res.json({ ok: true }));
+
+  // Live, click-time redirect to wherever a source URL currently points.
+  // Exports embed THIS link instead of a raw CDN URL — periodic source
+  // checks are still only ever as fresh as the last check (every 3 min by
+  // default), so a per-session CDN token can rotate in the gap between a
+  // check and whenever someone actually opens the link. This resolves the
+  // redirect chain fresh at the moment it's clicked, closing that gap
+  // entirely instead of just shrinking it. `u` must be a source URL this
+  // app actually knows about (current fixtures/live rows) — otherwise this
+  // would be an open redirect to anywhere.
+  app.get('/go', async (req, res) => {
+    const target = req.query.u;
+    if (typeof target !== 'string' || !knownSourceUrls(getState()).has(target)) {
+      return res.status(404).send('Unknown source URL');
+    }
+    const result = await sourceChecks.resolveNow(target);
+    if (!result.ok) return res.status(502).send('Source is currently unreachable');
+    res.redirect(302, result.url);
+  });
 
   app.get('/', requireAuth('admin'), (req, res) => {
     res.send(renderDashboard(getState(), getConfig(), getPlaylistStatus));

@@ -125,17 +125,23 @@ test('enrichRowsWithSourceStatus: adds a parallel sourceStatuses array, never mu
   assert.deepEqual(out[0].channels[0].sourceWorking, [true, null]);
   assert.deepEqual(out[0].channels[0].sourceCors, [false, null]);
   assert.deepEqual(out[0].channels[0].sourceResolved, ['http://cdn.example/a.m3u8?token=abc', null]);
-  // Exports (CSV/JSON) need the URL that's actually playable right now,
-  // not the one iptv-org originally matched — a redirected/tokenized URL
-  // replaces it in `sources` itself, not just in the sourceResolved side column.
-  assert.deepEqual(out[0].channels[0].sources, ['http://cdn.example/a.m3u8?token=abc', 'http://b.m3u8']);
+  // Exports (CSV/JSON) get this app's own /go redirect, not a raw CDN URL —
+  // it re-resolves live at click time, so a token that rotates between the
+  // last periodic check and whenever someone actually opens the link still
+  // works, instead of exporting a snapshot that's already stale by then.
+  assert.deepEqual(out[0].channels[0].sources, [
+    '/go?u=' + encodeURIComponent('http://a.m3u8'),
+    '/go?u=' + encodeURIComponent('http://b.m3u8'),
+  ]);
 });
 
-test('enrichRowsWithSourceStatus: a resolvedUrl identical to the source is reported as null, not repeated', () => {
+test('enrichRowsWithSourceStatus: sources always become /go links regardless of check status', () => {
   const rows = [{ eventId: 'e1', channels: [{ name: 'Sky', sources: ['http://a.m3u8'] }] }];
-  const out = enrichRowsWithSourceStatus(rows, () => ({ status: 'stream', resolvedUrl: 'http://a.m3u8' }));
-  assert.deepEqual(out[0].channels[0].sourceResolved, [null]);
-  assert.equal(out[0].channels[0].sources[0], 'http://a.m3u8'); // sources unchanged
+  const out = enrichRowsWithSourceStatus(rows, () => ({ status: 'stream', resolvedUrl: 'http://a.m3u8' }), {
+    publicBaseUrl: 'https://app.example',
+  });
+  assert.deepEqual(out[0].channels[0].sourceResolved, [null]); // resolvedUrl matches original -> null, still an audit fact
+  assert.equal(out[0].channels[0].sources[0], 'https://app.example/go?u=' + encodeURIComponent('http://a.m3u8'));
   assert.ok(!('sourceStatuses' in rows[0].channels[0])); // original row never mutated
 });
 

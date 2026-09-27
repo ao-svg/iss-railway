@@ -116,3 +116,25 @@ test('role-gated HTTP endpoints', async (t) => {
     }
   });
 });
+
+test('/go: an allowlist for live redirects, not an open one', async (t) => {
+  const KNOWN_URL = 'http://127.0.0.1:1/dead.m3u8'; // port 1 refuses connections immediately, no network needed
+  const app = createServer({
+    ...fakeCreateServerDeps(),
+    getState: () => ({ lastRows: [{ channels: [{ name: 'Sky', sources: [KNOWN_URL] }] }] }),
+  });
+  const server = await startServer(app);
+  const port = server.address().port;
+  const base = `http://localhost:${port}`;
+  t.after(() => server.close());
+
+  await t.test('a URL never matched by any current fixture/live row -> 404, never redirected', async () => {
+    const res = await fetch(`${base}/go?u=${encodeURIComponent('http://evil.example/anywhere')}`, { redirect: 'manual' });
+    assert.equal(res.status, 404);
+  });
+
+  await t.test('a known source that is unreachable right now -> 502, not a redirect to nowhere', async () => {
+    const res = await fetch(`${base}/go?u=${encodeURIComponent(KNOWN_URL)}`, { redirect: 'manual' });
+    assert.equal(res.status, 502);
+  });
+});

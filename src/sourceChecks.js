@@ -128,6 +128,30 @@ function extractFirstReference(text, baseUrl) {
 }
 
 /**
+ * Live, click-time resolution for /go — where does this URL point RIGHT
+ * NOW, following redirects, no caching involved. Deliberately lighter than
+ * checkUrl below (one hop, small range, no nested manifest/segment
+ * verification): that machinery exists to CLASSIFY a source for the
+ * dashboard/exports on a periodic cadence, this exists to get someone
+ * watching as fast as possible at the moment they click.
+ */
+async function resolveNow(url) {
+  try {
+    const res = await axios.get(url, {
+      timeout: REQUEST_TIMEOUT_MS,
+      maxRedirects: 5,
+      validateStatus: () => true,
+      headers: { Range: 'bytes=0-1023' },
+      responseType: 'arraybuffer',
+    });
+    if (res.status >= 400) return { ok: false, url: null };
+    return { ok: true, url: res.request?.res?.responseUrl || url };
+  } catch {
+    return { ok: false, url: null };
+  }
+}
+
+/**
  * Fetch one hop and report reachability and CORS as SEPARATE facts, plus
  * the fetched bytes so the caller can inspect WHAT came back (another
  * playlist? real media?) — a master playlist can be perfectly reachable
@@ -383,7 +407,8 @@ async function checkAll(urls, { force = false, onProgress } = {}) {
  *   sourceCors     - true / false / null (n/a for HTML pages, or never checked)
  *   sourceResolved - the URL the host actually served after redirects (e.g.
  *                    its tokenized per-session URL) when it differs from
- *                    the source URL, else null
+ *                    the source URL, else null — an audit fact, not what's
+ *                    actually exported in `sources` (see below)
  *   sourceScreenshot - link to the latest capture of what the source shows
  *                    (screenshots.js), or null when there is none
  * Used to label fixtures.csv/fixtures.json exports, not just the /browse
@@ -397,14 +422,14 @@ function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus, { getScre
     channels: (r.channels || []).map((ch) => {
       const sources = ch.sources || [];
       const results = sources.map((url) => getSourceStatus(url) || null);
-      // Exports need a URL that actually plays *now*, not the one iptv-org
-      // matched — CDN mirrors commonly redirect to a per-session tokenized
-      // URL whose token expires within minutes (see the comment on
-      // MANIFEST_TTL_MS above for why checks re-probe that often). Swap the
-      // freshly-resolved URL in here, in the export path only: /browse looks
-      // up status by the original URL (that's the cache key), so this never
-      // touches it, and sourceResolved below still exposes both.
-      const playable = sources.map((url, i) => results[i]?.resolvedUrl || url);
+      // A periodic check is only ever as fresh as its last run (every 3 min
+      // by default) — a per-session CDN token can still rotate in the gap
+      // between that check and whenever someone actually opens the link.
+      // `sources` in the export is this app's own /go redirect, which
+      // re-resolves live at click time and closes that gap entirely,
+      // instead of exporting either the stale original match or a
+      // snapshot that's already a few minutes old by the time it's used.
+      const playable = sources.map((url) => `${publicBaseUrl}/go?u=${encodeURIComponent(url)}`);
       return {
         ...ch,
         sources: playable,
@@ -423,6 +448,7 @@ function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus, { getScre
 
 module.exports = {
   getStatus,
+  resolveNow,
   checkAll,
   checkUrl,
   manifestStatus,
