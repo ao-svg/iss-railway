@@ -125,6 +125,10 @@ test('enrichRowsWithSourceStatus: adds a parallel sourceStatuses array, never mu
   assert.deepEqual(out[0].channels[0].sourceWorking, [true, null]);
   assert.deepEqual(out[0].channels[0].sourceCors, [false, null]);
   assert.deepEqual(out[0].channels[0].sourceResolved, ['http://cdn.example/a.m3u8?token=abc', null]);
+  // Exports (CSV/JSON) need the URL that's actually playable right now,
+  // not the one iptv-org originally matched — a redirected/tokenized URL
+  // replaces it in `sources` itself, not just in the sourceResolved side column.
+  assert.deepEqual(out[0].channels[0].sources, ['http://cdn.example/a.m3u8?token=abc', 'http://b.m3u8']);
 });
 
 test('enrichRowsWithSourceStatus: a resolvedUrl identical to the source is reported as null, not repeated', () => {

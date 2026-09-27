@@ -397,8 +397,17 @@ function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus, { getScre
     channels: (r.channels || []).map((ch) => {
       const sources = ch.sources || [];
       const results = sources.map((url) => getSourceStatus(url) || null);
+      // Exports need a URL that actually plays *now*, not the one iptv-org
+      // matched — CDN mirrors commonly redirect to a per-session tokenized
+      // URL whose token expires within minutes (see the comment on
+      // MANIFEST_TTL_MS above for why checks re-probe that often). Swap the
+      // freshly-resolved URL in here, in the export path only: /browse looks
+      // up status by the original URL (that's the cache key), so this never
+      // touches it, and sourceResolved below still exposes both.
+      const playable = sources.map((url, i) => results[i]?.resolvedUrl || url);
       return {
         ...ch,
+        sources: playable,
         sourceStatuses: results.map((s) => s?.status || null),
         sourceWorking: results.map((s) => (s && s.working !== undefined ? s.working : null)),
         sourceCors: results.map((s) => (s && s.cors !== undefined ? s.cors : null)),

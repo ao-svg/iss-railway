@@ -34,8 +34,11 @@ const HEADER = [
   // / not applicable), since a single status string can't say both.
   ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Working`),
   ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Cors`),
-  // The URL the host actually served after redirects (typically its
-  // tokenized per-session URL), only when it differs from Source_N.
+  // Source_N above already carries this same value when a redirect
+  // happened (see sourceChecks.enrichRowsWithSourceStatus) — kept as its
+  // own column, populated only when it differs from the original iptv-org/
+  // doms9 match, so "was this redirected at all" stays visible without
+  // diffing Source_N against the raw playlist yourself.
   ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Resolved`),
   // Link to the latest screenshot of what the source shows (blank = none).
   ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Screenshot`),
