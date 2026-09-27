@@ -415,7 +415,12 @@ function screenshotThumb(url, getScreenshot) {
     return ` <span class="no-url" title="${escapeHtml(shot.error || '')} (${escapeHtml(shot.capturedAt || '')})">(no frame)</span>`;
   }
   const src = `/screenshots/${encodeURIComponent(shot.file)}`;
-  return `<a href="${src}" target="_blank" rel="noopener"><img class="thumb" src="${src}" alt="" title="captured ${escapeHtml(shot.capturedAt || '')}"></a>`;
+  const still = `<a href="${src}" target="_blank" rel="noopener"><img class="thumb" src="${src}" alt="" title="captured ${escapeHtml(shot.capturedAt || '')}"></a>`;
+  // Grouped right next to the still, its own link — a still can be a stale
+  // frame someone jumped past, the gif is what actually shows it's live.
+  if (!shot.gifOk || !shot.gifFile) return still;
+  const gifSrc = `/screenshots/${encodeURIComponent(shot.gifFile)}`;
+  return `${still} <a href="${gifSrc}" target="_blank" rel="noopener" class="muted" title="few-second animated capture">(gif)</a>`;
 }
 
 function renderBrowse(state, getSourceStatus, tz = 'beijing', getScreenshot = null) {
@@ -1004,14 +1009,20 @@ function createServer({
     res.redirect('/');
   });
 
-  // Source URL -> { image, capturedAt, ok, error } for everything in the
-  // latest pass. Public like the exports (they already link the images).
+  // Source URL -> { image, gif, capturedAt, ok, error } for everything in
+  // the latest pass. Public like the exports (they already link the images).
   app.get('/screenshots.json', (req, res) => {
     const base = getConfig().publicBaseUrl || `${req.protocol}://${req.get('host')}`;
     const index = getAllScreenshots ? getAllScreenshots() : {};
     const out = {};
     for (const [url, s] of Object.entries(index)) {
-      out[url] = { image: s.ok && s.file ? `${base}/screenshots/${s.file}` : null, capturedAt: s.capturedAt, ok: s.ok, error: s.error || null };
+      out[url] = {
+        image: s.ok && s.file ? `${base}/screenshots/${s.file}` : null,
+        gif: s.gifOk && s.gifFile ? `${base}/screenshots/${s.gifFile}` : null,
+        capturedAt: s.capturedAt,
+        ok: s.ok,
+        error: s.error || null,
+      };
     }
     res.json(out);
   });
@@ -1023,10 +1034,12 @@ function createServer({
     const index = getAllScreenshots ? getAllScreenshots() : {};
     const files = [];
     for (const [url, s] of Object.entries(index)) {
-      if (!s.ok || !s.file) continue;
-      const full = path.join(dir, s.file);
-      if (!fs.existsSync(full)) continue;
-      files.push({ name: s.file, data: fs.readFileSync(full), mtime: new Date(s.capturedAt) });
+      if (s.ok && s.file && fs.existsSync(path.join(dir, s.file))) {
+        files.push({ name: s.file, data: fs.readFileSync(path.join(dir, s.file)), mtime: new Date(s.capturedAt) });
+      }
+      if (s.gifOk && s.gifFile && fs.existsSync(path.join(dir, s.gifFile))) {
+        files.push({ name: s.gifFile, data: fs.readFileSync(path.join(dir, s.gifFile)), mtime: new Date(s.capturedAt) });
+      }
     }
     files.push({ name: 'index.json', data: Buffer.from(JSON.stringify(index, null, 2)), mtime: new Date() });
     res.setHeader('Content-Type', 'application/zip');

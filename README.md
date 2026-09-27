@@ -36,6 +36,15 @@ standalone pipeline you can deploy on Railway and pull CSV/JSON from.
   `<video>` player like hls.js, not a bare iframe), **blocked**, **dead**.
   Results persist to `data/source-checks.json` and show as a colored dot per
   source on `/browse`.
+- ✅ Captures what each source actually shows in a headless browser
+  (`src/screenshots.js`) — a still JPEG, plus (video sources only) a short
+  animated GIF of a few seconds of real playback, since a still can be a
+  stale frame someone already scrolled past. Both persist to
+  `data/screenshots/`, indexed in `data/screenshots.json`, and are exposed
+  alongside each source as `sourceScreenshot`/`sourceGif` in
+  fixtures.json and `Source1Screenshot`/`Source1Gif`..`Source10Screenshot`/
+  `Source10Gif` in fixtures.csv. Runs on every 3rd scheduled source check,
+  with sources missing a good image retried on every check in between.
 - ✅ Groups differently-worded league names from the two sources into one
   canonical name (`src/leagues.js` — e.g. SportsDB's "English Premier
   League" and wheresthematch's "Premier League" both resolve to "Premier

@@ -31,6 +31,13 @@ const CHECK_TTL_MS = 12 * 60 * 60 * 1000; // HTML pages — comparatively stable
 const MANIFEST_TTL_MS = 3 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 8000;
 const CONCURRENCY = 8;
+// Plenty of these CDNs bot-block axios's default User-Agent outright (a
+// plain 403 with no other explanation) regardless of whether the URL/token
+// is otherwise fine — same reason wheresthematch.js/liveTv.js already send
+// a real browser UA for their own requests.
+const BROWSER_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36',
+};
 
 const MANIFEST_CONTENT_TYPES = [
   'application/vnd.apple.mpegurl',
@@ -141,7 +148,7 @@ async function resolveNow(url) {
       timeout: REQUEST_TIMEOUT_MS,
       maxRedirects: 5,
       validateStatus: () => true,
-      headers: { Range: 'bytes=0-1023' },
+      headers: { ...BROWSER_HEADERS, Range: 'bytes=0-1023' },
       responseType: 'arraybuffer',
     });
     if (res.status >= 400) return { ok: false, url: null };
@@ -165,7 +172,7 @@ async function probeOnce(url) {
       timeout: REQUEST_TIMEOUT_MS,
       maxRedirects: 5,
       validateStatus: () => true,
-      headers: { Range: 'bytes=0-16383' },
+      headers: { ...BROWSER_HEADERS, Range: 'bytes=0-16383' },
       responseType: 'arraybuffer',
     });
     return {
@@ -242,7 +249,7 @@ async function checkUrl(url) {
       timeout: REQUEST_TIMEOUT_MS,
       maxRedirects: 5,
       validateStatus: () => true,
-      headers: { Range: 'bytes=0-16383' },
+      headers: { ...BROWSER_HEADERS, Range: 'bytes=0-16383' },
       responseType: 'arraybuffer',
     });
     const checkedAt = new Date().toISOString();
@@ -411,6 +418,9 @@ async function checkAll(urls, { force = false, onProgress } = {}) {
  *                    actually exported in `sources` (see below)
  *   sourceScreenshot - link to the latest capture of what the source shows
  *                    (screenshots.js), or null when there is none
+ *   sourceGif      - link to a short (few-second) animated capture of the
+ *                    same source, alongside but separate from the still —
+ *                    video sources only (screenshots.js), null otherwise
  * Used to label fixtures.csv/fixtures.json exports, not just the /browse
  * page's dots. `getSourceStatus` / `getScreenshot` are injectable so this
  * is testable with fakes (and screenshots.js can depend on this module
@@ -440,6 +450,14 @@ function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus, { getScre
         sourceScreenshot: sources.map((url) => {
           const shot = getScreenshot(url);
           return shot && shot.ok && shot.file ? `${publicBaseUrl}/screenshots/${shot.file}` : null;
+        }),
+        // Same index entry as sourceScreenshot, just the gif half of it —
+        // grouped with the still by sharing that lookup, not folded into
+        // the same field, so nothing already reading sourceScreenshot sees
+        // its shape change.
+        sourceGif: sources.map((url) => {
+          const shot = getScreenshot(url);
+          return shot && shot.gifOk && shot.gifFile ? `${publicBaseUrl}/screenshots/${shot.gifFile}` : null;
         }),
       };
     }),

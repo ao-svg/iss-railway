@@ -16,6 +16,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const puppeteer = require('puppeteer');
+const { GIFEncoder, quantize, applyPalette } = require('gifenc');
+const { PNG } = require('pngjs');
 const sourceChecks = require('./sourceChecks');
 
 const DIR = path.join(__dirname, '..', 'data', 'screenshots');
@@ -27,16 +29,25 @@ const INDEX_PATH = path.join(__dirname, '..', 'data', 'screenshots.json');
 const CONCURRENCY = 4;
 // A live stream needs the player script, the master + variant playlists
 // and usually 2–3 segments buffered before the first frame decodes — 8 s
-// lost most working streams to timeouts in the first real pass, 20 s
-// still missed some on slower CDNs, so bumped further. Dead ones fail
-// fast, no point waiting long for them.
-const WORKING_TIMEOUT_MS = 40000;
-const UNVERIFIED_TIMEOUT_MS = 20000;
+// lost most working streams to timeouts in the first real pass, 20 s and
+// then 40 s still missed some on slower CDNs, so bumped further again.
+// Dead ones fail fast, no point waiting long for them. Sources that never
+// get a good image also get another attempt on every check in between
+// full passes (see runScreenshots' retryOnly in index.js), not just once.
+const WORKING_TIMEOUT_MS = 60000;
+const UNVERIFIED_TIMEOUT_MS = 30000;
 const DEAD_TIMEOUT_MS = 4000;
 const MAX_RUNTIME_MS = 25 * 60 * 1000;
 const HLS_JS_URL = 'https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js';
 const WIDTH = 640;
 const HEIGHT = 360;
+// A still can be a stale frame someone already jumped past — a few
+// seconds of real motion is what actually says "this is live right now".
+// 8 frames * 500ms = 4s, under the 5s ask, without adding much per-URL
+// time on top of the still capture that already proved the stream works.
+const GIF_FRAME_COUNT = 8;
+const GIF_FRAME_INTERVAL_MS = 500;
+const GIF_PALETTE_SIZE = 128;
 
 function loadIndex() {
   try {
@@ -104,6 +115,35 @@ try {
 </script></body></html>`;
 }
 
+/**
+ * A handful of raw PNG frames (already-decoded video, same live page the
+ * still screenshot just came from) -> one animated GIF buffer. Failure here
+ * is never fatal to the capture as a whole — the still image is the thing
+ * that has to work, this is a bonus on top of an already-proven-good page.
+ */
+async function encodeGif(pngBuffers, width, height) {
+  const gif = GIFEncoder();
+  for (const buf of pngBuffers) {
+    const { data } = PNG.sync.read(buf);
+    const palette = quantize(data, GIF_PALETTE_SIZE);
+    const index = applyPalette(data, palette);
+    gif.writeFrame(index, width, height, { palette, delay: GIF_FRAME_INTERVAL_MS });
+  }
+  gif.finish();
+  return Buffer.from(gif.bytes());
+}
+
+async function captureGif(page, id) {
+  const frames = [];
+  for (let i = 0; i < GIF_FRAME_COUNT; i++) {
+    frames.push(await page.screenshot({ type: 'png' }));
+    if (i < GIF_FRAME_COUNT - 1) await new Promise((r) => setTimeout(r, GIF_FRAME_INTERVAL_MS));
+  }
+  const gifFile = `${id}.gif`;
+  await fs.promises.writeFile(path.join(DIR, gifFile), await encodeGif(frames, WIDTH, HEIGHT));
+  return gifFile;
+}
+
 async function captureOne(page, url) {
   const check = sourceChecks.getStatus(url);
   // An .m3u8 URL always goes through the player even if the check saw an
@@ -113,7 +153,8 @@ async function captureOne(page, url) {
   const timeout =
     check && check.working === true ? WORKING_TIMEOUT_MS : check && check.working === false ? DEAD_TIMEOUT_MS : UNVERIFIED_TIMEOUT_MS;
   const target = (check && check.resolvedUrl) || url;
-  const file = `${screenshotId(url)}.jpg`;
+  const id = screenshotId(url);
+  const file = `${id}.jpg`;
   try {
     if (isManifest) {
       // data: URL rather than page.setContent — the latter goes through
@@ -139,7 +180,18 @@ async function captureOne(page, url) {
       await new Promise((r) => setTimeout(r, 1000));
     }
     await page.screenshot({ path: path.join(DIR, file), type: 'jpeg', quality: 60 });
-    return { ok: true, file };
+    // Only for actual video (isManifest) — a still HTML page has nothing to
+    // animate, and the point of the gif is proving live motion.
+    let gifFile = null;
+    let gifError = null;
+    if (isManifest) {
+      try {
+        gifFile = await captureGif(page, id);
+      } catch (err) {
+        gifError = err.message;
+      }
+    }
+    return { ok: true, file, gifOk: Boolean(gifFile), gifFile, gifError };
   } catch (err) {
     // Puppeteer phrases these as "Waiting failed: 20000ms exceeded" /
     // "Navigation timeout of 20000 ms exceeded" — match both.
@@ -246,13 +298,17 @@ async function captureAll(urls, { onProgress, partial = false } = {}) {
   }
   saveIndex(_index);
 
-  const referenced = new Set(Object.values(_index).filter((e) => e.ok && e.file).map((e) => e.file));
+  const referenced = new Set();
+  for (const e of Object.values(_index)) {
+    if (e.ok && e.file) referenced.add(e.file);
+    if (e.gifOk && e.gifFile) referenced.add(e.gifFile);
+  }
   for (const name of fs.readdirSync(DIR)) {
-    if (name.endsWith('.jpg') && !referenced.has(name)) fs.unlinkSync(path.join(DIR, name));
+    if ((name.endsWith('.jpg') || name.endsWith('.gif')) && !referenced.has(name)) fs.unlinkSync(path.join(DIR, name));
   }
 
   console.log(`[screenshots] ${partial ? 'retry' : 'full'} pass: ${summary.captured} captured, ${summary.failed} failed of ${summary.total}${summary.stoppedEarly ? ' (stopped early: time budget)' : ''}`);
   return summary;
 }
 
-module.exports = { captureAll, captureOne, getScreenshot, getAllScreenshots, screenshotId, playerHtml, DIR };
+module.exports = { captureAll, captureOne, getScreenshot, getAllScreenshots, screenshotId, playerHtml, encodeGif, DIR };

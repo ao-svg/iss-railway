@@ -42,6 +42,10 @@ const HEADER = [
   ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Resolved`),
   // Link to the latest screenshot of what the source shows (blank = none).
   ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Screenshot`),
+  // A few seconds of animated capture alongside the still above — its own
+  // column, video sources only, blank for HTML-page sources or if capture
+  // hasn't run/succeeded yet.
+  ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Gif`),
 ];
 
 function yesNo(value) {
@@ -149,6 +153,8 @@ function rowsToCsv(rows) {
       const resolvedCols = Array.from({ length: MAX_SOURCES }, (_, i) => resolved[i] || '');
       const shots = ch.sourceScreenshot || [];
       const screenshotCols = Array.from({ length: MAX_SOURCES }, (_, i) => shots[i] || '');
+      const gifs = ch.sourceGif || [];
+      const gifCols = Array.from({ length: MAX_SOURCES }, (_, i) => gifs[i] || '');
       lines.push(
         [
           date,
@@ -172,6 +178,7 @@ function rowsToCsv(rows) {
           ...corsCols,
           ...resolvedCols,
           ...screenshotCols,
+          ...gifCols,
         ]
           .map(escapeCsvField)
           .join(',')

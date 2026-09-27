@@ -16,21 +16,23 @@ function baseRow(overrides = {}) {
   };
 }
 
-// Trailing per-source blocks, in order: 10 Status, 10 Working, 10 Cors, 10 Resolved, 10 Screenshot.
-const TRAILING = 50;
-const statusBlock = (cols) => cols.slice(-50, -40);
-const workingBlock = (cols) => cols.slice(-40, -30);
-const corsBlock = (cols) => cols.slice(-30, -20);
-const resolvedBlock = (cols) => cols.slice(-20, -10);
-const screenshotBlock = (cols) => cols.slice(-10);
+// Trailing per-source blocks, in order: 10 Status, 10 Working, 10 Cors, 10 Resolved, 10 Screenshot, 10 Gif.
+const TRAILING = 60;
+const statusBlock = (cols) => cols.slice(-60, -50);
+const workingBlock = (cols) => cols.slice(-50, -40);
+const corsBlock = (cols) => cols.slice(-40, -30);
+const resolvedBlock = (cols) => cols.slice(-30, -20);
+const screenshotBlock = (cols) => cols.slice(-20, -10);
+const gifBlock = (cols) => cols.slice(-10);
 
-test('HEADER has Status followed by 10 each of Source_Status, _Working, _Cors, _Resolved, _Screenshot columns', () => {
+test('HEADER has Status followed by 10 each of Source_Status, _Working, _Cors, _Resolved, _Screenshot, _Gif columns', () => {
   assert.equal(HEADER[HEADER.length - TRAILING - 1], 'Status');
   assert.deepEqual(statusBlock(HEADER), Array.from({ length: 10 }, (_, i) => `Source${i + 1}Status`));
   assert.deepEqual(workingBlock(HEADER), Array.from({ length: 10 }, (_, i) => `Source${i + 1}Working`));
   assert.deepEqual(corsBlock(HEADER), Array.from({ length: 10 }, (_, i) => `Source${i + 1}Cors`));
   assert.deepEqual(resolvedBlock(HEADER), Array.from({ length: 10 }, (_, i) => `Source${i + 1}Resolved`));
   assert.deepEqual(screenshotBlock(HEADER), Array.from({ length: 10 }, (_, i) => `Source${i + 1}Screenshot`));
+  assert.deepEqual(gifBlock(HEADER), Array.from({ length: 10 }, (_, i) => `Source${i + 1}Gif`));
 });
 
 test('sourceScreenshot renders the link in Source_N_Screenshot, blank when none', () => {
@@ -41,6 +43,24 @@ test('sourceScreenshot renders the link in Source_N_Screenshot, blank when none'
   ]);
   const cols = out.trim().split('\n')[1].split(',');
   assert.deepEqual(screenshotBlock(cols).slice(0, 2), ['https://app.example/screenshots/aaa.jpg', '']);
+});
+
+test('sourceGif renders the link in Source_N_Gif, separately from Source_N_Screenshot, blank when none', () => {
+  const out = rowsToCsv([
+    baseRow({
+      channels: [
+        {
+          name: 'Sky',
+          sources: ['http://a.m3u8', 'http://b.m3u8'],
+          sourceScreenshot: ['https://app.example/screenshots/aaa.jpg', null],
+          sourceGif: ['https://app.example/screenshots/aaa.gif', null],
+        },
+      ],
+    }),
+  ]);
+  const cols = out.trim().split('\n')[1].split(',');
+  assert.deepEqual(screenshotBlock(cols).slice(0, 2), ['https://app.example/screenshots/aaa.jpg', '']);
+  assert.deepEqual(gifBlock(cols).slice(0, 2), ['https://app.example/screenshots/aaa.gif', '']);
 });
 
 test('sourceResolved renders the redirected/tokenized URL in Source_N_Resolved, blank when none', () => {
