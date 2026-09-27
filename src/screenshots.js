@@ -27,10 +27,11 @@ const INDEX_PATH = path.join(__dirname, '..', 'data', 'screenshots.json');
 const CONCURRENCY = 4;
 // A live stream needs the player script, the master + variant playlists
 // and usually 2–3 segments buffered before the first frame decodes — 8 s
-// lost most working streams to timeouts in the first real pass, 20 s did
-// not. Dead ones fail fast, no point waiting long for them.
-const WORKING_TIMEOUT_MS = 20000;
-const UNVERIFIED_TIMEOUT_MS = 10000;
+// lost most working streams to timeouts in the first real pass, 20 s
+// still missed some on slower CDNs, so bumped further. Dead ones fail
+// fast, no point waiting long for them.
+const WORKING_TIMEOUT_MS = 40000;
+const UNVERIFIED_TIMEOUT_MS = 20000;
 const DEAD_TIMEOUT_MS = 4000;
 const MAX_RUNTIME_MS = 25 * 60 * 1000;
 const HLS_JS_URL = 'https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js';
