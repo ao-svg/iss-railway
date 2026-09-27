@@ -20,7 +20,11 @@ const sourceChecks = require('./sourceChecks');
 
 const DIR = path.join(__dirname, '..', 'data', 'screenshots');
 const INDEX_PATH = path.join(__dirname, '..', 'data', 'screenshots.json');
-const CONCURRENCY = 8;
+// 8 concurrent headless-Chrome pages, each decoding live video, is a lot of
+// memory on a small Railway container — if that OOM-kills the process
+// mid-pass, incremental saving (below) is what's left to show for it, but
+// fewer pages running at once means fewer crashes to recover from.
+const CONCURRENCY = 4;
 // A live stream needs the player script, the master + variant playlists
 // and usually 2–3 segments buffered before the first frame decodes — 8 s
 // lost most working streams to timeouts in the first real pass, 20 s did
@@ -155,6 +159,13 @@ async function captureOne(page, url) {
  * pruned, so the folder only holds the current dataset's latest captures.
  * With `partial: true` (the retry pass for sources that have no good
  * image yet) existing entries are kept untouched.
+ *
+ * Each capture is written to disk as soon as it completes, not batched to
+ * the end — a container running 4 concurrent headless-Chrome pages decoding
+ * live video can get OOM-killed mid-pass, and a redeploy can land at any
+ * time too; either one used to erase an entire pass's results because
+ * nothing was persisted until every URL had been attempted. Losing only the
+ * not-yet-captured tail is the actual crash-safety this was meant to have.
  */
 async function captureAll(urls, { onProgress, partial = false } = {}) {
   // Working sources first so the pictures that matter land in the first
@@ -164,6 +175,7 @@ async function captureAll(urls, { onProgress, partial = false } = {}) {
     return c && c.working === true ? 0 : c && c.working === false ? 2 : 1;
   };
   const unique = [...new Set(urls)].sort((a, b) => rank(a) - rank(b));
+  const uniqueSet = new Set(unique);
   const summary = { total: unique.length, captured: 0, failed: 0, stoppedEarly: false, partial };
   if (!unique.length) return summary;
   fs.mkdirSync(DIR, { recursive: true });
@@ -185,12 +197,17 @@ async function captureAll(urls, { onProgress, partial = false } = {}) {
   } catch (err) {
     console.error(`[screenshots] browser launch failed: ${err.message}`);
     summary.failed = unique.length;
+    summary.launchError = err.message;
     return summary;
   }
 
   const startTime = Date.now();
   const next = { index: 0 };
-  const results = {};
+
+  function recordResult(url, result) {
+    _index[url] = { ...result, capturedAt: new Date().toISOString() };
+    saveIndex(_index);
+  }
 
   async function worker() {
     const page = await browser.newPage();
@@ -203,7 +220,7 @@ async function captureAll(urls, { onProgress, partial = false } = {}) {
         }
         const url = unique[next.index++];
         const result = await captureOne(page, url);
-        results[url] = { ...result, capturedAt: new Date().toISOString() };
+        recordResult(url, result);
         if (result.ok) summary.captured++;
         else summary.failed++;
         if (onProgress) onProgress(summary.captured + summary.failed, unique.length);
@@ -219,15 +236,13 @@ async function captureAll(urls, { onProgress, partial = false } = {}) {
     await browser.close().catch(() => {});
   }
 
-  // Keep the previous capture for anything this pass didn't reach (time
-  // budget) rather than blanking it. A full pass also drops everything
-  // outside the dataset; a partial (retry) pass leaves the rest alone.
-  const nextIndex = partial ? { ..._index } : {};
-  for (const url of unique) {
-    if (results[url]) nextIndex[url] = results[url];
-    else if (_index[url]) nextIndex[url] = _index[url];
+  // A full pass drops entries outside the current dataset once everything
+  // has actually run; a partial (retry) pass never prunes, it only adds.
+  if (!partial) {
+    for (const url of Object.keys(_index)) {
+      if (!uniqueSet.has(url)) delete _index[url];
+    }
   }
-  _index = nextIndex;
   saveIndex(_index);
 
   const referenced = new Set(Object.values(_index).filter((e) => e.ok && e.file).map((e) => e.file));

@@ -246,6 +246,8 @@ function renderDashboard(state, config, getPlaylistStatus) {
   if (state.screenshotRunning) {
     const p = state.screenshotProgress;
     screenshotStatusLine = `<span class="status-warn">● capturing… ${p ? `${p.done}/${p.total}` : ''}</span>`;
+  } else if (state.lastScreenshotSummary && state.lastScreenshotSummary.launchError) {
+    screenshotStatusLine = `<span class="status-err">● browser failed to launch: ${escapeHtml(state.lastScreenshotSummary.launchError)}</span>`;
   } else if (state.lastScreenshotSummary) {
     const s = state.lastScreenshotSummary;
     screenshotStatusLine = `<span class="muted">Last ${s.partial ? 'retry' : 'full'} pass ${escapeHtml(state.lastScreenshotAt)} — ${s.captured} captured, ${s.failed} failed of ${s.total}${s.stoppedEarly ? ' (stopped early: time budget)' : ''}</span>`;
