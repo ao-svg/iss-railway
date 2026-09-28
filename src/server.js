@@ -1009,8 +1009,9 @@ function createServer({
     res.redirect('/');
   });
 
-  // Source URL -> { image, gif, capturedAt, ok, error } for everything in
-  // the latest pass. Public like the exports (they already link the images).
+  // Source URL -> { image, gif, capturedAt, ok, error, gifError } for
+  // everything in the latest pass. Public like the exports (they already
+  // link the images).
   app.get('/screenshots.json', (req, res) => {
     const base = getConfig().publicBaseUrl || `${req.protocol}://${req.get('host')}`;
     const index = getAllScreenshots ? getAllScreenshots() : {};
@@ -1022,6 +1023,7 @@ function createServer({
         capturedAt: s.capturedAt,
         ok: s.ok,
         error: s.error || null,
+        gifError: s.gifError || null,
       };
     }
     res.json(out);
