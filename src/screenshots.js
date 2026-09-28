@@ -22,11 +22,15 @@ const sourceChecks = require('./sourceChecks');
 
 const DIR = path.join(__dirname, '..', 'data', 'screenshots');
 const INDEX_PATH = path.join(__dirname, '..', 'data', 'screenshots.json');
-// 8 concurrent headless-Chrome pages, each decoding live video, is a lot of
-// memory on a small Railway container — if that OOM-kills the process
-// mid-pass, incremental saving (below) is what's left to show for it, but
-// fewer pages running at once means fewer crashes to recover from.
-const CONCURRENCY = 4;
+// Production evidence (data/screenshots.json on Railway, 2026-09-28): every
+// single source in a pass failed with "Protocol error (Page.navigate):
+// Session closed" — the whole Chromium process dying, not a per-page
+// timeout — at CONCURRENCY 4, right after already dropping it from 8. That's
+// the OOM killer reaping the browser: N pages each decoding live video is
+// real memory, and this container doesn't have room for more than one at a
+// time. One at a time is slower per pass but is the difference between
+// getting some captures and getting none at all, every single pass.
+const CONCURRENCY = 1;
 // A live stream needs the player script, the master + variant playlists
 // and usually 2–3 segments buffered before the first frame decodes — 8 s
 // lost most working streams to timeouts in the first real pass, 20 s and
@@ -245,6 +249,14 @@ async function captureAll(urls, { onProgress, partial = false } = {}) {
         '--disable-web-security',
         '--autoplay-policy=no-user-gesture-required',
         '--mute-audio',
+        // Trim memory further on top of CONCURRENCY=1 above — no point
+        // spending RAM on GPU compositing/extensions/background timers a
+        // headless capture never benefits from.
+        '--disable-gpu',
+        '--disable-extensions',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
       ],
     });
   } catch (err) {
