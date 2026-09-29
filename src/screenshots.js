@@ -274,8 +274,28 @@ async function captureAll(urls, { onProgress, partial = false } = {}) {
     saveIndex(_index);
   }
 
+  // Production evidence (2026-09-29): a pass got a burst of ~63 sources all
+  // failing net::ERR_ABORTED within the same quarter-second (a page broken
+  // early poisoning every subsequent goto() on it), then went completely
+  // silent - no pass ran again for over a day. captureOne's timeouts are
+  // enforced BY Puppeteer talking to a real browser; if that browser/page is
+  // already wedged, Puppeteer's own timeout can itself hang instead of
+  // firing, and nothing here would ever revisit the MAX_RUNTIME_MS check
+  // above because it's still stuck awaiting that one call. This wraps every
+  // capture in an external, timer-based cap this process enforces itself -
+  // no matter how broken the browser gets, the loop always moves on.
+  const HARD_CAP_MS = WORKING_TIMEOUT_MS + (GIF_FRAME_COUNT * GIF_FRAME_INTERVAL_MS) + 15000;
+
+  function withHardCap(promise, url) {
+    let timer;
+    const capped = new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ ok: false, error: `hard cap: no result within ${HARD_CAP_MS / 1000}s (browser likely wedged)` }), HARD_CAP_MS);
+    });
+    return Promise.race([promise, capped]).finally(() => clearTimeout(timer));
+  }
+
   async function worker() {
-    const page = await browser.newPage();
+    let page = await browser.newPage();
     await page.setViewport({ width: WIDTH, height: HEIGHT });
     try {
       while (next.index < unique.length) {
@@ -284,11 +304,31 @@ async function captureAll(urls, { onProgress, partial = false } = {}) {
           return;
         }
         const url = unique[next.index++];
-        const result = await captureOne(page, url);
+        const result = await withHardCap(captureOne(page, url), url);
         recordResult(url, result);
         if (result.ok) summary.captured++;
         else summary.failed++;
         if (onProgress) onProgress(summary.captured + summary.failed, unique.length);
+        // A failed capture may leave the page in a broken state that
+        // poisons every following goto() on it (the ERR_ABORTED burst
+        // above) - recycle it so one bad source can't take the rest of the
+        // pass down too. The old page (and whatever's still pending on it
+        // from a hard-capped call) is simply abandoned, not awaited. If the
+        // BROWSER itself is gone (not just this page), newPage() will
+        // reject too - that's fatal for this worker, not something to
+        // retry into another hang, so let it end the loop and fall through
+        // to captureAll's own browser.close() cleanup.
+        if (!result.ok) {
+          page.close().catch(() => {});
+          try {
+            page = await browser.newPage();
+            await page.setViewport({ width: WIDTH, height: HEIGHT });
+          } catch (err) {
+            console.error(`[screenshots] browser unusable, ending this pass early: ${err.message}`);
+            summary.stoppedEarly = true;
+            return;
+          }
+        }
       }
     } finally {
       await page.close().catch(() => {});

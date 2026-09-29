@@ -9,6 +9,10 @@ const {
   extractFirstReference,
   enrichRowsWithSourceStatus,
   manifestStatus,
+  rankFor,
+  FLAG_AFTER_FAILURES,
+  checkAll,
+  getStatus,
 } = require('../src/sourceChecks');
 
 test('manifestStatus: confirmed-broken content is dead regardless of CORS', () => {
@@ -155,4 +159,67 @@ test('enrichRowsWithSourceStatus: a cache entry from before working/cors existed
 test('enrichRowsWithSourceStatus: row with no channels stays empty, no crash', () => {
   const out = enrichRowsWithSourceStatus([{ eventId: 'e1' }], () => null);
   assert.deepEqual(out[0].channels, []);
+});
+
+test('rankFor: working requires both a real still AND a real gif, not just a still', () => {
+  assert.equal(rankFor(null, { ok: true, gifOk: true }), 'working');
+  assert.equal(rankFor(null, { ok: true, gifOk: false }), 'unverified'); // still only -> not enough
+  assert.equal(rankFor(null, { ok: false }), 'unverified');
+});
+
+test('rankFor: a 401/403 is unauthorized, never low, regardless of consecutiveFailures', () => {
+  assert.equal(rankFor({ status: 'dead', httpStatus: 401, consecutiveFailures: 10 }, null), 'unauthorized');
+  assert.equal(rankFor({ status: 'dead', httpStatus: 403, consecutiveFailures: 1 }, null), 'unauthorized');
+});
+
+test('rankFor: reachable-but-uncaptured is medium', () => {
+  assert.equal(rankFor({ status: 'ok' }, null), 'medium');
+  assert.equal(rankFor({ status: 'stream' }, null), 'medium');
+  assert.equal(rankFor({ status: 'nocors' }, null), 'medium');
+});
+
+test('rankFor: dead only counts as low after FLAG_AFTER_FAILURES in a row, not on the first miss', () => {
+  assert.equal(rankFor({ status: 'dead', consecutiveFailures: FLAG_AFTER_FAILURES - 1 }, null), 'unverified');
+  assert.equal(rankFor({ status: 'dead', consecutiveFailures: FLAG_AFTER_FAILURES }, null), 'low');
+  assert.equal(rankFor({ status: 'dead', consecutiveFailures: FLAG_AFTER_FAILURES + 5 }, null), 'low');
+});
+
+test('rankFor: never checked at all is unverified', () => {
+  assert.equal(rankFor(null, null), 'unverified');
+});
+
+test('checkAll: consecutiveFailures increments on repeated dead results and resets the moment it recovers', async () => {
+  const http = require('http');
+  let mode = 'dead'; // controlled by the test, not real network flakiness
+  const server = http.createServer((req, res) => {
+    if (mode === 'dead') {
+      res.writeHead(500);
+      res.end();
+    } else {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<html>ok</html>');
+    }
+  });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const port = server.address().port;
+  const url = `http://127.0.0.1:${port}/`;
+
+  try {
+    await checkAll([url], { force: true });
+    assert.equal(getStatus(url).consecutiveFailures, 1);
+
+    await checkAll([url], { force: true });
+    assert.equal(getStatus(url).consecutiveFailures, 2);
+
+    mode = 'ok';
+    await checkAll([url], { force: true });
+    assert.equal(getStatus(url).status, 'ok');
+    assert.equal(getStatus(url).consecutiveFailures, 0);
+
+    mode = 'dead';
+    await checkAll([url], { force: true });
+    assert.equal(getStatus(url).consecutiveFailures, 1); // started over, not resumed from 2
+  } finally {
+    server.close();
+  }
 });

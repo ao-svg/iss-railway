@@ -45,6 +45,15 @@ standalone pipeline you can deploy on Railway and pull CSV/JSON from.
   fixtures.json and `Source1Screenshot`/`Source1Gif`..`Source10Screenshot`/
   `Source10Gif` in fixtures.csv. Runs on every 3rd scheduled source check,
   with sources missing a good image retried on every check in between.
+- ✅ Ranks every source into one word (`sourceChecks.rankFor`) — **working**
+  (real still + real gif, proven playable now), **medium** (reachable, just
+  no capture yet), **unauthorized** (confirmed 401/403 — an access gate to
+  fix, kept separate from dead links on purpose), **low** (confirmed dead
+  across several checks in a row, not just one bad probe), **unverified**
+  (not enough data yet). A single failed check never demotes a source by
+  itself — only `FLAG_AFTER_FAILURES` (3) dead results in a row count as
+  actually broken. Shown as a badge on `/browse` and as `sourceRank` /
+  `Source1Rank`..`Source10Rank` in the exports.
 - ✅ Groups differently-worded league names from the two sources into one
   canonical name (`src/leagues.js` — e.g. SportsDB's "English Premier
   League" and wheresthematch's "Premier League" both resolve to "Premier

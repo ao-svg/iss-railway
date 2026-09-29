@@ -16,16 +16,17 @@ function baseRow(overrides = {}) {
   };
 }
 
-// Trailing per-source blocks, in order: 10 Status, 10 Working, 10 Cors, 10 Resolved, 10 Screenshot, 10 Gif.
-const TRAILING = 60;
-const statusBlock = (cols) => cols.slice(-60, -50);
-const workingBlock = (cols) => cols.slice(-50, -40);
-const corsBlock = (cols) => cols.slice(-40, -30);
-const resolvedBlock = (cols) => cols.slice(-30, -20);
-const screenshotBlock = (cols) => cols.slice(-20, -10);
-const gifBlock = (cols) => cols.slice(-10);
+// Trailing per-source blocks, in order: 10 Status, 10 Working, 10 Cors, 10 Resolved, 10 Screenshot, 10 Gif, 10 Rank.
+const TRAILING = 70;
+const statusBlock = (cols) => cols.slice(-70, -60);
+const workingBlock = (cols) => cols.slice(-60, -50);
+const corsBlock = (cols) => cols.slice(-50, -40);
+const resolvedBlock = (cols) => cols.slice(-40, -30);
+const screenshotBlock = (cols) => cols.slice(-30, -20);
+const gifBlock = (cols) => cols.slice(-20, -10);
+const rankBlock = (cols) => cols.slice(-10);
 
-test('HEADER has Status followed by 10 each of Source_Status, _Working, _Cors, _Resolved, _Screenshot, _Gif columns', () => {
+test('HEADER has Status followed by 10 each of Source_Status, _Working, _Cors, _Resolved, _Screenshot, _Gif, _Rank columns', () => {
   assert.equal(HEADER[HEADER.length - TRAILING - 1], 'Status');
   assert.deepEqual(statusBlock(HEADER), Array.from({ length: 10 }, (_, i) => `Source${i + 1}Status`));
   assert.deepEqual(workingBlock(HEADER), Array.from({ length: 10 }, (_, i) => `Source${i + 1}Working`));
@@ -33,6 +34,17 @@ test('HEADER has Status followed by 10 each of Source_Status, _Working, _Cors, _
   assert.deepEqual(resolvedBlock(HEADER), Array.from({ length: 10 }, (_, i) => `Source${i + 1}Resolved`));
   assert.deepEqual(screenshotBlock(HEADER), Array.from({ length: 10 }, (_, i) => `Source${i + 1}Screenshot`));
   assert.deepEqual(gifBlock(HEADER), Array.from({ length: 10 }, (_, i) => `Source${i + 1}Gif`));
+  assert.deepEqual(rankBlock(HEADER), Array.from({ length: 10 }, (_, i) => `Source${i + 1}Rank`));
+});
+
+test('sourceRank renders in Source_N_Rank, blank when none', () => {
+  const out = rowsToCsv([
+    baseRow({
+      channels: [{ name: 'Sky', sources: ['http://a.m3u8', 'http://b.m3u8'], sourceRank: ['working', 'low'] }],
+    }),
+  ]);
+  const cols = out.trim().split('\n')[1].split(',');
+  assert.deepEqual(rankBlock(cols).slice(0, 2), ['working', 'low']);
 });
 
 test('sourceScreenshot renders the link in Source_N_Screenshot, blank when none', () => {

@@ -199,6 +199,38 @@ function manifestStatus(working, cors) {
   return cors ? 'stream' : 'nocors';
 }
 
+// After how many DEAD results IN A ROW a source counts as actually broken
+// rather than just having a bad moment — a single failed probe is normal
+// noise for third-party CDNs, three or four in a row (matching the ~3 min
+// check cadence, so this spans ~10-12 minutes of real time) is not.
+const FLAG_AFTER_FAILURES = 3;
+
+/**
+ * Internal ranking, layered on top of status/working/screenshot data —
+ * "is this source actually worth using right now", collapsed to one word
+ * instead of making every caller reconstruct it from four different fields:
+ *
+ *   working      - has a real still AND a real gif capture, proof someone
+ *                  can actually watch it right now.
+ *   medium       - source-check says it's reachable/usable (ok/stream/
+ *                  nocors), capture just hasn't landed a good image yet —
+ *                  new, or waiting its turn, not broken.
+ *   unauthorized - confirmed 401/403. An access gate, not a broken link:
+ *                  kept separate from 'low' on purpose, since this needs an
+ *                  actual fix (headers, auth) rather than being written off.
+ *   low          - confirmed dead, AND it's stayed that way for
+ *                  FLAG_AFTER_FAILURES checks running — not a blip.
+ *   unverified   - none of the above yet: never checked, or dead only once
+ *                  or twice so far (too soon to call it broken).
+ */
+function rankFor(check, shot) {
+  if (shot && shot.ok && shot.gifOk) return 'working';
+  if (check && (check.httpStatus === 401 || check.httpStatus === 403)) return 'unauthorized';
+  if (check && (check.status === 'ok' || check.status === 'stream' || check.status === 'nocors')) return 'medium';
+  if (check && check.status === 'dead' && (check.consecutiveFailures || 0) >= FLAG_AFTER_FAILURES) return 'low';
+  return 'unverified';
+}
+
 // Best-effort — MPEG-TS segments start with sync byte 0x47; fMP4 segments
 // have an 'ftyp'/'moof'/'styp' box near the start. Neither is a perfect
 // test, so this only returns false for content that's CLEARLY not media
@@ -391,10 +423,21 @@ async function checkAll(urls, { force = false, onProgress } = {}) {
     while (index < toCheck.length) {
       const i = index++;
       const url = toCheck[i];
+      const previous = _cache[url];
       const result = await checkUrl(url);
+      // A transient blip (one bad probe) shouldn't demote a source that's
+      // otherwise fine — only a RUN of dead results in a row means it's
+      // actually broken, not unlucky timing. Reset to 0 the moment it's
+      // reachable again, whatever state it was in before.
+      result.consecutiveFailures = result.status === 'dead' ? (previous?.consecutiveFailures || 0) + 1 : 0;
       _cache[url] = result;
       summary.checked++;
       summary[result.status]++;
+      // Every 5th, not every single one — hundreds of URLs at this
+      // concurrency would otherwise mean hundreds of disk writes per pass
+      // for a safety net that only needs to bound how much a crash loses,
+      // not eliminate loss entirely.
+      if (summary.checked % 5 === 0) saveCache(_cache);
       if (onProgress) onProgress(summary.checked + summary.skipped, unique.length);
     }
   }
@@ -421,6 +464,9 @@ async function checkAll(urls, { force = false, onProgress } = {}) {
  *   sourceGif      - link to a short (few-second) animated capture of the
  *                    same source, alongside but separate from the still —
  *                    video sources only (screenshots.js), null otherwise
+ *   sourceRank     - one of 'working' / 'medium' / 'unauthorized' / 'low' /
+ *                    'unverified' (see rankFor above) — the single-word
+ *                    answer to "is this actually usable right now"
  * Used to label fixtures.csv/fixtures.json exports, not just the /browse
  * page's dots. `getSourceStatus` / `getScreenshot` are injectable so this
  * is testable with fakes (and screenshots.js can depend on this module
@@ -459,6 +505,7 @@ function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus, { getScre
           const shot = getScreenshot(url);
           return shot && shot.gifOk && shot.gifFile ? `${publicBaseUrl}/screenshots/${shot.gifFile}` : null;
         }),
+        sourceRank: sources.map((url, i) => rankFor(results[i], getScreenshot(url))),
       };
     }),
   }));
@@ -469,6 +516,8 @@ module.exports = {
   resolveNow,
   checkAll,
   checkUrl,
+  rankFor,
+  FLAG_AFTER_FAILURES,
   manifestStatus,
   enrichRowsWithSourceStatus,
   bodyLooksLikeManifest,

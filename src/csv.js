@@ -46,6 +46,10 @@ const HEADER = [
   // column, video sources only, blank for HTML-page sources or if capture
   // hasn't run/succeeded yet.
   ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Gif`),
+  // One-word verdict combining status/capture/consecutive-failure history —
+  // 'working' / 'medium' / 'unauthorized' / 'low' / 'unverified'. See
+  // sourceChecks.rankFor for what each means.
+  ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Rank`),
 ];
 
 function yesNo(value) {
@@ -155,6 +159,8 @@ function rowsToCsv(rows) {
       const screenshotCols = Array.from({ length: MAX_SOURCES }, (_, i) => shots[i] || '');
       const gifs = ch.sourceGif || [];
       const gifCols = Array.from({ length: MAX_SOURCES }, (_, i) => gifs[i] || '');
+      const ranks = ch.sourceRank || [];
+      const rankCols = Array.from({ length: MAX_SOURCES }, (_, i) => ranks[i] || '');
       lines.push(
         [
           date,
@@ -179,6 +185,7 @@ function rowsToCsv(rows) {
           ...resolvedCols,
           ...screenshotCols,
           ...gifCols,
+          ...rankCols,
         ]
           .map(escapeCsvField)
           .join(',')
