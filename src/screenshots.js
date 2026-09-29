@@ -128,7 +128,10 @@ try {
 async function encodeGif(pngBuffers, width, height) {
   const gif = GIFEncoder();
   for (const buf of pngBuffers) {
-    const { data } = PNG.sync.read(buf);
+    // page.screenshot() hands back a Uint8Array, not a real Node Buffer —
+    // pngjs calls Buffer-only methods (readUInt32BE) internally, so a bare
+    // Uint8Array throws "data.readUInt32BE is not a function" every time.
+    const { data } = PNG.sync.read(Buffer.isBuffer(buf) ? buf : Buffer.from(buf));
     const palette = quantize(data, GIF_PALETTE_SIZE);
     const index = applyPalette(data, palette);
     gif.writeFrame(index, width, height, { palette, delay: GIF_FRAME_INTERVAL_MS });

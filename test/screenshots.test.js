@@ -73,3 +73,13 @@ test('encodeGif: produces a valid GIF89a buffer from a handful of PNG frames', a
   assert.equal(buf.slice(0, 6).toString('ascii'), 'GIF89a');
   assert.ok(buf.length > 20);
 });
+
+test('encodeGif: accepts a plain Uint8Array per frame, not just a Buffer', async () => {
+  // page.screenshot() hands back a Uint8Array, not a real Buffer — a
+  // Buffer-only frame here would pass while production breaks with
+  // "data.readUInt32BE is not a function" on every single capture.
+  const frames = [solidPng(4, 4, 255, 0, 0), solidPng(4, 4, 0, 255, 0)].map((buf) => new Uint8Array(buf));
+  assert.ok(!Buffer.isBuffer(frames[0]) && frames[0] instanceof Uint8Array);
+  const buf = await encodeGif(frames, 4, 4);
+  assert.equal(buf.slice(0, 6).toString('ascii'), 'GIF89a');
+});
