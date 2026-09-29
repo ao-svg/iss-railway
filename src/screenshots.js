@@ -8,9 +8,12 @@
 // 'nocors' streams can be captured too — it's our own verification
 // browser, nothing is served through it.
 //
-// Latest capture only, one JPEG per URL under data/screenshots/, indexed
-// in data/screenshots.json. Same ephemeral-disk caveat as every other
-// data/ file: a Railway redeploy starts empty.
+// Latest capture only, per URL under data/screenshots/, indexed in
+// data/screenshots.json. Video sources get a still PNG (a frame from the
+// same screencast that builds the gif) plus a short animated GIF; HTML-page
+// sources get a plain JPEG (nothing to animate, no gif attempted). Same
+// ephemeral-disk caveat as every other data/ file: a Railway redeploy
+// starts empty.
 
 const fs = require('fs');
 const path = require('path');
@@ -45,13 +48,16 @@ const MAX_RUNTIME_MS = 25 * 60 * 1000;
 const HLS_JS_URL = 'https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js';
 const WIDTH = 640;
 const HEIGHT = 360;
-// A still can be a stale frame someone already jumped past — a few
-// seconds of real motion is what actually says "this is live right now".
-// 8 frames * 500ms = 4s, under the 5s ask, without adding much per-URL
-// time on top of the still capture that already proved the stream works.
-const GIF_FRAME_COUNT = 8;
-const GIF_FRAME_INTERVAL_MS = 500;
-const GIF_PALETTE_SIZE = 128;
+// A still can be a stale frame someone already jumped past — a few seconds
+// of real motion is what actually says "this is live right now". Frames
+// come from a CDP screencast (see captureFramesViaScreencast) paced by the
+// browser's OWN actual render timing, not a blind setTimeout guess, and
+// double as the still too — one capture operation instead of a screenshot
+// call plus a separate manual frame-grabbing loop.
+const GIF_DURATION_MS = 4000; // under the 5s ask
+const GIF_MAX_FRAMES = 12; // caps memory/encode time if the page renders fast
+const GIF_FRAME_INTERVAL_MS = 400; // fallback delay only, when real timing is unavailable
+const GIF_PALETTE_SIZE = 256; // gifenc's max — best color fidelity it offers
 
 function loadIndex() {
   try {
@@ -120,35 +126,63 @@ try {
 }
 
 /**
- * A handful of raw PNG frames (already-decoded video, same live page the
- * still screenshot just came from) -> one animated GIF buffer. Failure here
- * is never fatal to the capture as a whole — the still image is the thing
- * that has to work, this is a bonus on top of an already-proven-good page.
+ * A handful of raw PNG frames (already-decoded video) -> one animated GIF
+ * buffer. `delays[i]` is how long frame i is displayed (ms); missing entries
+ * fall back to a fixed interval. Failure here is never fatal to the capture
+ * as a whole — the still image is the thing that has to work, this is a
+ * bonus on top of an already-proven-good page.
  */
-async function encodeGif(pngBuffers, width, height) {
+async function encodeGif(pngBuffers, width, height, delays = []) {
   const gif = GIFEncoder();
-  for (const buf of pngBuffers) {
-    // page.screenshot() hands back a Uint8Array, not a real Node Buffer —
-    // pngjs calls Buffer-only methods (readUInt32BE) internally, so a bare
-    // Uint8Array throws "data.readUInt32BE is not a function" every time.
+  pngBuffers.forEach((buf, i) => {
+    // page.screenshot()/CDP screencast hand back a Uint8Array, not a real
+    // Node Buffer — pngjs calls Buffer-only methods (readUInt32BE)
+    // internally, so a bare Uint8Array throws "data.readUInt32BE is not a
+    // function" every time.
     const { data } = PNG.sync.read(Buffer.isBuffer(buf) ? buf : Buffer.from(buf));
     const palette = quantize(data, GIF_PALETTE_SIZE);
     const index = applyPalette(data, palette);
-    gif.writeFrame(index, width, height, { palette, delay: GIF_FRAME_INTERVAL_MS });
-  }
+    gif.writeFrame(index, width, height, { palette, delay: delays[i] ?? GIF_FRAME_INTERVAL_MS });
+  });
   gif.finish();
   return Buffer.from(gif.bytes());
 }
 
-async function captureGif(page, id) {
+/**
+ * Frames via Chrome DevTools Protocol's screencast, not a manual
+ * screenshot()-then-sleep loop — frames arrive as the browser actually
+ * renders them (real pacing, no guessing at intervals), and one capture
+ * produces enough frames for BOTH the still and the gif instead of a
+ * separate screenshot() call plus N more. `everyNthFrame: 2` and the
+ * maxFrames cap below both exist so a fast-rendering page can't hand back
+ * an unbounded number of frames — same one-container-can't-take-much
+ * reasoning as CONCURRENCY=1 above.
+ */
+async function captureFramesViaScreencast(page, durationMs, maxFrames) {
+  const client = await page.target().createCDPSession();
   const frames = [];
-  for (let i = 0; i < GIF_FRAME_COUNT; i++) {
-    frames.push(await page.screenshot({ type: 'png' }));
-    if (i < GIF_FRAME_COUNT - 1) await new Promise((r) => setTimeout(r, GIF_FRAME_INTERVAL_MS));
+  const start = Date.now();
+  const onFrame = (frame) => {
+    frames.push({ data: Buffer.from(frame.data, 'base64'), t: Date.now() - start });
+    client.send('Page.screencastFrameAck', { sessionId: frame.sessionId }).catch(() => {});
+  };
+  client.on('Page.screencastFrame', onFrame);
+  try {
+    await client.send('Page.startScreencast', { format: 'png', maxWidth: WIDTH, maxHeight: HEIGHT, everyNthFrame: 2 });
+    await new Promise((resolve) => {
+      const iv = setInterval(() => {
+        if (frames.length >= maxFrames || Date.now() - start >= durationMs) {
+          clearInterval(iv);
+          resolve();
+        }
+      }, 100);
+    });
+  } finally {
+    client.off('Page.screencastFrame', onFrame);
+    await client.send('Page.stopScreencast').catch(() => {});
+    await client.detach().catch(() => {});
   }
-  const gifFile = `${id}.gif`;
-  await fs.promises.writeFile(path.join(DIR, gifFile), await encodeGif(frames, WIDTH, HEIGHT));
-  return gifFile;
+  return frames;
 }
 
 async function captureOne(page, url) {
@@ -161,7 +195,6 @@ async function captureOne(page, url) {
     check && check.working === true ? WORKING_TIMEOUT_MS : check && check.working === false ? DEAD_TIMEOUT_MS : UNVERIFIED_TIMEOUT_MS;
   const target = (check && check.resolvedUrl) || url;
   const id = screenshotId(url);
-  const file = `${id}.jpg`;
   try {
     if (isManifest) {
       // data: URL rather than page.setContent — the latter goes through
@@ -182,23 +215,52 @@ async function captureOne(page, url) {
       const state = await page.evaluate(() => window.__state);
       if (String(state).startsWith('error:')) return { ok: false, error: String(state).slice(6) };
       await new Promise((r) => setTimeout(r, 300)); // let the frame paint
-    } else {
-      await page.goto(target, { waitUntil: 'domcontentloaded', timeout });
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-    await page.screenshot({ path: path.join(DIR, file), type: 'jpeg', quality: 60 });
-    // Only for actual video (isManifest) — a still HTML page has nothing to
-    // animate, and the point of the gif is proving live motion.
-    let gifFile = null;
-    let gifError = null;
-    if (isManifest) {
-      try {
-        gifFile = await captureGif(page, id);
-      } catch (err) {
-        gifError = err.message;
+
+      const frames = await captureFramesViaScreencast(page, GIF_DURATION_MS, GIF_MAX_FRAMES).catch(() => []);
+      if (frames.length >= 2) {
+        // Real per-frame delays from actual render timing, not a blind
+        // guess; the last frame has nothing to measure to, so it reuses the
+        // previous gap.
+        const delays = frames.map((f, i) => (i < frames.length - 1 ? Math.max(20, frames[i + 1].t - f.t) : GIF_FRAME_INTERVAL_MS));
+        // Skip the first couple frames for the still — often mid-transition
+        // from whatever was on screen right as playback started.
+        const stillFile = `${id}.png`;
+        await fs.promises.writeFile(path.join(DIR, stillFile), frames[Math.min(2, frames.length - 1)].data);
+        let gifFile = null;
+        let gifError = null;
+        try {
+          const gifBytes = await encodeGif(
+            frames.map((f) => f.data),
+            WIDTH,
+            HEIGHT,
+            delays
+          );
+          gifFile = `${id}.gif`;
+          await fs.promises.writeFile(path.join(DIR, gifFile), gifBytes);
+        } catch (err) {
+          gifError = err.message;
+        }
+        return { ok: true, file: stillFile, gifOk: Boolean(gifFile), gifFile, gifError };
       }
+      // Screencast produced too little to animate (or nothing at all,
+      // rare but possible) — fall back to the old reliable single
+      // screenshot so a still still comes out of this capture.
+      const file = `${id}.jpg`;
+      await page.screenshot({ path: path.join(DIR, file), type: 'jpeg', quality: 70 });
+      return {
+        ok: true,
+        file,
+        gifOk: false,
+        gifFile: null,
+        gifError: frames.length ? 'not enough frames to animate' : 'screencast produced no frames',
+      };
     }
-    return { ok: true, file, gifOk: Boolean(gifFile), gifFile, gifError };
+
+    const file = `${id}.jpg`;
+    await page.goto(target, { waitUntil: 'domcontentloaded', timeout });
+    await new Promise((r) => setTimeout(r, 1000));
+    await page.screenshot({ path: path.join(DIR, file), type: 'jpeg', quality: 70 });
+    return { ok: true, file, gifOk: false, gifFile: null, gifError: null };
   } catch (err) {
     // Puppeteer phrases these as "Waiting failed: 20000ms exceeded" /
     // "Navigation timeout of 20000 ms exceeded" — match both.
@@ -287,7 +349,7 @@ async function captureAll(urls, { onProgress, partial = false } = {}) {
   // above because it's still stuck awaiting that one call. This wraps every
   // capture in an external, timer-based cap this process enforces itself -
   // no matter how broken the browser gets, the loop always moves on.
-  const HARD_CAP_MS = WORKING_TIMEOUT_MS + (GIF_FRAME_COUNT * GIF_FRAME_INTERVAL_MS) + 15000;
+  const HARD_CAP_MS = WORKING_TIMEOUT_MS + GIF_DURATION_MS + 15000;
 
   function withHardCap(promise, url) {
     let timer;
@@ -359,7 +421,7 @@ async function captureAll(urls, { onProgress, partial = false } = {}) {
     if (e.gifOk && e.gifFile) referenced.add(e.gifFile);
   }
   for (const name of fs.readdirSync(DIR)) {
-    if ((name.endsWith('.jpg') || name.endsWith('.gif')) && !referenced.has(name)) fs.unlinkSync(path.join(DIR, name));
+    if ((name.endsWith('.jpg') || name.endsWith('.png') || name.endsWith('.gif')) && !referenced.has(name)) fs.unlinkSync(path.join(DIR, name));
   }
 
   console.log(`[screenshots] ${partial ? 'retry' : 'full'} pass: ${summary.captured} captured, ${summary.failed} failed of ${summary.total}${summary.stoppedEarly ? ' (stopped early: time budget)' : ''}`);
