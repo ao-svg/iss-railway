@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const {
   bodyLooksLikeManifest,
   looksLikeBinaryMedia,
+  looksLikeDangerousFile,
   isManifestUrl,
   isBlockedByHeaders,
   hasCorsHeader,
@@ -11,8 +12,7 @@ const {
   manifestStatus,
   rankFor,
   FLAG_AFTER_FAILURES,
-  checkAll,
-  getStatus,
+  nextConsecutiveFailures,
 } = require('../src/sourceChecks');
 
 test('manifestStatus: confirmed-broken content is dead regardless of CORS', () => {
@@ -188,38 +188,52 @@ test('rankFor: never checked at all is unverified', () => {
   assert.equal(rankFor(null, null), 'unverified');
 });
 
-test('checkAll: consecutiveFailures increments on repeated dead results and resets the moment it recovers', async () => {
-  const http = require('http');
-  let mode = 'dead'; // controlled by the test, not real network flakiness
-  const server = http.createServer((req, res) => {
-    if (mode === 'dead') {
-      res.writeHead(500);
-      res.end();
-    } else {
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end('<html>ok</html>');
-    }
-  });
-  await new Promise((resolve) => server.listen(0, resolve));
-  const port = server.address().port;
-  const url = `http://127.0.0.1:${port}/`;
-
-  try {
-    await checkAll([url], { force: true });
-    assert.equal(getStatus(url).consecutiveFailures, 1);
-
-    await checkAll([url], { force: true });
-    assert.equal(getStatus(url).consecutiveFailures, 2);
-
-    mode = 'ok';
-    await checkAll([url], { force: true });
-    assert.equal(getStatus(url).status, 'ok');
-    assert.equal(getStatus(url).consecutiveFailures, 0);
-
-    mode = 'dead';
-    await checkAll([url], { force: true });
-    assert.equal(getStatus(url).consecutiveFailures, 1); // started over, not resumed from 2
-  } finally {
-    server.close();
-  }
+test('nextConsecutiveFailures: increments on repeated dead results, resets the instant it recovers', () => {
+  assert.equal(nextConsecutiveFailures('dead', null), 1);
+  assert.equal(nextConsecutiveFailures('dead', { consecutiveFailures: 1 }), 2);
+  assert.equal(nextConsecutiveFailures('dead', { consecutiveFailures: 2 }), 3);
+  assert.equal(nextConsecutiveFailures('ok', { consecutiveFailures: 5 }), 0);
+  assert.equal(nextConsecutiveFailures('stream', { consecutiveFailures: 5 }), 0);
 });
+
+test('looksLikeDangerousFile: Windows PE (MZ) magic bytes are flagged', () => {
+  const buf = Buffer.from([0x4d, 0x5a, 0x90, 0x00, 0x03, 0x00]);
+  assert.equal(looksLikeDangerousFile(buf, 'application/octet-stream', null, 'http://x.example/thing'), true);
+});
+
+test('looksLikeDangerousFile: ELF magic bytes are flagged', () => {
+  const buf = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01]);
+  assert.equal(looksLikeDangerousFile(buf, 'application/octet-stream', null, 'http://x.example/thing'), true);
+});
+
+test('looksLikeDangerousFile: Content-Disposition: attachment is flagged regardless of body', () => {
+  assert.equal(looksLikeDangerousFile(Buffer.from('#EXTM3U\n'), 'text/plain', 'attachment; filename="thing.m3u8"', 'http://x.example/thing.m3u8'), true);
+});
+
+test('looksLikeDangerousFile: a known-dangerous extension in the URL is flagged even with an innocuous body', () => {
+  assert.equal(looksLikeDangerousFile(Buffer.from('hello'), 'text/plain', null, 'http://x.example/setup.exe'), true);
+});
+
+test('looksLikeDangerousFile: a known-dangerous content-type is flagged', () => {
+  assert.equal(looksLikeDangerousFile(Buffer.from('MZ'), 'application/x-msdownload', null, 'http://x.example/x'), true);
+});
+
+test('looksLikeDangerousFile: a real HLS manifest is never flagged', () => {
+  assert.equal(looksLikeDangerousFile(Buffer.from('#EXTM3U\n#EXT-X-VERSION:3\n'), 'application/vnd.apple.mpegurl', null, 'http://x.example/live.m3u8'), false);
+});
+
+test('looksLikeDangerousFile: an empty/missing body with a normal URL is never flagged', () => {
+  assert.equal(looksLikeDangerousFile(null, null, null, 'http://x.example/live.m3u8'), false);
+});
+
+test('rankFor: dangerous overrides every other signal, even a proven working capture', () => {
+  assert.equal(rankFor({ status: 'dangerous' }, { ok: true, gifOk: true }), 'dangerous');
+});
+
+// checkUrl/resolveNow's own dangerous-file handling is a one-line call into
+// looksLikeDangerousFile (tested exhaustively above) — not re-tested here
+// over a real socket. This machine's local security software blocks Node
+// from connecting to its own http.createServer() (EACCES on loopback,
+// confirmed independent of this test runner's sandboxing), which made that
+// kind of test permanently red here regardless of correctness — see
+// nextConsecutiveFailures above for the same reasoning applied to checkAll.

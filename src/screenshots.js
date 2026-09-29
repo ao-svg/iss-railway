@@ -276,6 +276,23 @@ async function captureOne(page, url) {
 }
 
 /**
+ * A page a community-sourced URL can't trick into saving a file to this
+ * container's disk — some sourced URLs turn out to be an executable rather
+ * than a stream (see looksLikeDangerousFile in sourceChecks.js), and
+ * without this Chrome would otherwise just download it like a real browser
+ * would. Belt-and-suspenders alongside the content sniffing: this blocks
+ * the download at the browser level even if something slips past that.
+ */
+async function newHardenedPage(browser) {
+  const page = await browser.newPage();
+  await page.setViewport({ width: WIDTH, height: HEIGHT });
+  const client = await page.target().createCDPSession();
+  await client.send('Page.setDownloadBehavior', { behavior: 'deny' }).catch(() => {});
+  await client.detach().catch(() => {});
+  return page;
+}
+
+/**
  * Capture every URL in `urls` (deduped). By default this is a full pass:
  * entries for URLs not in it are dropped from the index and their files
  * pruned, so the folder only holds the current dataset's latest captures.
@@ -360,8 +377,7 @@ async function captureAll(urls, { onProgress, partial = false } = {}) {
   }
 
   async function worker() {
-    let page = await browser.newPage();
-    await page.setViewport({ width: WIDTH, height: HEIGHT });
+    let page = await newHardenedPage(browser);
     try {
       while (next.index < unique.length) {
         if (Date.now() - startTime > MAX_RUNTIME_MS) {
@@ -386,8 +402,7 @@ async function captureAll(urls, { onProgress, partial = false } = {}) {
         if (!result.ok) {
           page.close().catch(() => {});
           try {
-            page = await browser.newPage();
-            await page.setViewport({ width: WIDTH, height: HEIGHT });
+            page = await newHardenedPage(browser);
           } catch (err) {
             console.error(`[screenshots] browser unusable, ending this pass early: ${err.message}`);
             summary.stoppedEarly = true;

@@ -151,10 +151,17 @@ async function resolveNow(url) {
       headers: { ...BROWSER_HEADERS, Range: 'bytes=0-1023' },
       responseType: 'arraybuffer',
     });
-    if (res.status >= 400) return { ok: false, url: null };
-    return { ok: true, url: res.request?.res?.responseUrl || url };
+    if (res.status >= 400) return { ok: false, url: null, dangerous: false };
+    const resolvedUrl = res.request?.res?.responseUrl || url;
+    // A viewer clicking this app's own /go link should never end up
+    // downloading an executable, whatever the periodic check last saw for
+    // this URL — check live, right before the redirect actually happens.
+    if (looksLikeDangerousFile(res.data, res.headers['content-type'], res.headers['content-disposition'], resolvedUrl)) {
+      return { ok: false, url: null, dangerous: true };
+    }
+    return { ok: true, url: resolvedUrl, dangerous: false };
   } catch {
-    return { ok: false, url: null };
+    return { ok: false, url: null, dangerous: false };
   }
 }
 
@@ -205,11 +212,22 @@ function manifestStatus(working, cors) {
 // check cadence, so this spans ~10-12 minutes of real time) is not.
 const FLAG_AFTER_FAILURES = 3;
 
+// Pulled out as its own pure function (used by checkAll below) so the
+// streak logic is directly unit-testable without spinning up a real
+// network probe just to exercise it.
+function nextConsecutiveFailures(status, previous) {
+  return status === 'dead' ? (previous?.consecutiveFailures || 0) + 1 : 0;
+}
+
 /**
  * Internal ranking, layered on top of status/working/screenshot data —
  * "is this source actually worth using right now", collapsed to one word
  * instead of making every caller reconstruct it from four different fields:
  *
+ *   dangerous    - the check flagged this as looking like an executable/
+ *                  installer. Checked FIRST, overrides everything else —
+ *                  even an old successful capture doesn't un-flag it, since
+ *                  the danger signal is about what's there NOW.
  *   working      - has a real still AND a real gif capture, proof someone
  *                  can actually watch it right now.
  *   medium       - source-check says it's reachable/usable (ok/stream/
@@ -224,11 +242,34 @@ const FLAG_AFTER_FAILURES = 3;
  *                  or twice so far (too soon to call it broken).
  */
 function rankFor(check, shot) {
+  if (check && check.status === 'dangerous') return 'dangerous';
   if (shot && shot.ok && shot.gifOk) return 'working';
   if (check && (check.httpStatus === 401 || check.httpStatus === 403)) return 'unauthorized';
   if (check && (check.status === 'ok' || check.status === 'stream' || check.status === 'nocors')) return 'medium';
   if (check && check.status === 'dead' && (check.consecutiveFailures || 0) >= FLAG_AFTER_FAILURES) return 'low';
   return 'unverified';
+}
+
+// Extensions/content-types/magic bytes that mean "this is an executable or
+// installer being served where a stream/page was expected" — a community-
+// sourced playlist can point at literally anything, and a viewer clicking
+// through this app's own link should never end up downloading one of these.
+// Deliberately conservative (few, well-known signatures) so a legitimate
+// mislabeled stream never gets caught by it — false negatives here are far
+// cheaper than false positives blocking a working source.
+const DANGEROUS_EXTENSIONS = ['.exe', '.msi', '.bat', '.cmd', '.scr', '.apk', '.dmg', '.pkg', '.jar', '.ps1'];
+const DANGEROUS_CONTENT_TYPES = /x-msdownload|x-msdos-program|x-executable|vnd\.android\.package-archive|x-apple-diskimage|java-archive|x-ms-installer/i;
+
+function looksLikeDangerousFile(buffer, contentType, contentDisposition, url) {
+  if (contentDisposition && /attachment/i.test(contentDisposition)) return true;
+  if (DANGEROUS_EXTENSIONS.some((ext) => urlPathname(url).endsWith(ext))) return true;
+  if (contentType && DANGEROUS_CONTENT_TYPES.test(contentType)) return true;
+  if (buffer && buffer.length >= 4) {
+    const bytes = Buffer.from(buffer);
+    if (bytes[0] === 0x4d && bytes[1] === 0x5a) return true; // 'MZ' — Windows PE (.exe/.dll)
+    if (bytes[0] === 0x7f && bytes[1] === 0x45 && bytes[2] === 0x4c && bytes[3] === 0x46) return true; // ELF
+  }
+  return false;
 }
 
 // Best-effort — MPEG-TS segments start with sync byte 0x47; fMP4 segments
@@ -274,6 +315,10 @@ function looksLikeBinaryMedia(buffer, contentType) {
  *   'blocked' - HTML page blocked from framing (X-Frame-Options / CSP)
  *   'dead'    - unreachable (4xx/5xx, timeout, network error), or a manifest
  *               whose referenced content is confirmed broken
+ *   'dangerous' - the response looks like an executable/installer (magic
+ *               bytes, Content-Disposition: attachment, or a known-bad
+ *               extension/content-type) — never treated as usable, and
+ *               /go refuses to redirect a viewer into downloading it
  */
 async function checkUrl(url) {
   try {
@@ -295,6 +340,19 @@ async function checkUrl(url) {
     }
 
     const contentType = res.headers['content-type'] || null;
+    if (looksLikeDangerousFile(res.data, contentType, res.headers['content-disposition'], resolvedUrl)) {
+      return {
+        status: 'dangerous',
+        working: false,
+        cors: null,
+        resolvedUrl,
+        httpStatus: res.status,
+        contentType,
+        error: 'looks like an executable/installer, not a stream or page — blocked',
+        checkedAt,
+      };
+    }
+
     const isManifest = isManifestUrl(url, contentType, res.data);
 
     if (isManifest) {
@@ -415,6 +473,7 @@ async function checkAll(urls, { force = false, onProgress } = {}) {
     nocors: 0,
     blocked: 0,
     dead: 0,
+    dangerous: 0,
     skipped: unique.length - toCheck.length,
   };
 
@@ -429,7 +488,7 @@ async function checkAll(urls, { force = false, onProgress } = {}) {
       // otherwise fine — only a RUN of dead results in a row means it's
       // actually broken, not unlucky timing. Reset to 0 the moment it's
       // reachable again, whatever state it was in before.
-      result.consecutiveFailures = result.status === 'dead' ? (previous?.consecutiveFailures || 0) + 1 : 0;
+      result.consecutiveFailures = nextConsecutiveFailures(result.status, previous);
       _cache[url] = result;
       summary.checked++;
       summary[result.status]++;
@@ -518,10 +577,12 @@ module.exports = {
   checkUrl,
   rankFor,
   FLAG_AFTER_FAILURES,
+  nextConsecutiveFailures,
   manifestStatus,
   enrichRowsWithSourceStatus,
   bodyLooksLikeManifest,
   looksLikeBinaryMedia,
+  looksLikeDangerousFile,
   isManifestUrl,
   isBlockedByHeaders,
   hasCorsHeader,

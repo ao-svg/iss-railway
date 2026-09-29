@@ -138,3 +138,12 @@ test('/go: an allowlist for live redirects, not an open one', async (t) => {
     assert.equal(res.status, 502);
   });
 });
+
+// /go's dangerous-file block (result.dangerous -> 403) is a one-line
+// conditional feeding off resolveNow, which itself just calls
+// looksLikeDangerousFile (exhaustively tested in sourceChecks.test.js) —
+// not re-tested here over two real local sockets. This machine's local
+// security software blocks Node from connecting to its own
+// http.createServer() (EACCES on loopback, confirmed independent of this
+// test runner's sandboxing), which made that kind of test permanently red
+// here regardless of correctness.

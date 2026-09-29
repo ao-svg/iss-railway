@@ -109,12 +109,14 @@ function layout(title, body, activePath = '') {
   .dot-blocked, .dot-dead { background: #f87171; }
   .dot-nocors { background: #c084fc; }
   .dot-unchecked { background: #475569; }
+  .dot-dangerous { background: #dc2626; box-shadow: 0 0 0 2px #fca5a5; }
   .rank { font-size: 0.7rem; padding: 0.05rem 0.4rem; border-radius: 999px; margin-left: 0.3rem; text-transform: uppercase; letter-spacing: 0.02em; }
   .rank-working { background: #14532d; color: #4ade80; }
   .rank-medium { background: #78350f; color: #fbbf24; }
   .rank-unauthorized { background: #581c87; color: #d8b4fe; }
   .rank-low { background: #7f1d1d; color: #f87171; }
   .rank-unverified { background: #334155; color: #94a3b8; }
+  .rank-dangerous { background: #dc2626; color: #fff; font-weight: 700; }
   .thumb { height: 40px; vertical-align: middle; margin-left: 0.4rem; border-radius: 3px; border: 1px solid var(--border); }
   #search-box { margin-bottom: 1rem; }
   #row-count { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem; }
@@ -415,7 +417,14 @@ function statusDot(url, getSourceStatus) {
   return `<span class="dot ${cls}" title="${escapeHtml(title)}"></span>`;
 }
 
-const RANK_LABEL = { working: 'working', medium: 'medium', unauthorized: 'unauthorized', low: 'low', unverified: 'unverified' };
+const RANK_LABEL = {
+  working: 'working',
+  medium: 'medium',
+  unauthorized: 'unauthorized',
+  low: 'low',
+  unverified: 'unverified',
+  dangerous: 'dangerous',
+};
 
 function rankBadge(url, getSourceStatus, getScreenshot) {
   const rank = sourceChecks.rankFor(getSourceStatus ? getSourceStatus(url) : null, getScreenshot ? getScreenshot(url) : null);
@@ -482,8 +491,8 @@ function renderBrowse(state, getSourceStatus, tz = 'beijing', getScreenshot = nu
     'iss-railway browse',
     `
     <h1>All fixtures</h1>
-    <p class="muted">Every row from the last run. Each channel can have multiple candidate sources; the dot shows the last check (<span class="dot dot-ok"></span> ok — iframe-ready, <span class="dot dot-stream"></span> stream — works and CORS-open, plays in a browser with a video player (hls.js), not a bare iframe, <span class="dot dot-nocors"></span> nocors — works, but no CORS header so a browser can't fetch it directly (native players only), <span class="dot dot-blocked"></span> blocked/dead — iframe-blocked, unreachable, or its video segments are broken, <span class="dot dot-unchecked"></span> not checked — run "Check sources" on the <a href="/">dashboard</a>). Hover a dot for the working / CORS detail; fixtures.csv carries the same as Source_N_Working and Source_N_Cors columns.</p>
-    <p class="muted">The badge next to each link is the internal ranking (<span class="rank rank-working">working</span> proven — has both a real still and a real gif, <span class="rank rank-medium">medium</span> reachable but no good capture yet, <span class="rank rank-unauthorized">unauthorized</span> confirmed 401/403 — an access gate to fix, not a dead link, <span class="rank rank-low">low</span> confirmed dead across several checks in a row, not just one bad probe, <span class="rank rank-unverified">unverified</span> not enough data yet). Same value as Source_N_Rank in fixtures.csv.</p>
+    <p class="muted">Every row from the last run. Each channel can have multiple candidate sources; the dot shows the last check (<span class="dot dot-ok"></span> ok — iframe-ready, <span class="dot dot-stream"></span> stream — works and CORS-open, plays in a browser with a video player (hls.js), not a bare iframe, <span class="dot dot-nocors"></span> nocors — works, but no CORS header so a browser can't fetch it directly (native players only), <span class="dot dot-blocked"></span> blocked/dead — iframe-blocked, unreachable, or its video segments are broken, <span class="dot dot-dangerous"></span> dangerous — looks like an executable/installer, /go refuses to redirect to it, <span class="dot dot-unchecked"></span> not checked — run "Check sources" on the <a href="/">dashboard</a>). Hover a dot for the working / CORS detail; fixtures.csv carries the same as Source_N_Working and Source_N_Cors columns.</p>
+    <p class="muted">The badge next to each link is the internal ranking (<span class="rank rank-working">working</span> proven — has both a real still and a real gif, <span class="rank rank-medium">medium</span> reachable but no good capture yet, <span class="rank rank-unauthorized">unauthorized</span> confirmed 401/403 — an access gate to fix, not a dead link, <span class="rank rank-low">low</span> confirmed dead across several checks in a row, not just one bad probe, <span class="rank rank-unverified">unverified</span> not enough data yet, <span class="rank rank-dangerous">dangerous</span> looks like an executable/installer — blocked outright, overrides every other rank). Same value as Source_N_Rank in fixtures.csv.</p>
     <p class="muted">Times shown: <a href="/browse?tz=beijing" ${tz === 'beijing' ? 'style="color:#e2e8f0;font-weight:600"' : ''}>Beijing (UTC+8)</a> · <a href="/browse?tz=jerusalem" ${tz === 'jerusalem' ? 'style="color:#e2e8f0;font-weight:600"' : ''}>Jerusalem</a> — exports (fixtures.csv/fixtures.json) are always Beijing time regardless of this toggle. Chinese columns are blank until "Translate names" has run — see the <a href="/">dashboard</a>.</p>
     <input type="text" id="search-box" placeholder="Filter by team, league, channel..." oninput="filterRows()">
     <p id="row-count"></p>
@@ -1006,6 +1015,7 @@ function createServer({
       return res.status(404).send('Unknown source URL');
     }
     const result = await sourceChecks.resolveNow(target);
+    if (result.dangerous) return res.status(403).send('Blocked: this source looks like an executable/installer, not a stream or page.');
     if (!result.ok) return res.status(502).send('Source is currently unreachable');
     res.redirect(302, result.url);
   });
