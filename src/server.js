@@ -690,7 +690,7 @@ function renderYouTubeChannels(getAllYouTubeChannels) {
     'iss-railway youtube channels',
     `
     <h1>YouTube channels</h1>
-    <p class="muted">Every YouTube channel the live-streaming source has surfaced a video from. Approving a channel here means every past and future video from it counts as usable — check the channel is genuinely the rightsholder's own official account before approving, not just that the current example video looks fine. Verified live via <a href="https://www.youtube.com/oembed" target="_blank" rel="noopener">YouTube's own oEmbed endpoint</a> — this confirms who uploaded a video, never whether they're authorized to broadcast the content.</p>
+    <p class="muted">Every YouTube channel the live-streaming source has surfaced a video from. Approve/reject here is informational only — it doesn't gate what shows up in live.csv/live.json, every discovered video is included as soon as it's found. Verified live via <a href="https://www.youtube.com/oembed" target="_blank" rel="noopener">YouTube's own oEmbed endpoint</a> — this confirms who uploaded a video, never whether they're authorized to broadcast the content.</p>
     <div class="card">
       ${
         entries.length

@@ -79,11 +79,10 @@ standalone pipeline you can deploy on Railway and pull CSV/JSON from.
   below), but **only the discovery part** of that site's mechanism: which
   games are live, and which of their stream links are YouTube videos. Each
   YouTube video's channel is looked up via YouTube's own public oEmbed
-  endpoint and must be manually approved on `/youtube-channels` before it
-  counts as usable anywhere — oEmbed confirms who uploaded a video, never
-  whether they're authorized to broadcast the content, so that call is a
-  human one, once per channel (approving covers all future videos from it
-  too). Non-YouTube stream links are counted (`type: 'other'`) but never
+  endpoint and recorded on `/youtube-channels` (approve/reject buttons there
+  are informational only — nothing gates on them, every discovered YouTube
+  link is included in `live.csv`/`live.json` as soon as it's found). Non-
+  YouTube stream links are counted (`type: 'other'`) but never
   resolved to an actual URL — the original mechanism for that (fetch a
   webplayer wrapper page, scrape whatever third-party CDN iframe it embeds)
   is the exact pirate-mirror-resolution pattern described below, and this
@@ -128,7 +127,7 @@ only). Manage accounts on `/users`.
 | `GET /leagues`      | Set canonical league-name groupings (admin only) |
 | `GET /translations` | Set manual Simplified Chinese overrides (admin only) |
 | `GET /live`          | Currently-live games from the live-streaming source, refreshed on demand (admin only) |
-| `GET /youtube-channels` | Approve/reject YouTube channels the live-streaming source has surfaced (admin only) |
+| `GET /youtube-channels` | YouTube channels the live-streaming source has surfaced, with informational approve/reject labels — doesn't gate what's exported (admin only) |
 | `GET /users`        | Manage accounts: add/edit/delete admin and viewer logins (admin only) |
 | `POST /api/check-sources` | Kicks off the reachability/iframe check job in the background (admin only) |
 | `POST /api/translate-names` | Kicks off the translation job in the background (admin only) |
