@@ -49,7 +49,7 @@ async function runPipeline({ apiKey, leagueIds, playlistUrl, doms9PlaylistUrl, o
     const event = sportsdb.normalizeEvent(raw);
 
     const channelNames = await sportsdb.getMatchChannels(apiKey, event.eventId);
-    const matched = channelNames.length ? await iptv.matchChannels(channelNames, playlistUrls) : [];
+    const matched = channelNames.length ? await iptv.matchChannels(channelNames, playlistUrls, 10, event) : [];
 
     rows.push({
       ...event,
@@ -67,7 +67,7 @@ async function runPipeline({ apiKey, leagueIds, playlistUrl, doms9PlaylistUrl, o
 
     for (const raw of wtmRaw) {
       const event = wtm.normalizeRow(raw);
-      const matched = event.channels.length ? await iptv.matchChannels(event.channels, playlistUrls) : [];
+      const matched = event.channels.length ? await iptv.matchChannels(event.channels, playlistUrls, 10, event) : [];
 
       rows.push({
         eventId: event.eventId,
@@ -96,7 +96,7 @@ async function runPipeline({ apiKey, leagueIds, playlistUrl, doms9PlaylistUrl, o
       for (const f of lsotvFailures) failures.push({ leagueId: `livesportsontv:${f.league || 'unknown'}`, message: f.message });
 
       for (const event of lsotvRaw) {
-        const matched = event.channels.length ? await iptv.matchChannels(event.channels, playlistUrls) : [];
+        const matched = event.channels.length ? await iptv.matchChannels(event.channels, playlistUrls, 10, event) : [];
 
         rows.push({
           eventId: event.eventId,

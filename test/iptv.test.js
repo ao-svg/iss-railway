@@ -82,3 +82,48 @@ test('findChannelSourcesAcrossPlaylists: no match in any playlist returns an emp
   const sources = findChannelSourcesAcrossPlaylists('HBO Max', [doms9, iptvOrg]);
   assert.deepEqual(sources, []);
 });
+
+test('findChannelSources: matches whole words, not raw substrings', () => {
+  const playlist = [
+    ch('Billiards TV', 'https://a/billiards.m3u8'),
+    ch('SABC News (720p)', 'https://a/sabc.m3u8'),
+    ch('T Sports 7', 'https://a/tsports7.m3u8'),
+  ];
+  assert.deepEqual(findChannelSources('RDS', playlist), []);
+  assert.deepEqual(findChannelSources('ABC', playlist), []);
+  assert.deepEqual(findChannelSources('TNT Sports 7', playlist), []);
+});
+
+test('findChannelSources: an empty channel name matches nothing', () => {
+  assert.deepEqual(findChannelSources('', [ch('ESPN', 'https://a/espn.m3u8')]), []);
+});
+
+test('findChannelSources: quality/geo tags are ignored, and an exact match suppresses fuzzy ones', () => {
+  const playlist = [ch('CBS News Los Angeles (720p)', 'https://a/news.m3u8'), ch('CBS (1080p) [Geo-blocked]', 'https://a/cbs.m3u8')];
+  assert.deepEqual(findChannelSources('CBS', playlist), ['https://a/cbs.m3u8']);
+});
+
+test('findChannelSources: per-game entries only match the same fixture', () => {
+  const playlist = [
+    ch('[MLB] Boston Red Sox vs New York Yankees | ESPN 2 (STRMXHD)', 'https://a/mlb.m3u8'),
+    ch('[UEFA Nations League] España vs Croacia | ESPN 2 (TVF90)', 'https://a/esp.m3u8'),
+  ];
+  const ctx = { sportType: 'Football', homeTeam: 'España', awayTeam: 'Croacia' };
+  assert.deepEqual(findChannelSources('ESPN 2', playlist, 10, ctx), ['https://a/esp.m3u8']);
+});
+
+test('findChannelSources: fuzzy matches naming another sport are dropped', () => {
+  const playlist = [
+    ch('Sky Sports Cricket', 'https://a/cricket.m3u8'),
+    ch('Sky Sports F1', 'https://a/f1.m3u8'),
+    ch('Sky Sports Football (720p)', 'https://a/football.m3u8'),
+  ];
+  const sources = findChannelSources('Sky Sports YouTube', playlist, 10, { sportType: 'Football' });
+  assert.deepEqual(sources, ['https://a/football.m3u8']);
+});
+
+test('findChannelSourcesAcrossPlaylists: an exact match in one playlist suppresses fuzzy matches in another', () => {
+  const doms9 = [ch('CBS', 'https://doms9/cbs.m3u8')];
+  const iptvOrg = [ch('CBS KIRO-TV (1080p)', 'https://iptvorg/kiro.m3u8')];
+  assert.deepEqual(findChannelSourcesAcrossPlaylists('CBS', [doms9, iptvOrg]), ['https://doms9/cbs.m3u8']);
+});
