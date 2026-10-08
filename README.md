@@ -148,6 +148,7 @@ only). Manage accounts on `/users`.
 | Route            | Description                                    |
 |-------------------|-------------------------------------------------|
 | `GET /health`      | Liveness check                                 |
+| `GET /api/relay-status` | Live check of the Relay service connection (reachable, ffmpeg, secret accepted) — see `RELAY_*` in `.env.example` (admin only) |
 | `GET /`             | Admin dashboard (admin only)          |
 | `GET /browse`       | Every fixture with per-source status dots, Chinese names, timezone toggle, full-text filter (admin or viewer) |
 | `GET /leagues`      | Set canonical league-name groupings (admin only) |

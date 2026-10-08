@@ -9,6 +9,7 @@ const sourceChecks = require('./sourceChecks');
 const iptv = require('./iptv');
 const manualChannels = require('./manualChannels');
 const { buildZip } = require('./zip');
+const relay = require('./relay');
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({
@@ -1000,6 +1001,12 @@ function createServer({
     });
 
   app.get('/health', (req, res) => res.json({ ok: true, persistentData: IS_PERSISTENT }));
+
+  // Live connection check against the Relay service (see relay.js) —
+  // reachability, ffmpeg availability, and whether RELAY_SECRET is accepted.
+  app.get('/api/relay-status', requireAuth('admin'), async (req, res) => {
+    res.json(await relay.checkRelay());
+  });
 
   // Live, click-time redirect to wherever a source URL currently points.
   // Exports embed THIS link instead of a raw CDN URL — periodic source

@@ -4,6 +4,7 @@ const { runPipeline } = require('./pipeline');
 const { createServer } = require('./server');
 const { getConfig } = require('./config');
 const { DATA_DIR, IS_PERSISTENT } = require('./dataDir');
+const relay = require('./relay');
 const sourceChecks = require('./sourceChecks');
 const translate = require('./translate');
 const leagues = require('./leagues');
@@ -412,5 +413,10 @@ if (runOnlyFlag) {
         ? `[index] data dir: ${DATA_DIR} (persistent)`
         : `[index] data dir: ${DATA_DIR} (NOT persistent - attach a Railway volume or set DATA_DIR to keep data across redeploys)`
     );
+    relay.checkRelay().then((r) => {
+      if (!r.publicUrl) return console.log('[relay] not configured (RELAY_URL unset)');
+      const state = r.reachable && r.auth === 'ok' ? 'connected' : 'NOT connected';
+      console.log(`[relay] ${state}: ${r.publicUrl} reachable=${r.reachable} auth=${r.auth} ffmpeg=${r.ffmpeg}${r.error ? ` (${r.error})` : ''}`);
+    });
   });
 }
