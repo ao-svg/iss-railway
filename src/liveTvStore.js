@@ -7,8 +7,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const { dataPath } = require('./dataDir');
 
-const STORE_PATH = path.join(__dirname, '..', 'data', 'live-store.json');
+const STORE_PATH = dataPath('live-store.json');
 const ENDED_RETENTION_MS = 3 * 60 * 60 * 1000; // 3h after ending, tunable
 
 function loadStore() {

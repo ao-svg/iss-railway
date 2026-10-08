@@ -14,8 +14,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const { dataPath } = require('./dataDir');
 
-const OVERRIDES_PATH = path.join(__dirname, '..', 'data', 'league-canon.json');
+const OVERRIDES_PATH = dataPath('league-canon.json');
 
 const SEED_ALIASES = {
   'english premier league': 'Premier League',

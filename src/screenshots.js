@@ -11,20 +11,21 @@
 // Latest capture only, per URL under data/screenshots/, indexed in
 // data/screenshots.json. Video sources get a still PNG (a frame from the
 // same screencast that builds the gif) plus a short animated GIF; HTML-page
-// sources get a plain JPEG (nothing to animate, no gif attempted). Same
-// ephemeral-disk caveat as every other data/ file: a Railway redeploy
-// starts empty.
+// sources get a plain JPEG (nothing to animate, no gif attempted). Lives in
+// the data dir (see dataDir.js), so it only survives a Railway redeploy
+// when a volume is attached.
 
 const fs = require('fs');
 const path = require('path');
+const { dataPath } = require('./dataDir');
 const crypto = require('crypto');
 const puppeteer = require('puppeteer');
 const { GIFEncoder, quantize, applyPalette } = require('gifenc');
 const { PNG } = require('pngjs');
 const sourceChecks = require('./sourceChecks');
 
-const DIR = path.join(__dirname, '..', 'data', 'screenshots');
-const INDEX_PATH = path.join(__dirname, '..', 'data', 'screenshots.json');
+const DIR = dataPath('screenshots');
+const INDEX_PATH = dataPath('screenshots.json');
 // Production evidence (data/screenshots.json on Railway, 2026-09-28): every
 // single source in a pass failed with "Protocol error (Page.navigate):
 // Session closed" — the whole Chromium process dying, not a per-page

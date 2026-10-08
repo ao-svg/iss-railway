@@ -15,14 +15,16 @@
 //     — so it gets its own status instead.
 //
 // Results persist to data/source-checks.json so a page load never re-probes
-// hundreds of third-party URLs live. Same caveat as config.js: this file
-// lives on Railway's ephemeral disk and resets on redeploy.
+// hundreds of third-party URLs live. Lives in the data dir (see
+// dataDir.js), so it only survives a Railway redeploy when a volume is
+// attached.
 
 const fs = require('fs');
 const path = require('path');
+const { dataPath } = require('./dataDir');
 const axios = require('axios');
 
-const CACHE_PATH = path.join(__dirname, '..', 'data', 'source-checks.json');
+const CACHE_PATH = dataPath('source-checks.json');
 const CHECK_TTL_MS = 12 * 60 * 60 * 1000; // HTML pages — comparatively stable
 // Manifests rotate/die within hours, and the scheduled check (index.js,
 // SOURCE_CHECK_CRON, every 3 min by default) should actually re-verify

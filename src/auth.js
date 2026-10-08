@@ -9,15 +9,16 @@
 // the old password on every redeploy. So this module seeds from
 // ADMIN_USERNAME/ADMIN_PASSWORD only when the store is empty (fresh boot,
 // wiped disk, or the store was deliberately deleted); once real accounts
-// exist, data/users.json is authoritative until it's gone again. On
-// Railway data/ is wiped every redeploy anyway (same ephemeral-disk
-// caveat as config.js), so this mostly matters for long-running/local use.
+// exist, users.json in the data dir is authoritative until it's gone
+// again. With a Railway volume attached (see dataDir.js) that's across
+// redeploys too; without one the disk is wiped and the admin is re-seeded.
 
 const fs = require('fs');
 const path = require('path');
+const { dataPath } = require('./dataDir');
 const crypto = require('crypto');
 
-const STORE_PATH = path.join(__dirname, '..', 'data', 'users.json');
+const STORE_PATH = dataPath('users.json');
 const ROLE_RANK = { viewer: 1, admin: 2 };
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {

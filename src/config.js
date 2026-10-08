@@ -1,13 +1,14 @@
-// Runtime config: env vars are the baseline, data/config.json (written by the
-// Settings page) overrides them for the lifetime of the running container.
-// Note: this file lives on Railway's ephemeral disk, so a redeploy resets
-// overrides back to whatever's in the env vars — env vars stay the source of
-// truth for anything you want to survive a redeploy.
+// Runtime config: env vars are the baseline, config.json in the data dir
+// (written by the Settings page) overrides them. Only fields actually changed
+// on the Settings page are stored there, so with a persistent volume (see
+// dataDir.js) env var changes still take effect for everything else. Without
+// a volume the file is wiped on redeploy and env vars are all that's left.
 
 const fs = require('fs');
 const path = require('path');
+const { dataPath } = require('./dataDir');
 
-const CONFIG_PATH = path.join(__dirname, '..', 'data', 'config.json');
+const CONFIG_PATH = dataPath('config.json');
 
 function envDefaults() {
   return {
@@ -28,7 +29,7 @@ function envDefaults() {
     // exports stale. Blank disables the schedule (checks then only run
     // after a pipeline run or from the dashboard button).
     sourceCheckCronExpr: process.env.SOURCE_CHECK_CRON ?? '*/3 * * * *',
-    outputCsvPath: process.env.OUTPUT_CSV_PATH || './data/fixtures.csv',
+    outputCsvPath: process.env.OUTPUT_CSV_PATH || dataPath('fixtures.csv'),
     // Prefix for links this app puts into its own exports (screenshot
     // URLs in fixtures.csv/json). Railway injects RAILWAY_PUBLIC_DOMAIN;
     // blank locally, so links come out relative.
@@ -41,7 +42,7 @@ function envDefaults() {
     // and pointing it at the wrong/any domain is a real content-provenance
     // decision, not something to default to a hardcoded value for.
     liveTvDomain: process.env.LIVETV_DOMAIN || '',
-    outputLiveCsvPath: process.env.OUTPUT_LIVE_CSV_PATH || './data/live.csv',
+    outputLiveCsvPath: process.env.OUTPUT_LIVE_CSV_PATH || dataPath('live.csv'),
     // "Big 5" US pro leagues by default — the rest of the site's ~16
     // league pages are mostly NCAA sub-variants, noisier/lower-value by
     // default, opt-in via Settings same as SPORTSDB_LEAGUE_IDS already works.
@@ -60,7 +61,8 @@ function loadOverrides() {
   }
 }
 
-let current = { ...envDefaults(), ...loadOverrides() };
+let overrides = loadOverrides();
+let current = { ...envDefaults(), ...overrides };
 
 function getConfig() {
   return current;
@@ -84,9 +86,19 @@ function updateConfig(patch) {
   if (normalized.wtmDays !== undefined) {
     normalized.wtmDays = Number(normalized.wtmDays) || current.wtmDays;
   }
-  current = { ...current, ...normalized };
+  // The Settings form posts every field, so only keep the ones that
+  // actually differ from env — anything left at its env value keeps
+  // following env on future deploys.
+  const env = envDefaults();
+  overrides = { ...overrides };
+  for (const [key, value] of Object.entries(normalized)) {
+    if (value === undefined) continue;
+    if (JSON.stringify(value) === JSON.stringify(env[key])) delete overrides[key];
+    else overrides[key] = value;
+  }
+  current = { ...env, ...overrides };
   fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(current, null, 2));
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(overrides, null, 2));
   return current;
 }
 

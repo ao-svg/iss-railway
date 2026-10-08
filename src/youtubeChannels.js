@@ -13,8 +13,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const { dataPath } = require('./dataDir');
 
-const STORE_PATH = path.join(__dirname, '..', 'data', 'youtube-channels.json');
+const STORE_PATH = dataPath('youtube-channels.json');
 
 function loadStore() {
   try {

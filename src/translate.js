@@ -12,9 +12,10 @@
 
 const fs = require('fs');
 const path = require('path');
+const { dataPath } = require('./dataDir');
 const axios = require('axios');
 
-const CACHE_PATH = path.join(__dirname, '..', 'data', 'translations.json');
+const CACHE_PATH = dataPath('translations.json');
 const REQUEST_TIMEOUT_MS = 8000;
 const DELAY_BETWEEN_REQUESTS_MS = 500;
 const MAX_RETRIES = 3;

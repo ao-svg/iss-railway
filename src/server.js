@@ -1,6 +1,7 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const { dataPath, IS_PERSISTENT } = require('./dataDir');
 const { getConfig, updateConfig } = require('./config');
 const { formatBeijing, formatInTimezone } = require('./csv');
 const auth = require('./auth');
@@ -973,7 +974,7 @@ function createServer({
   const app = express();
   app.use(express.urlencoded({ extended: false }));
   // Public like fixtures.json/fixtures.csv — the exports link here.
-  app.use('/screenshots', express.static(path.join(__dirname, '..', 'data', 'screenshots'), { maxAge: '1m' }));
+  app.use('/screenshots', express.static(dataPath('screenshots'), { maxAge: '1m' }));
 
   // Every source URL currently in play, from BOTH raw (never-enriched)
   // states — /go's allowlist, so it can't be used to redirect somewhere
@@ -998,7 +999,7 @@ function createServer({
       publicBaseUrl: getConfig().publicBaseUrl || `${req.protocol}://${req.get('host')}`,
     });
 
-  app.get('/health', (req, res) => res.json({ ok: true }));
+  app.get('/health', (req, res) => res.json({ ok: true, persistentData: IS_PERSISTENT }));
 
   // Live, click-time redirect to wherever a source URL currently points.
   // Exports embed THIS link instead of a raw CDN URL — periodic source
@@ -1057,7 +1058,7 @@ function createServer({
   // Every current capture in one archive, plus the index, for pulling
   // them off the server in one click.
   app.get('/screenshots.zip', requireAuth('admin'), (req, res) => {
-    const dir = path.join(__dirname, '..', 'data', 'screenshots');
+    const dir = dataPath('screenshots');
     const index = getAllScreenshots ? getAllScreenshots() : {};
     const files = [];
     for (const [url, s] of Object.entries(index)) {

@@ -3,6 +3,7 @@ const cron = require('node-cron');
 const { runPipeline } = require('./pipeline');
 const { createServer } = require('./server');
 const { getConfig } = require('./config');
+const { DATA_DIR, IS_PERSISTENT } = require('./dataDir');
 const sourceChecks = require('./sourceChecks');
 const translate = require('./translate');
 const leagues = require('./leagues');
@@ -406,5 +407,10 @@ if (runOnlyFlag) {
   });
   app.listen(port, () => {
     console.log(`[index] server listening on :${port}`);
+    console.log(
+      IS_PERSISTENT
+        ? `[index] data dir: ${DATA_DIR} (persistent)`
+        : `[index] data dir: ${DATA_DIR} (NOT persistent - attach a Railway volume or set DATA_DIR to keep data across redeploys)`
+    );
   });
 }

@@ -113,6 +113,32 @@ npm start             # runs once at boot, then on the PIPELINE_CRON schedule, s
 3. Railway auto-detects Node via Nixpacks and reads `railway.json`.
 4. Set the environment variables from `.env.example` under **Variables**.
 5. Deploy. Railway assigns a public URL — CSV is at `<url>/fixtures.csv`.
+6. **Attach a volume** (service → **Settings → Volumes → Add volume**, any
+   mount path, e.g. `/data`). Without one, Railway's disk is wiped on every
+   redeploy, taking users, Settings overrides, source-check history,
+   screenshots, translations and manual channels/league names with it.
+   Railway sets `RAILWAY_VOLUME_MOUNT_PATH` when a volume is attached and
+   the app picks it up automatically — no extra variable needed.
+   `GET /health` reports `persistentData: true` once it's in use, and the
+   boot log prints the data dir it's using.
+
+### Persistent data
+
+Every file the app stores lives in one data dir, resolved as:
+`DATA_DIR` (explicit override) → `RAILWAY_VOLUME_MOUNT_PATH` (Railway
+volume) → `./data` (local default; ephemeral on Railway). Paths shown as
+`data/...` elsewhere in this README are relative to that dir.
+
+With a volume, two things behave differently from the old wipe-every-deploy
+setup:
+
+- **`ADMIN_USERNAME`/`ADMIN_PASSWORD` only seed the first admin**, on the
+  very first boot. After that `users.json` on the volume is authoritative,
+  so changing those env vars no longer resets the login. Locked out? Delete
+  `users.json` from the volume and restart to reseed from the env vars.
+- **Settings page overrides persist.** Only fields changed to something
+  other than their env var value are stored (in `config.json`); a field
+  left at — or set back to — its env value keeps following the env var.
 
 ## Endpoints
 
