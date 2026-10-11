@@ -432,8 +432,11 @@ if (runOnlyFlag) {
     );
     if (!getConfig().relayEnabled) console.log('[relay] turned off (Settings / RELAY_ENABLED=false)');
     else relay.checkRelayAuth().then((r) => {
-      const status = r.ok && r.auth === 'ok' ? 'connected' : 'NOT connected';
+      // Connected = reachable and our secret not rejected; a relay that
+      // accepts ANY secret still works, it's just flagged separately.
+      const status = r.ok && r.auth !== 'rejected' ? 'connected' : 'NOT connected';
       console.log(`[relay] ${status}: reachable=${r.ok} auth=${r.auth} ffmpeg=${r.ffmpeg} via=${process.env.RELAY_INTERNAL_URL ? 'internal' : 'public'}`);
+      if (r.auth === 'not-enforced') console.log('[relay] warning: the relay accepts any secret (not enforced on its side)');
     });
   });
 }
