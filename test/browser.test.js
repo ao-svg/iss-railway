@@ -3,9 +3,9 @@ const assert = require('node:assert/strict');
 const { spawn } = require('child_process');
 const { closeBrowser, processStats, formatStats, BASE_ARGS } = require('../src/browser');
 
-test('BASE_ARGS turn off crash reporting (no lingering crashpad handler)', () => {
+test('BASE_ARGS keep crash reporting on (disabling it wedged captures on Linux)', () => {
   for (const flag of ['--disable-crash-reporter', '--disable-breakpad', '--disable-crashpad-for-testing']) {
-    assert.ok(BASE_ARGS.includes(flag), flag);
+    assert.ok(!BASE_ARGS.includes(flag), flag);
   }
 });
 

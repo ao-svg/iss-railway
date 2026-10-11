@@ -4,11 +4,11 @@
 // Production evidence (2026-10-09..11): after ~2 days of 3-minute capture
 // passes every launch failed with
 //   posix_spawn .../chrome_crashpad_handler: Resource temporarily unavailable (11)
-// i.e. the container's process/thread limit was exhausted. Each pass left
-// Chrome helper processes behind (crashpad handler especially — it outlives
-// the browser by design), and `browser.close()` alone neither guarantees
-// they're gone nor returns at all when the browser is wedged. So:
-//   - crash reporting is switched off, so no crashpad handler is spawned;
+// i.e. the container's process limit was exhausted. Chrome helpers that
+// outlive the browser (crashpad handler especially) are re-parented to
+// PID 1, and PID 1 was `npm start`, which never reaps them — so every
+// launch left zombies behind until the 1000-pid cgroup limit was hit. The
+// root fix is in railway.json: bash runs as PID 1 and reaps them. Here:
 //   - closeBrowser() caps close() with a timeout, then SIGKILLs the
 //     browser's whole process group (Puppeteer launches Chrome detached, as
 //     its own group leader), taking every helper down with it;
@@ -18,14 +18,10 @@
 const fs = require('fs');
 const puppeteer = require('puppeteer');
 
-const BASE_ARGS = [
-  '--no-sandbox',
-  '--disable-setuid-sandbox',
-  '--disable-dev-shm-usage',
-  '--disable-crash-reporter',
-  '--disable-breakpad',
-  '--disable-crashpad-for-testing',
-];
+// Deliberately NOT disabling crash reporting (--disable-crash-reporter /
+// --disable-breakpad / --disable-crashpad-for-testing): with those, every
+// capture on Railway's Linux image wedged until the hard cap (2026-10-11).
+const BASE_ARGS = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'];
 
 const CLOSE_TIMEOUT_MS = 10000;
 

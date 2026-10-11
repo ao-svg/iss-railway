@@ -4,7 +4,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "PUPPETEER_EXECUTABLE_PATH=$(which chromium) npm start",
+    "startCommand": "bash -c 'export PUPPETEER_EXECUTABLE_PATH=$(which chromium); node src/index.js & child=$!; trap \"kill -TERM $child\" TERM INT; wait $child; trap - TERM INT; wait $child'",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 5
   }
