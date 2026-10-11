@@ -456,7 +456,14 @@ async function checkUrl(url) {
  * mid-run doesn't lose progress. `onProgress(done, total)` is called after
  * each URL.
  */
-async function checkAll(urls, { force = false, onProgress } = {}) {
+//
+// `relayProbe(url, result)` (optional, from index.js while the relay is on
+// and healthy) answers "does this stream play THROUGH the relay" for HLS
+// sources — true/false/null, stored as `relayPlayable`. A stream that's
+// 'nocors' (browser can't fetch it directly) but relayPlayable is playable
+// via /go, which hands viewers the relay proxy. Without a probe the field
+// is null (relay off / not applicable), never a stale true.
+async function checkAll(urls, { force = false, onProgress, relayProbe = null } = {}) {
   const unique = [...new Set(urls)];
   const now = Date.now();
   const toCheck = unique.filter((u) => {
@@ -476,6 +483,7 @@ async function checkAll(urls, { force = false, onProgress } = {}) {
     blocked: 0,
     dead: 0,
     dangerous: 0,
+    relayPlayable: 0,
     skipped: unique.length - toCheck.length,
   };
 
@@ -491,6 +499,15 @@ async function checkAll(urls, { force = false, onProgress } = {}) {
       // actually broken, not unlucky timing. Reset to 0 the moment it's
       // reachable again, whatever state it was in before.
       result.consecutiveFailures = nextConsecutiveFailures(result.status, previous);
+      result.relayPlayable = null;
+      if (relayProbe && result.isManifest && result.status !== 'dangerous') {
+        try {
+          result.relayPlayable = await relayProbe(url, result);
+        } catch {
+          result.relayPlayable = null;
+        }
+      }
+      if (result.relayPlayable === true) summary.relayPlayable++;
       _cache[url] = result;
       summary.checked++;
       summary[result.status]++;
@@ -553,10 +570,17 @@ function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus, { getScre
         sourceStatuses: results.map((s) => s?.status || null),
         sourceWorking: results.map((s) => (s && s.working !== undefined ? s.working : null)),
         sourceCors: results.map((s) => (s && s.cors !== undefined ? s.cors : null)),
+        // Plays through the relay proxy (true/false), null = relay off,
+        // not HLS, or never checked with the relay on. See checkAll.
+        sourceRelayPlayable: results.map((s) => (s && typeof s.relayPlayable === 'boolean' ? s.relayPlayable : null)),
         sourceResolved: results.map((s, i) => (s?.resolvedUrl && s.resolvedUrl !== sources[i] ? s.resolvedUrl : null)),
+        // Our own capture first; when there's none, the relay's thumbnail
+        // (fetched server-side and saved to disk — see screenshots.js
+        // saveRelayThumb), so the link never carries a relay URL.
         sourceScreenshot: sources.map((url) => {
           const shot = getScreenshot(url);
-          return shot && shot.ok && shot.file ? `${publicBaseUrl}/screenshots/${shot.file}` : null;
+          if (shot && shot.ok && shot.file) return `${publicBaseUrl}/screenshots/${shot.file}`;
+          return shot && shot.relayThumbFile ? `${publicBaseUrl}/screenshots/${shot.relayThumbFile}` : null;
         }),
         // Same index entry as sourceScreenshot, just the gif half of it —
         // grouped with the still by sharing that lookup, not folded into

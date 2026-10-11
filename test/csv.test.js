@@ -16,15 +16,28 @@ function baseRow(overrides = {}) {
   };
 }
 
-// Trailing per-source blocks, in order: 10 Status, 10 Working, 10 Cors, 10 Resolved, 10 Screenshot, 10 Gif, 10 Rank.
-const TRAILING = 70;
-const statusBlock = (cols) => cols.slice(-70, -60);
-const workingBlock = (cols) => cols.slice(-60, -50);
-const corsBlock = (cols) => cols.slice(-50, -40);
-const resolvedBlock = (cols) => cols.slice(-40, -30);
-const screenshotBlock = (cols) => cols.slice(-30, -20);
-const gifBlock = (cols) => cols.slice(-20, -10);
-const rankBlock = (cols) => cols.slice(-10);
+// Trailing per-source blocks, in order: 10 Status, 10 Working, 10 Cors, 10 Resolved, 10 Screenshot, 10 Gif, 10 Rank, 10 RelayPlayable.
+const TRAILING = 80;
+const statusBlock = (cols) => cols.slice(-80, -70);
+const workingBlock = (cols) => cols.slice(-70, -60);
+const corsBlock = (cols) => cols.slice(-60, -50);
+const resolvedBlock = (cols) => cols.slice(-50, -40);
+const screenshotBlock = (cols) => cols.slice(-40, -30);
+const gifBlock = (cols) => cols.slice(-30, -20);
+const rankBlock = (cols) => cols.slice(-20, -10);
+const relayBlock = (cols) => cols.slice(-10);
+
+test('HEADER ends with 10 Source_N_RelayPlayable columns, after Rank', () => {
+  assert.deepEqual(relayBlock(HEADER), Array.from({ length: 10 }, (_, i) => `Source${i + 1}RelayPlayable`));
+});
+
+test('sourceRelayPlayable renders as yes/no, null as blank', () => {
+  const csv = rowsToCsv([
+    baseRow({ channels: [{ name: 'X', sources: ['/go?u=a', '/go?u=b', '/go?u=c'], sourceRelayPlayable: [true, false, null] }] }),
+  ]);
+  const cols = csv.trim().split('\n')[1].split(',');
+  assert.deepEqual(relayBlock(cols).slice(0, 4), ['yes', 'no', '', '']);
+});
 
 test('HEADER has Status followed by 10 each of Source_Status, _Working, _Cors, _Resolved, _Screenshot, _Gif, _Rank columns', () => {
   assert.equal(HEADER[HEADER.length - TRAILING - 1], 'Status');

@@ -141,7 +141,9 @@ function mountRelayRoutes(app, { requireAuth, isRelayable, isEnabled }) {
   app.get('/player', requireAuth('viewer'), (req, res) => {
     const target = relay.validateTarget(req.query.url);
     if (!target || !isRelayable(target)) return res.status(404).type('text/plain').send('Unknown source');
-    const src = `/api/relay/stream?url=${encodeURIComponent(target)}`;
+    // Through /go: it re-resolves the source at play time (fresh token)
+    // and redirects to /api/relay/stream; hls.js follows the redirect.
+    const src = `/go?u=${encodeURIComponent(target)}`;
     res.type('html').send(`<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Player</title>

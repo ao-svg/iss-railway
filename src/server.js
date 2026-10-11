@@ -440,6 +440,10 @@ function screenshotThumb(url, getScreenshot) {
   const shot = getScreenshot ? getScreenshot(url) : null;
   if (!shot) return '';
   if (!shot.ok || !shot.file) {
+    if (shot.relayThumbFile) {
+      const relaySrc = `/screenshots/${encodeURIComponent(shot.relayThumbFile)}`;
+      return ` <a href="${relaySrc}" target="_blank" rel="noopener"><img class="thumb" src="${relaySrc}" alt="" title="relay thumbnail ${escapeHtml(shot.relayThumbAt || '')}"></a>`;
+    }
     return ` <span class="no-url" title="${escapeHtml(shot.error || '')} (${escapeHtml(shot.capturedAt || '')})">(no frame)</span>`;
   }
   const src = `/screenshots/${encodeURIComponent(shot.file)}`;
@@ -1032,6 +1036,11 @@ function createServer({
   // A source may go through the relay only if this app actually matched it
   // and it isn't excluded (see index.js).
   const isRelayEnabled = () => getConfig().relayEnabled;
+  async function shouldRelay(target, resolvedUrl) {
+    if (!isRelayEnabled() || !relay.isRelayConfigured() || isRelayExcluded(target)) return false;
+    if (!relay.validateTarget(resolvedUrl)) return false;
+    return (await relay.relayHealth()).ok;
+  }
   const isRelayable = (url) => {
     if (!isRelayEnabled() || !relay.validateTarget(url) || isRelayExcluded(url)) return false;
     return knownSourceUrls(getState()).has(url);
@@ -1057,6 +1066,16 @@ function createServer({
     const result = await sourceChecks.resolveNow(target);
     if (result.dangerous) return res.status(403).send('Blocked: this source looks like an executable/installer, not a stream or page.');
     if (!result.ok) return res.status(502).send('Source is currently unreachable');
+    // Through the relay when possible: wrap the FRESHLY resolved address
+    // (tokens expire, the stored one may be stale) in this app's own
+    // proxy, signed, so the browser never sees the relay or its secret.
+    // Relayed links need a viewer login (Basic auth: the browser prompts,
+    // then repeats this same /go request). Anything else — relay off or
+    // failing health, an excluded (doms9) source, a resolved address that
+    // isn't a relay-supported type — keeps the plain redirect.
+    if (await shouldRelay(target, result.url)) {
+      return requireAuth('viewer')(req, res, () => res.redirect(302, relay.localStreamPath(result.url)));
+    }
     res.redirect(302, result.url);
   });
 
@@ -1085,6 +1104,7 @@ function createServer({
       out[url] = {
         image: s.ok && s.file ? `${base}/screenshots/${s.file}` : null,
         gif: s.gifOk && s.gifFile ? `${base}/screenshots/${s.gifFile}` : null,
+        relayThumb: s.relayThumbFile ? `${base}/screenshots/${s.relayThumbFile}` : null,
         capturedAt: s.capturedAt,
         ok: s.ok,
         error: s.error || null,

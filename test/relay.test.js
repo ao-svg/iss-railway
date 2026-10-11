@@ -108,11 +108,11 @@ function appDeps(sources) {
     runLiveTvFetch: async () => {},
     getAllYouTubeChannels: () => [],
     setChannelStatus: () => {},
-    isRelayExcluded: (url) => url === EXCLUDED,
+    isRelayExcluded: (url) => url === EXCLUDED || url.includes('/doms9/'),
   };
 }
 
-async function setup(t, { secret = SECRET, relayUp = true } = {}) {
+async function setup(t, { secret = SECRET, relayUp = true, extraSources = [] } = {}) {
   const fake = fakeRelay();
   const relayServer = await listen(fake.app);
   const relayBase = `http://127.0.0.1:${relayServer.address().port}`;
@@ -124,7 +124,7 @@ async function setup(t, { secret = SECRET, relayUp = true } = {}) {
   process.env.RELAY_URL = 'https://relay-public.example.com';
   await relay.relayHealth({ force: true }); // reset health cache for this case
 
-  const sources = [KNOWN, EXCLUDED, 'https://cdn.example.com/upstream-down/a.m3u8', 'https://cdn.example.com/upstream-404/a.m3u8'];
+  const sources = [KNOWN, EXCLUDED, 'https://cdn.example.com/upstream-down/a.m3u8', 'https://cdn.example.com/upstream-404/a.m3u8', ...extraSources];
   const appServer = await listen(createServer(appDeps(sources)));
   const base = `http://127.0.0.1:${appServer.address().port}`;
 
@@ -321,7 +321,7 @@ test('AC1: HTML pages carry no secret and no relay address', async (t) => {
   const browse = await (await get('/browse')).text();
   assert.ok(browse.includes(`/api/relay/thumb?url=${enc(KNOWN)}`), 'known source gets a relay preview');
   assert.ok(!browse.includes(`/api/relay/thumb?url=${enc(EXCLUDED)}`), 'excluded source gets none');
-  assert.ok((await get(`/player?url=${enc(KNOWN)}`).then((r) => r.text())).includes(`/api/relay/stream?url=${enc(KNOWN)}`));
+  assert.ok((await get(`/player?url=${enc(KNOWN)}`).then((r) => r.text())).includes(`/go?u=${enc(KNOWN)}`));
 });
 
 test('proxy routes require login', async (t) => {
@@ -402,4 +402,149 @@ test('checkRelayAuth: ok when only our secret passes, not-enforced when any secr
   process.env.RELAY_INTERNAL_URL = `http://127.0.0.1:${server.address().port}`;
   const r = await relay.checkRelayAuth();
   assert.deepEqual(r, { ok: true, ffmpeg: false, auth: 'not-enforced' });
+});
+
+// --- /go through the relay (Option A) ---------------------------------------
+// A local "CDN": /live.m3u8 302s to a per-request tokenized URL (like real
+// stream CDNs); /page.html is not a relay-supported type.
+async function startOrigin(t) {
+  const app = express();
+  let n = 0;
+  app.get(['/live.m3u8', '/doms9/live.m3u8'], (req, res, next) => {
+    if (req.query.token) return next();
+    res.redirect(302, `${req.path}?token=t${++n}`);
+  });
+  app.get(['/live.m3u8', '/doms9/live.m3u8'], (req, res) => res.type('application/vnd.apple.mpegurl').send('#EXTM3U\n#EXTINF:6,\nseg.ts\n'));
+  app.get('/page.html', (req, res) => res.type('html').send('<html>ok</html>'));
+  const server = await listen(app);
+  t.after(() => server.close());
+  return `http://127.0.0.1:${server.address().port}`;
+}
+
+const goPath = (u) => `/go?u=${enc(u)}`;
+
+test('/go: relayable stream -> 302 to the signed relay proxy for the FRESHLY resolved URL', async (t) => {
+  const origin = await startOrigin(t);
+  const src = `${origin}/live.m3u8`;
+  const { base } = await setup(t, { extraSources: [src] });
+
+  const res = await fetch(base + goPath(src), { redirect: 'manual', headers: { Authorization: BASIC } });
+  assert.equal(res.status, 302);
+  const loc = res.headers.get('location');
+  assert.ok(loc.startsWith('/api/relay/stream?url='), loc);
+  const wrapped = new URL(loc, 'http://x').searchParams.get('url');
+  assert.match(wrapped, /\/live\.m3u8\?token=t\d+$/, 'wraps the resolved (tokenized) URL, not the stored one');
+  assert.ok(!/secret/i.test(loc), 'no secret in the redirect');
+
+  const play = await fetch(base + loc, { headers: { Authorization: BASIC } });
+  assert.equal(play.status, 200, 'the proxy accepts the signed link');
+  assert.ok(!/secret/i.test(await play.text()));
+});
+
+test('/go: relayed link without login -> 401 Basic challenge (browser prompts, then retries /go)', async (t) => {
+  const origin = await startOrigin(t);
+  const src = `${origin}/live.m3u8`;
+  const { base } = await setup(t, { extraSources: [src] });
+  const res = await fetch(base + goPath(src), { redirect: 'manual' });
+  assert.equal(res.status, 401);
+  assert.match(res.headers.get('www-authenticate') || '', /^Basic/);
+});
+
+test('/go: doms9 (excluded) sources keep the direct redirect, no login', async (t) => {
+  const origin = await startOrigin(t);
+  const src = `${origin}/doms9/live.m3u8`;
+  const { base } = await setup(t, { extraSources: [src] });
+  const res = await fetch(base + goPath(src), { redirect: 'manual' });
+  assert.equal(res.status, 302);
+  assert.match(res.headers.get('location'), /^http:\/\/127\.0\.0\.1:\d+\/doms9\/live\.m3u8\?token=/);
+});
+
+test('/go: non-supported resolved type keeps the direct redirect', async (t) => {
+  const origin = await startOrigin(t);
+  const src = `${origin}/page.html`;
+  const { base } = await setup(t, { extraSources: [src] });
+  const res = await fetch(base + goPath(src), { redirect: 'manual' });
+  assert.equal(res.status, 302);
+  assert.equal(res.headers.get('location'), src);
+});
+
+test('/go: relay turned off -> exactly the old behaviour (direct redirect, no login)', async (t) => {
+  const origin = await startOrigin(t);
+  const src = `${origin}/live.m3u8`;
+  const { base } = await setup(t, { extraSources: [src] });
+  updateConfig({ relayEnabled: false });
+  t.after(() => updateConfig({ relayEnabled: true }));
+  const res = await fetch(base + goPath(src), { redirect: 'manual' });
+  assert.equal(res.status, 302);
+  assert.match(res.headers.get('location'), /^http:\/\/127\.0\.0\.1:\d+\/live\.m3u8\?token=/);
+});
+
+test('/go: relay failing health -> direct redirect', async (t) => {
+  const origin = await startOrigin(t);
+  const src = `${origin}/live.m3u8`;
+  const { base } = await setup(t, { relayUp: false, extraSources: [src] });
+  const res = await fetch(base + goPath(src), { redirect: 'manual' });
+  assert.equal(res.status, 302);
+  assert.match(res.headers.get('location'), /^http:\/\/127\.0\.0\.1:\d+\/live\.m3u8\?token=/);
+});
+
+// --- relay playability probe / thumbnails -----------------------------------
+test('probeViaRelay: true when a segment plays through the relay, false on relay errors', async (t) => {
+  await setup(t);
+  const { looksLikeBinaryMedia } = require('../src/sourceChecks');
+  const probe = (u) => relay.probeViaRelay(u, { looksLikeMedia: looksLikeBinaryMedia });
+  assert.equal(await probe(KNOWN), true);
+  assert.equal(await probe('https://cdn.example.com/upstream-404/a.m3u8'), false);
+  assert.equal(await probe('https://cdn.example.com/upstream-down/a.m3u8'), false);
+  assert.equal(await probe('https://cdn.example.com/page.html'), null, 'unsupported type');
+});
+
+test('checkAll: relayPlayable recorded; a CORS-blocked stream counts as playable via the relay', async () => {
+  const sourceChecks = require('../src/sourceChecks');
+  const app = express(); // no CORS headers -> direct status 'nocors'
+  app.get('/nocors.m3u8', (req, res) => res.type('application/vnd.apple.mpegurl').send('#EXTM3U\n#EXTINF:6,\nseg.ts\n'));
+  app.get('/seg.ts', (req, res) => res.type('video/mp2t').send(Buffer.alloc(376, 0x47)));
+  const server = await listen(app);
+  try {
+    const url = `http://127.0.0.1:${server.address().port}/nocors.m3u8`;
+    await sourceChecks.checkAll([url], { force: true, relayProbe: async () => true });
+    const s = sourceChecks.getStatus(url);
+    assert.equal(s.status, 'nocors');
+    assert.equal(s.relayPlayable, true);
+    const [row] = sourceChecks.enrichRowsWithSourceStatus([{ channels: [{ name: 'x', sources: [url] }] }]);
+    assert.deepEqual(row.channels[0].sourceRelayPlayable, [true]);
+    assert.ok(row.channels[0].sources[0].startsWith('/go?u='), 'exports stay /go links');
+
+    await sourceChecks.checkAll([url], { force: true }); // relay off -> null, never a stale true
+    assert.equal(sourceChecks.getStatus(url).relayPlayable, null);
+  } finally {
+    server.close();
+  }
+});
+
+test('relay thumbnail: saved as a plain image file, exported only when there is no own capture', () => {
+  const screenshots = require('../src/screenshots');
+  const sourceChecks = require('../src/sourceChecks');
+  const url = 'https://cdn.example.com/thumbless/a.m3u8';
+  screenshots.saveRelayThumb(url, JPEG);
+  const shot = screenshots.getScreenshot(url);
+  assert.ok(shot.relayThumbFile.endsWith('.relay.jpg'));
+  assert.deepEqual(fs.readFileSync(path.join(screenshots.DIR, shot.relayThumbFile)), JPEG);
+  const [row] = sourceChecks.enrichRowsWithSourceStatus([{ channels: [{ name: 'x', sources: [url] }] }], () => null, {
+    getScreenshot: screenshots.getScreenshot,
+    publicBaseUrl: 'https://app.example.com',
+  });
+  assert.equal(row.channels[0].sourceScreenshot[0], `https://app.example.com/screenshots/${shot.relayThumbFile}`);
+  assert.equal(row.channels[0].sourceRank[0], 'unverified', 'a relay thumb is not proof of a working capture');
+});
+
+test('nothing under the data dir contains the secret or a relay address', () => {
+  const files = fs
+    .readdirSync(process.env.DATA_DIR, { recursive: true })
+    .map((f) => path.join(process.env.DATA_DIR, f))
+    .filter((f) => fs.statSync(f).isFile());
+  const dump = files.map((f) => fs.readFileSync(f, 'latin1')).join('\n');
+  for (const needle of [SECRET, encodeURIComponent(SECRET), 'secret=', 'relay-public.example.com']) {
+    assert.ok(!dump.includes(needle), `${needle} found under data dir`);
+  }
 });

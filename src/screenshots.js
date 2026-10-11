@@ -347,7 +347,11 @@ async function captureAll(urls, { onProgress, partial = false } = {}) {
   const next = { index: 0 };
 
   function recordResult(url, result) {
-    _index[url] = { ...result, capturedAt: new Date().toISOString() };
+    // A relay thumbnail (saveRelayThumb) is kept across passes until a
+    // real capture of our own replaces the need for it.
+    const prev = _index[url];
+    const keepRelay = !result.ok && prev && prev.relayThumbFile ? { relayThumbFile: prev.relayThumbFile, relayThumbAt: prev.relayThumbAt } : {};
+    _index[url] = { ...result, ...keepRelay, capturedAt: new Date().toISOString() };
     saveIndex(_index);
   }
 
@@ -430,6 +434,7 @@ async function captureAll(urls, { onProgress, partial = false } = {}) {
   for (const e of Object.values(_index)) {
     if (e.ok && e.file) referenced.add(e.file);
     if (e.gifOk && e.gifFile) referenced.add(e.gifFile);
+    if (e.relayThumbFile) referenced.add(e.relayThumbFile);
   }
   for (const name of fs.readdirSync(DIR)) {
     if ((name.endsWith('.jpg') || name.endsWith('.png') || name.endsWith('.gif')) && !referenced.has(name)) fs.unlinkSync(path.join(DIR, name));
@@ -439,4 +444,19 @@ async function captureAll(urls, { onProgress, partial = false } = {}) {
   return summary;
 }
 
-module.exports = { captureAll, captureOne, getScreenshot, getAllScreenshots, screenshotId, playerHtml, encodeGif, DIR };
+/**
+ * Stores a relay-provided thumbnail (JPEG bytes, fetched server-side by
+ * the caller) for a source that has no capture of its own. Saved as a
+ * plain file under the screenshots dir — nothing relay-related (URL,
+ * secret) is ever written, only the image. Separate from `file`/`ok` so
+ * ranking ("working" = our own still + gif) is unaffected.
+ */
+function saveRelayThumb(url, jpeg) {
+  fs.mkdirSync(DIR, { recursive: true });
+  const relayThumbFile = `${screenshotId(url)}.relay.jpg`;
+  fs.writeFileSync(path.join(DIR, relayThumbFile), jpeg);
+  _index[url] = { ...(_index[url] || { ok: false }), relayThumbFile, relayThumbAt: new Date().toISOString() };
+  saveIndex(_index);
+}
+
+module.exports = { captureAll, saveRelayThumb, captureOne, getScreenshot, getAllScreenshots, screenshotId, playerHtml, encodeGif, DIR };

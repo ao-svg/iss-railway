@@ -50,6 +50,9 @@ const HEADER = [
   // 'working' / 'medium' / 'unauthorized' / 'low' / 'unverified'. See
   // sourceChecks.rankFor for what each means.
   ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Rank`),
+  // Plays through the relay proxy that Source_N (/go) hands viewers —
+  // yes/no, blank = relay off / not HLS / not checked with the relay on.
+  ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}RelayPlayable`),
 ];
 
 function yesNo(value) {
@@ -161,6 +164,8 @@ function rowsToCsv(rows) {
       const gifCols = Array.from({ length: MAX_SOURCES }, (_, i) => gifs[i] || '');
       const ranks = ch.sourceRank || [];
       const rankCols = Array.from({ length: MAX_SOURCES }, (_, i) => ranks[i] || '');
+      const relay = ch.sourceRelayPlayable || [];
+      const relayCols = Array.from({ length: MAX_SOURCES }, (_, i) => yesNo(relay[i]));
       lines.push(
         [
           date,
@@ -186,6 +191,7 @@ function rowsToCsv(rows) {
           ...screenshotCols,
           ...gifCols,
           ...rankCols,
+          ...relayCols,
         ]
           .map(escapeCsvField)
           .join(',')

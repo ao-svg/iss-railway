@@ -130,6 +130,34 @@ function writeFixturesCsv() {
 // retryOnly = just the sources with no good image yet — a failed capture
 // gets another go on the very next check instead of waiting for the next
 // full pass, and existing good images are left untouched.
+// Relay on, configured, and answering its health check right now.
+async function relayUsable() {
+  if (!getConfig().relayEnabled || !relay.isRelayConfigured()) return false;
+  return (await relay.relayHealth()).ok;
+}
+
+// For HLS sources with no capture of our own, fetch the relay's thumbnail
+// server-side and store it as an image file (no relay URL is ever saved).
+// Skipped entirely while the relay has no ffmpeg — /thumb can't work then.
+const RELAY_THUMB_MAX_AGE_MS = 30 * 60 * 1000;
+async function fillRelayThumbs(urls) {
+  if (!(await relayUsable()) || (await relay.relayHealth()).ffmpeg !== true) return;
+  let saved = 0;
+  for (const url of urls) {
+    const shot = screenshots.getScreenshot(url);
+    if (shot && shot.ok) continue;
+    if (shot && shot.relayThumbAt && Date.now() - Date.parse(shot.relayThumbAt) < RELAY_THUMB_MAX_AGE_MS) continue;
+    if (isRelayExcluded(url) || !relay.validateTarget(url) || !/\.m3u8$/i.test(new URL(url).pathname)) continue;
+    const check = sourceChecks.getStatus(url);
+    const jpeg = await relay.fetchRelayThumb((check && check.resolvedUrl) || url);
+    if (jpeg) {
+      screenshots.saveRelayThumb(url, jpeg);
+      saved++;
+    }
+  }
+  if (saved) console.log(`[relay] saved ${saved} relay thumbnail(s) for sources without a capture`);
+}
+
 async function runScreenshots({ retryOnly = false } = {}) {
   if (state.screenshotRunning) return state;
   let urls = [...new Set(allSourceUrls())];
@@ -151,6 +179,7 @@ async function runScreenshots({ retryOnly = false } = {}) {
     });
     state.lastScreenshotAt = new Date().toISOString();
     state.lastScreenshotSummary = summary;
+    await fillRelayThumbs(urls);
     writeFixturesCsv();
   } catch (err) {
     console.error('[screenshots] run failed:', err.message);
@@ -190,8 +219,15 @@ async function runSourceCheck(force = false) {
   state.checkRunning = true;
   state.checkProgress = { done: 0, total: urls.length };
   try {
+    const relayProbe = (await relayUsable())
+      ? (url, result) =>
+          isRelayExcluded(url)
+            ? null
+            : relay.probeViaRelay(result.resolvedUrl || url, { looksLikeMedia: sourceChecks.looksLikeBinaryMedia })
+      : null;
     const summary = await sourceChecks.checkAll(urls, {
       force,
+      relayProbe,
       onProgress: (done, total) => {
         state.checkProgress = { done, total };
       },

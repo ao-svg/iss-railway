@@ -210,8 +210,93 @@ async function checkRelayAuth({ timeoutMs = 8000 } = {}) {
   return { ...health, auth };
 }
 
+// First bytes of a response body, then the connection is dropped — the
+// relay ignores Range, so this is how a probe avoids pulling whole segments.
+async function fetchHead(url, { timeoutMs, maxBytes = 16384 }) {
+  const res = await axios.get(url, { responseType: 'stream', timeout: timeoutMs, maxRedirects: 0, validateStatus: () => true });
+  const chunks = [];
+  let size = 0;
+  await new Promise((resolve) => {
+    const done = () => {
+      res.data.destroy();
+      resolve();
+    };
+    res.data.on('data', (c) => {
+      chunks.push(c);
+      size += c.length;
+      if (size >= maxBytes) done();
+    });
+    res.data.on('end', resolve);
+    res.data.on('error', resolve);
+  });
+  return { status: res.status, contentType: res.headers['content-type'] || '', body: Buffer.concat(chunks) };
+}
+
+function firstUri(text, base) {
+  for (const line of String(text).split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    try {
+      return new URL(t, base).toString();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Does `target` actually play THROUGH the relay? Server-side: playlist ->
+ * (variant playlist ->) first segment, all via the relay's own rewritten
+ * links, segment checked for real media bytes. true / false, or null when
+ * inconclusive. Never logs or returns URLs.
+ * `looksLikeMedia(buffer, contentType)` -> true/false/null is injected
+ * (sourceChecks.looksLikeBinaryMedia) to avoid a require cycle.
+ */
+async function probeViaRelay(target, { looksLikeMedia, timeoutMs = 10000 } = {}) {
+  if (!validateTarget(target) || !relaySecret() || !relayBase()) return null;
+  try {
+    let url = relayStreamRequestUrl(target);
+    for (let hop = 0; hop < 3; hop++) {
+      const r = await fetchHead(url, { timeoutMs, maxBytes: hop === 0 ? MAX_PLAYLIST_BYTES : 16384 });
+      if (r.status !== 200) return false;
+      const text = r.body.toString('utf8');
+      if (PLAYLIST_CT_RE.test(r.contentType) || text.trimStart().startsWith('#EXTM3U')) {
+        const next = firstUri(text, url);
+        if (!next) return false;
+        url = next;
+        continue;
+      }
+      const verdict = looksLikeMedia ? looksLikeMedia(r.body, r.contentType) : null;
+      return verdict === false ? false : verdict === true ? true : null;
+    }
+    return null;
+  } catch {
+    return false;
+  }
+}
+
+// Server-side relay thumbnail: JPEG Buffer, or null on any failure.
+async function fetchRelayThumb(target, { timeoutMs = 15000 } = {}) {
+  if (!validateTarget(target) || !relaySecret() || !relayBase()) return null;
+  try {
+    const res = await axios.get(relayThumbRequestUrl(target), {
+      responseType: 'arraybuffer',
+      timeout: timeoutMs,
+      maxRedirects: 0,
+      validateStatus: () => true,
+    });
+    if (res.status !== 200 || !/image\/jpeg/i.test(res.headers['content-type'] || '')) return null;
+    return Buffer.from(res.data);
+  } catch {
+    return null;
+  }
+}
+
 module.exports = {
   ALLOWED_EXTENSIONS,
+  probeViaRelay,
+  fetchRelayThumb,
   assertRelayConfig,
   isRelayConfigured,
   redact,
