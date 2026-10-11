@@ -19,7 +19,7 @@ const fs = require('fs');
 const path = require('path');
 const { dataPath } = require('./dataDir');
 const crypto = require('crypto');
-const puppeteer = require('puppeteer');
+const { launchBrowser, closeBrowser, processStats, formatStats } = require('./browser');
 const { GIFEncoder, quantize, applyPalette } = require('gifenc');
 const { PNG } = require('pngjs');
 const sourceChecks = require('./sourceChecks');
@@ -322,26 +322,20 @@ async function captureAll(urls, { onProgress, partial = false } = {}) {
 
   let browser;
   try {
-    browser = await puppeteer.launch({
-      headless: true,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-web-security',
-        '--autoplay-policy=no-user-gesture-required',
-        '--mute-audio',
-        // Trim memory further on top of CONCURRENCY=1 above — no point
-        // spending RAM on GPU compositing/extensions/background timers a
-        // headless capture never benefits from.
-        '--disable-gpu',
-        '--disable-extensions',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding',
-      ],
-    });
+    console.log(`[screenshots] before launch: ${formatStats(processStats())}`);
+    browser = await launchBrowser([
+      '--disable-web-security',
+      '--autoplay-policy=no-user-gesture-required',
+      '--mute-audio',
+      // Trim memory further on top of CONCURRENCY=1 above — no point
+      // spending RAM on GPU compositing/extensions/background timers a
+      // headless capture never benefits from.
+      '--disable-gpu',
+      '--disable-extensions',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+    ]);
   } catch (err) {
     console.error(`[screenshots] browser launch failed: ${err.message}`);
     summary.failed = unique.length;
@@ -419,7 +413,8 @@ async function captureAll(urls, { onProgress, partial = false } = {}) {
   try {
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, unique.length) }, worker));
   } finally {
-    await browser.close().catch(() => {});
+    await closeBrowser(browser);
+    console.log(`[screenshots] after close: ${formatStats(processStats())}`);
   }
 
   // A full pass drops entries outside the current dataset once everything

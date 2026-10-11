@@ -13,7 +13,7 @@
 // headless browser, same as src/liveTv.js already uses for its own
 // site's JS challenge — reusing that dependency, not adding a new one.
 
-const puppeteer = require('puppeteer');
+const { launchBrowser, closeBrowser } = require('./browser');
 
 const BASE_URL = 'https://www.livesportsontv.com';
 const TIME_ZONE = 'America/New_York'; // site's displayed times match real US ET kickoffs (DST-aware, unlike a fixed offset)
@@ -155,11 +155,7 @@ async function fetchAllLeagues(leagueSlugs, { onProgress } = {}) {
 
   let browser;
   try {
-    browser = await puppeteer.launch({
-      headless: true,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-    });
+    browser = await launchBrowser();
   } catch (err) {
     return { rows: [], failures: [{ league: null, message: `browser launch failed: ${err.message}` }] };
   }
@@ -192,7 +188,7 @@ async function fetchAllLeagues(leagueSlugs, { onProgress } = {}) {
       if (onProgress) onProgress(i + 1, leagueSlugs.length);
     }
   } finally {
-    await browser.close().catch(() => {});
+    await closeBrowser(browser);
   }
 
   return { rows, failures };

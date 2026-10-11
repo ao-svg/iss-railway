@@ -19,7 +19,7 @@
 //     exists, but no URL for it is ever produced or stored.
 
 const axios = require('axios');
-const puppeteer = require('puppeteer');
+const { launchBrowser, closeBrowser } = require('./browser');
 const youtubeChannels = require('./youtubeChannels');
 const { splitTeams } = require('./teamSplit');
 const leagues = require('./leagues');
@@ -266,11 +266,7 @@ async function fetchLiveStreams(domain, { onProgress } = {}) {
 
   let browser;
   try {
-    browser = await puppeteer.launch({
-      headless: true,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-    });
+    browser = await launchBrowser();
   } catch (err) {
     return {
       rows: [],
@@ -360,7 +356,7 @@ async function fetchLiveStreams(domain, { onProgress } = {}) {
       }
     }
   } finally {
-    await browser.close().catch(() => {});
+    await closeBrowser(browser);
   }
 
   return { rows, failures, successfulSports };
