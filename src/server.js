@@ -10,6 +10,7 @@ const iptv = require('./iptv');
 const manualChannels = require('./manualChannels');
 const { buildZip } = require('./zip');
 const relay = require('./relay');
+const { mountRelayRoutes, relayPreviewHtml } = require('./relayRoutes');
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({
@@ -448,7 +449,7 @@ function screenshotThumb(url, getScreenshot) {
   return `${still} <a href="${gifSrc}" target="_blank" rel="noopener" class="muted" title="few-second animated capture">(gif)</a>`;
 }
 
-function renderBrowse(state, getSourceStatus, tz = 'beijing', getScreenshot = null) {
+function renderBrowse(state, getSourceStatus, tz = 'beijing', getScreenshot = null, isRelayable = () => false) {
   const rows = state.lastRows || [];
 
   const tableRows = rows
@@ -462,7 +463,7 @@ function renderBrowse(state, getSourceStatus, tz = 'beijing', getScreenshot = nu
               const sourceItems = sources
                 .map(
                   (url) =>
-                    `<li>${statusDot(url, getSourceStatus)}<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a>${rankBadge(url, getSourceStatus, getScreenshot)}${screenshotThumb(url, getScreenshot)}</li>`
+                    `<li>${statusDot(url, getSourceStatus)}<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a>${rankBadge(url, getSourceStatus, getScreenshot)}${screenshotThumb(url, getScreenshot)}${isRelayable(url) && /.m3u8$/i.test(new URL(url).pathname) ? relayPreviewHtml(url) : ''}</li>`
                 )
                 .join('');
               return `<li><span class="channel-name">${escapeHtml(ch.name)}</span>${(ch.manualUrls || []).length ? ' <span class="badge badge-manual">manual</span>' : ''}${sources.length ? '' : '<span class="no-url">(no stream match)</span>'}
@@ -971,6 +972,8 @@ function createServer({
   getAllYouTubeChannels,
   setChannelStatus,
   getPlaylistStatus,
+  // url => true for sources that must never go through the relay.
+  isRelayExcluded = () => false,
 }) {
   const app = express();
   app.use(express.urlencoded({ extended: false }));
@@ -1000,13 +1003,18 @@ function createServer({
       publicBaseUrl: getConfig().publicBaseUrl || `${req.protocol}://${req.get('host')}`,
     });
 
-  app.get('/health', (req, res) => res.json({ ok: true, persistentData: IS_PERSISTENT }));
+  // Relay: { ok, ffmpeg } only — never its URL or secret.
+  app.get('/health', async (req, res) =>
+    res.json({ ok: true, persistentData: IS_PERSISTENT, relay: await relay.relayHealth() })
+  );
 
-  // Live connection check against the Relay service (see relay.js) —
-  // reachability, ffmpeg availability, and whether RELAY_SECRET is accepted.
-  app.get('/api/relay-status', requireAuth('admin'), async (req, res) => {
-    res.json(await relay.checkRelay());
-  });
+  // A source may go through the relay only if this app actually matched it
+  // and it isn't excluded (see index.js).
+  const isRelayable = (url) => {
+    if (!relay.validateTarget(url) || isRelayExcluded(url)) return false;
+    return knownSourceUrls(getState()).has(url);
+  };
+  mountRelayRoutes(app, { requireAuth, isRelayable });
 
   // Live, click-time redirect to wherever a source URL currently points.
   // Exports embed THIS link instead of a raw CDN URL — periodic source
@@ -1034,7 +1042,7 @@ function createServer({
 
   app.get('/browse', requireAuth('viewer'), (req, res) => {
     const tz = req.query.tz === 'jerusalem' ? 'jerusalem' : 'beijing';
-    res.send(renderBrowse(getState(), getSourceStatus, tz, getScreenshot));
+    res.send(renderBrowse(getState(), getSourceStatus, tz, getScreenshot, isRelayable));
   });
 
   app.post('/api/screenshots', requireAuth('admin'), (req, res) => {

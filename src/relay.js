@@ -1,131 +1,222 @@
-// Client for the Relay service — a separate Railway service (owned
-// elsewhere, not modified from here) that proxies HLS resources and grabs
-// stream thumbnails.
+// SERVER-ONLY client for the Relay service — a separate Railway service
+// (not modified from here) that proxies HLS resources and grabs stream
+// thumbnails. Never import this from anything rendered to the browser.
 //
-// Env:
-//   RELAY_URL          public base URL, e.g. https://relay-production.up.railway.app.
-//                      Used for every URL a browser loads: the relay rewrites
-//                      playlist segment URLs from the incoming Host header, so
-//                      a private address would hand browsers unreachable URLs.
-//   RELAY_SECRET       sent as ?secret= on every request except /health.
-//   RELAY_INTERNAL_URL optional base for server-to-server calls (health,
-//                      thumbs), e.g. http://relay.railway.internal:8080. Only
-//                      resolvable when both services share a Railway project;
-//                      falls back to RELAY_URL.
+// HARD RULE: RELAY_SECRET never reaches the browser — not in HTML, JS,
+// API responses, playlist contents, redirects, error messages or logs.
+// Browsers only ever talk to this app's own /api/relay/* routes (see
+// server.js); those fetch the relay server-side, rewrite every URI in a
+// playlist back to /api/relay/stream, and refuse to emit anything that
+// still contains the relay host or "secret=".
 //
-// Env is read on every call (not cached at require time) so a variable
-// change only needs a restart, and tests can set it per case.
+// Env (server-side only):
+//   RELAY_SECRET        required — startup fails fast without it.
+//   RELAY_INTERNAL_URL  preferred base for every relay call (private network).
+//   RELAY_URL           fallback base when RELAY_INTERNAL_URL is unset.
+//
+// Env is read per call so tests can set it per case.
 
+const crypto = require('crypto');
 const axios = require('axios');
+
+const ALLOWED_EXTENSIONS = ['.m3u8', '.ts', '.aac', '.mp4', '.key', '.vtt'];
+const PLAYLIST_CT_RE = /mpegurl/i;
+const MAX_PLAYLIST_BYTES = 5 * 1024 * 1024;
 
 const trimSlash = (s) => String(s || '').trim().replace(/\/+$/, '');
 
-function relaySettings() {
-  const publicUrl = trimSlash(process.env.RELAY_URL);
-  return {
-    publicUrl,
-    internalUrl: trimSlash(process.env.RELAY_INTERNAL_URL) || publicUrl,
-    secret: process.env.RELAY_SECRET || '',
-  };
+function relayBase() {
+  return trimSlash(process.env.RELAY_INTERNAL_URL) || trimSlash(process.env.RELAY_URL);
 }
 
-function isRelayConfigured() {
-  const { publicUrl, secret } = relaySettings();
-  return Boolean(publicUrl && secret);
+function relaySecret() {
+  return process.env.RELAY_SECRET || '';
 }
 
-function buildUrl(base, route, target, secret) {
-  return `${base}/${route}?secret=${encodeURIComponent(secret)}&url=${encodeURIComponent(target)}`;
+// Called once at startup (index.js).
+function assertRelayConfig() {
+  if (!relaySecret()) throw new Error('RELAY_SECRET is not set — refusing to start (see .env.example)');
+  if (!relayBase()) throw new Error('Neither RELAY_INTERNAL_URL nor RELAY_URL is set — refusing to start');
 }
 
-// Browser-facing: hand straight to hls.js / native HLS, don't rewrite.
-function relayStreamUrl(target) {
-  const { publicUrl, secret } = relaySettings();
-  if (!publicUrl || !secret) return null;
-  return buildUrl(publicUrl, 'stream', target, secret);
+// Strips the secret (by value and as a query param) from anything that
+// might be logged or surfaced.
+function redact(text) {
+  let s = String(text ?? '');
+  const secret = relaySecret();
+  if (secret) {
+    s = s.split(secret).join('[REDACTED]');
+    const encoded = encodeURIComponent(secret);
+    if (encoded !== secret) s = s.split(encoded).join('[REDACTED]');
+  }
+  return s.replace(/secret=[^&\s"']*/gi, 'secret=[REDACTED]');
 }
 
-// Browser-facing thumbnail (usable as <img src>).
-function relayThumbUrl(target) {
-  const { publicUrl, secret } = relaySettings();
-  if (!publicUrl || !secret) return null;
-  return buildUrl(publicUrl, 'thumb', target, secret);
+function relayRequestUrl(route, target) {
+  return `${relayBase()}/${route}?secret=${encodeURIComponent(relaySecret())}&url=${encodeURIComponent(target)}`;
 }
 
-// Server-side thumbnail fetch: a JPEG Buffer, or null on any failure (the
-// relay can take ~12s on a cache miss, hence the generous timeout).
-async function fetchRelayThumb(target, { timeoutMs = 20000 } = {}) {
-  const { internalUrl, secret } = relaySettings();
-  if (!internalUrl || !secret) return null;
+const relayStreamRequestUrl = (target) => relayRequestUrl('stream', target);
+const relayThumbRequestUrl = (target) => relayRequestUrl('thumb', target);
+const relayHealthUrl = () => `${relayBase()}/health`;
+
+/**
+ * The URL exactly as given if it's http(s) with a path ending in an
+ * allowed extension, null otherwise. Returned verbatim (not re-serialized)
+ * so allowlist lookups match the exact string the source list holds.
+ */
+function validateTarget(raw) {
+  if (typeof raw !== 'string' || !raw) return null;
+  let u;
   try {
-    const res = await axios.get(buildUrl(internalUrl, 'thumb', target, secret), {
-      responseType: 'arraybuffer',
-      timeout: timeoutMs,
-      validateStatus: () => true,
-    });
-    if (res.status !== 200 || !/image\/jpeg/i.test(res.headers['content-type'] || '')) return null;
-    return Buffer.from(res.data);
+    u = new URL(raw);
   } catch {
     return null;
   }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+  const pathname = u.pathname.toLowerCase();
+  if (!ALLOWED_EXTENSIONS.some((ext) => pathname.endsWith(ext))) return null;
+  return raw;
+}
+
+const isPlaylist = (target, contentType) =>
+  PLAYLIST_CT_RE.test(contentType || '') || new URL(target).pathname.toLowerCase().endsWith('.m3u8');
+
+// Per-process key for signing the segment/key/subtitle URLs this app
+// itself writes into rewritten playlists, so /api/relay/stream can accept
+// them without being an open proxy for arbitrary URLs. A restart just
+// invalidates old signatures; live players re-fetch playlists constantly.
+const SIGNING_KEY = crypto.randomBytes(32);
+
+function sign(target) {
+  return crypto.createHmac('sha256', SIGNING_KEY).update(target).digest('base64url');
+}
+
+function verifySignature(target, sig) {
+  if (typeof sig !== 'string' || !sig) return false;
+  const expected = Buffer.from(sign(target));
+  const given = Buffer.from(sig);
+  return expected.length === given.length && crypto.timingSafeEqual(expected, given);
+}
+
+function localStreamPath(original) {
+  return `/api/relay/stream?url=${encodeURIComponent(original)}&sig=${sign(original)}`;
 }
 
 /**
- * Connection check. Never includes the secret in its output.
- *   configured - RELAY_URL and RELAY_SECRET are both set
- *   reachable  - GET /health answered with { ok: true }
- *   auth       - 'ok' | 'rejected' | 'unknown': the secret is tested with a
- *                /stream call that has no url — 401 means the secret is
- *                wrong, 400 (missing url) means it got past auth.
+ * Rewrites a relay-served playlist so every URI (plain URI lines and
+ * URI="..." attributes on any tag — EXT-X-KEY, EXT-X-MAP, EXT-X-MEDIA,
+ * EXT-X-I-FRAME-STREAM-INF, ...) becomes a local /api/relay/stream path.
+ * The original target is taken from the relay URI's `url` param; a URI
+ * without one (not relay-shaped) is resolved against `playlistTarget`.
+ * Throws if the result would still leak the relay host or a secret —
+ * callers turn that into a generic 502.
  */
-async function checkRelay({ timeoutMs = 8000 } = {}) {
-  const { publicUrl, internalUrl, secret } = relaySettings();
-  const out = {
-    configured: Boolean(publicUrl && secret),
-    publicUrl: publicUrl || null,
-    usingInternalUrl: internalUrl !== publicUrl,
-    reachable: false,
-    ffmpeg: null,
-    uptime: null,
-    auth: 'unknown',
-    error: null,
-  };
-  if (!internalUrl) {
-    out.error = 'RELAY_URL is not set';
-    return out;
-  }
+function rewritePlaylist(text, playlistTarget) {
+  const base = relayBase();
+  const relayHost = base ? new URL(base).host : null;
 
-  try {
-    const res = await axios.get(`${internalUrl}/health`, { timeout: timeoutMs, validateStatus: () => true });
-    const body = res.data && typeof res.data === 'object' ? res.data : {};
-    out.reachable = res.status === 200 && body.ok === true;
-    out.ffmpeg = typeof body.ffmpeg === 'boolean' ? body.ffmpeg : null;
-    out.uptime = typeof body.uptime === 'number' ? body.uptime : null;
-    if (!out.reachable) out.error = `health returned HTTP ${res.status}`;
-  } catch (err) {
-    out.error = `health request failed: ${err.code || err.message}`;
-    return out;
-  }
-
-  if (!secret) {
-    out.error = 'RELAY_SECRET is not set';
-    return out;
-  }
-  try {
-    const res = await axios.get(`${internalUrl}/stream?secret=${encodeURIComponent(secret)}`, {
-      timeout: timeoutMs,
-      validateStatus: () => true,
-    });
-    if (res.status === 401) {
-      out.auth = 'rejected';
-      out.error = 'relay rejected RELAY_SECRET (401)';
-    } else if (res.status === 400) {
-      out.auth = 'ok';
+  const toLocal = (uri) => {
+    let original;
+    try {
+      // Only a relay-shaped link (…/stream?url=…) carries the original in
+      // its url param; anything else is a plain URI relative to the playlist.
+      const abs = new URL(uri, base ? `${base}/stream` : playlistTarget);
+      if (abs.pathname.endsWith('/stream')) original = abs.searchParams.get('url');
+      if (!original) original = new URL(uri, playlistTarget).toString();
+    } catch {
+      return null;
     }
-  } catch (err) {
-    out.error = `auth check failed: ${err.code || err.message}`;
+    return localStreamPath(original);
+  };
+
+  const out = String(text)
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return line;
+      if (trimmed.startsWith('#')) {
+        return line.replace(/URI="([^"]*)"/g, (m, uri) => {
+          const local = toLocal(uri);
+          return local ? `URI="${local}"` : m;
+        });
+      }
+      return toLocal(trimmed) ?? '';
+    })
+    .join('\n');
+
+  const secret = relaySecret();
+  if (/secret=/i.test(out) || (secret && out.includes(secret)) || (relayHost && out.includes(relayHost))) {
+    throw new Error('rewritten playlist still references the relay');
   }
   return out;
 }
 
-module.exports = { relaySettings, isRelayConfigured, relayStreamUrl, relayThumbUrl, fetchRelayThumb, checkRelay };
+/**
+ * Relay /health, cached briefly so a busy /health endpoint can't hammer
+ * it. Resolves to { ok, ffmpeg } — never the URL, never the secret.
+ */
+let _healthCache = { at: 0, value: null };
+const HEALTH_CACHE_MS = 10000;
+
+async function relayHealth({ timeoutMs = 5000, force = false } = {}) {
+  if (!force && _healthCache.value && Date.now() - _healthCache.at < HEALTH_CACHE_MS) return _healthCache.value;
+  let value;
+  if (!relayBase()) {
+    value = { ok: false, ffmpeg: null };
+  } else {
+    try {
+      const res = await axios.get(relayHealthUrl(), { timeout: timeoutMs, validateStatus: () => true });
+      const body = res.data && typeof res.data === 'object' ? res.data : {};
+      value = {
+        ok: res.status === 200 && body.ok === true,
+        ffmpeg: typeof body.ffmpeg === 'boolean' ? body.ffmpeg : null,
+      };
+    } catch {
+      value = { ok: false, ffmpeg: null };
+    }
+  }
+  _healthCache = { at: Date.now(), value };
+  return value;
+}
+
+/**
+ * Startup diagnostic: health plus whether the relay accepts RELAY_SECRET
+ * (a /stream call with no url: 401 = wrong secret, 400 = got past auth).
+ * Output is safe to log.
+ */
+async function checkRelayAuth({ timeoutMs = 8000 } = {}) {
+  const health = await relayHealth({ timeoutMs, force: true });
+  let auth = 'unknown';
+  if (health.ok && relaySecret()) {
+    try {
+      const res = await axios.get(`${relayBase()}/stream?secret=${encodeURIComponent(relaySecret())}`, {
+        timeout: timeoutMs,
+        validateStatus: () => true,
+      });
+      if (res.status === 401) auth = 'rejected';
+      else if (res.status === 400) auth = 'ok';
+    } catch {
+      // stays 'unknown'
+    }
+  }
+  return { ...health, auth };
+}
+
+module.exports = {
+  ALLOWED_EXTENSIONS,
+  assertRelayConfig,
+  redact,
+  relayStreamRequestUrl,
+  relayThumbRequestUrl,
+  relayHealthUrl,
+  validateTarget,
+  isPlaylist,
+  sign,
+  verifySignature,
+  localStreamPath,
+  rewritePlaylist,
+  relayHealth,
+  checkRelayAuth,
+  MAX_PLAYLIST_BYTES,
+};

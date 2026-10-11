@@ -147,8 +147,10 @@ only). Manage accounts on `/users`.
 
 | Route            | Description                                    |
 |-------------------|-------------------------------------------------|
-| `GET /health`      | Liveness check                                 |
-| `GET /api/relay-status` | Live check of the Relay service connection (reachable, ffmpeg, secret accepted) — see `RELAY_*` in `.env.example` (admin only) |
+| `GET /health`      | Liveness check, plus the Relay service's `{ ok, ffmpeg }` |
+| `GET /api/relay/stream?url=` | HLS proxy through the Relay service — playlists rewritten so every URI points back here; never exposes the relay host or secret. Known, non-excluded sources only (viewer) |
+| `GET /api/relay/thumb?url=` | 320x180 JPEG thumbnail via the relay, SVG placeholder on any failure (viewer) |
+| `GET /player?url=` | hls.js player for a source, streaming through /api/relay/stream (viewer) |
 | `GET /`             | Admin dashboard (admin only)          |
 | `GET /browse`       | Every fixture with per-source status dots, Chinese names, timezone toggle, full-text filter (admin or viewer) |
 | `GET /leagues`      | Set canonical league-name groupings (admin only) |

@@ -68,6 +68,12 @@ async function getPlaylist(playlistUrl, { force = false } = {}) {
  * { channelCount, fetchedAt } for display (e.g. the dashboard), or null if
  * this specific playlist URL has never been fetched yet.
  */
+// Last-fetched parsed playlist for a URL, or null — no network.
+function getCachedPlaylist(playlistUrl) {
+  const cached = _cacheByUrl.get(playlistUrl);
+  return cached ? cached.playlist : null;
+}
+
 function getPlaylistStatus(playlistUrl) {
   const cached = _cacheByUrl.get(playlistUrl);
   if (!cached) return null;
@@ -298,6 +304,7 @@ async function matchChannels(channelNames, playlistUrls, limit = 10, ctx = {}) {
 module.exports = {
   parseM3U,
   getPlaylist,
+  getCachedPlaylist,
   getPlaylistStatus,
   findChannelSources,
   findChannelSourcesAcrossPlaylists,

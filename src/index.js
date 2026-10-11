@@ -375,11 +375,27 @@ function scheduleCron() {
   }
 }
 
+// Sources from the doms9 playlist never go through the relay: they're
+// unlicensed rebroadcasts of paid channels, and relaying them would mean
+// this app retransmitting them from its own infrastructure.
+let _relayExcluded = { list: undefined, urls: new Set() };
+function isRelayExcluded(url) {
+  const list = iptv.getCachedPlaylist(getConfig().doms9PlaylistUrl);
+  if (list !== _relayExcluded.list) _relayExcluded = { list, urls: new Set((list || []).map((i) => i.url)) };
+  return _relayExcluded.urls.has(url);
+}
+
 const runOnlyFlag = process.argv.includes('--once');
 
 if (runOnlyFlag) {
   runOnce().then(() => process.exit(0));
 } else {
+  try {
+    relay.assertRelayConfig();
+  } catch (err) {
+    console.error(`[relay] ${relay.redact(err.message)}`);
+    process.exit(1);
+  }
   runOnce();
   scheduleCron();
 
@@ -405,6 +421,7 @@ if (runOnlyFlag) {
     getAllYouTubeChannels: youtubeChannels.getAllChannels,
     setChannelStatus: setChannelStatusAndRefresh,
     getPlaylistStatus: iptv.getPlaylistStatus,
+    isRelayExcluded,
   });
   app.listen(port, () => {
     console.log(`[index] server listening on :${port}`);
@@ -413,10 +430,9 @@ if (runOnlyFlag) {
         ? `[index] data dir: ${DATA_DIR} (persistent)`
         : `[index] data dir: ${DATA_DIR} (NOT persistent - attach a Railway volume or set DATA_DIR to keep data across redeploys)`
     );
-    relay.checkRelay().then((r) => {
-      if (!r.publicUrl) return console.log('[relay] not configured (RELAY_URL unset)');
-      const state = r.reachable && r.auth === 'ok' ? 'connected' : 'NOT connected';
-      console.log(`[relay] ${state}: ${r.publicUrl} reachable=${r.reachable} auth=${r.auth} ffmpeg=${r.ffmpeg}${r.error ? ` (${r.error})` : ''}`);
+    relay.checkRelayAuth().then((r) => {
+      const status = r.ok && r.auth === 'ok' ? 'connected' : 'NOT connected';
+      console.log(`[relay] ${status}: reachable=${r.ok} auth=${r.auth} ffmpeg=${r.ffmpeg} via=${process.env.RELAY_INTERNAL_URL ? 'internal' : 'public'}`);
     });
   });
 }
