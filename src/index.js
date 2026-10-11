@@ -391,7 +391,7 @@ if (runOnlyFlag) {
   runOnce().then(() => process.exit(0));
 } else {
   try {
-    relay.assertRelayConfig();
+    if (getConfig().relayEnabled) relay.assertRelayConfig();
   } catch (err) {
     console.error(`[relay] ${relay.redact(err.message)}`);
     process.exit(1);
@@ -430,7 +430,8 @@ if (runOnlyFlag) {
         ? `[index] data dir: ${DATA_DIR} (persistent)`
         : `[index] data dir: ${DATA_DIR} (NOT persistent - attach a Railway volume or set DATA_DIR to keep data across redeploys)`
     );
-    relay.checkRelayAuth().then((r) => {
+    if (!getConfig().relayEnabled) console.log('[relay] turned off (Settings / RELAY_ENABLED=false)');
+    else relay.checkRelayAuth().then((r) => {
       const status = r.ok && r.auth === 'ok' ? 'connected' : 'NOT connected';
       console.log(`[relay] ${status}: reachable=${r.ok} auth=${r.auth} ffmpeg=${r.ffmpeg} via=${process.env.RELAY_INTERNAL_URL ? 'internal' : 'public'}`);
     });

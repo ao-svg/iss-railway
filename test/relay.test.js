@@ -16,6 +16,7 @@ const express = require('express');
 const relay = require('../src/relay');
 const auth = require('../src/auth');
 const { createServer } = require('../src/server');
+const { getConfig, updateConfig } = require('../src/config');
 
 const SECRET = 'Sup3r-S3cret+/=&x';
 const KNOWN = 'https://cdn.example.com/live/master.m3u8?token=abc';
@@ -283,13 +284,13 @@ test('AC5: relay down -> 502 and /health reports it', async (t) => {
   assert.equal(r.status, 502);
   assert.equal(await r.text(), 'Stream unavailable');
   const health = await (await fetch(`${base}/health`)).json();
-  assert.deepEqual(health.relay, { ok: false, ffmpeg: null });
+  assert.deepEqual(health.relay, { enabled: true, ok: false, ffmpeg: null });
 });
 
 test('AC5: /health reports relay ok + ffmpeg, and nothing else about it', async (t) => {
   const { base } = await setup(t);
   const text = await (await fetch(`${base}/health`)).text();
-  assert.deepEqual(JSON.parse(text).relay, { ok: true, ffmpeg: true });
+  assert.deepEqual(JSON.parse(text).relay, { enabled: true, ok: true, ffmpeg: true });
   assert.ok(!/secret|127\.0\.0\.1|relay-public/i.test(text), text);
 });
 
@@ -328,4 +329,63 @@ test('proxy routes require login', async (t) => {
   for (const p of [`/api/relay/stream?url=${enc(KNOWN)}`, `/api/relay/thumb?url=${enc(KNOWN)}`, `/player?url=${enc(KNOWN)}`]) {
     assert.equal((await fetch(base + p)).status, 401, p);
   }
+});
+
+// --- admin on/off switch ------------------------------------------------------
+const ADMIN = 'Basic ' + Buffer.from('relay-test-admin:pw-admin').toString('base64');
+const postToggle = (base, enabled, authz = ADMIN) =>
+  fetch(`${base}/settings/relay`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { Authorization: authz, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `enabled=${enabled}`,
+  });
+
+test('toggle: relay is on by default', () => {
+  assert.equal(getConfig().relayEnabled, true);
+});
+
+test('toggle: turning off disables proxy, previews and health check; turning on restores them', async (t) => {
+  const { base, get, fake } = await setup(t);
+  t.after(() => updateConfig({ relayEnabled: true }));
+
+  const off = await postToggle(base, 'false');
+  assert.equal(off.status, 302);
+  assert.equal(off.headers.get('location'), '/settings?relay=off');
+  assert.equal(getConfig().relayEnabled, false);
+
+  const before = fake.seen.length;
+  const stream = await get(`/api/relay/stream?url=${enc(KNOWN)}`);
+  assert.equal(stream.status, 503);
+  assert.equal(await stream.text(), 'Relay is turned off');
+  const thumb = await get(`/api/relay/thumb?url=${enc(KNOWN)}`);
+  assert.equal(thumb.status, 503);
+  assert.match(thumb.headers.get('content-type'), /svg/);
+  assert.equal((await get(`/player?url=${enc(KNOWN)}`)).status, 404);
+  assert.ok(!(await (await get('/browse')).text()).includes('/api/relay/'), 'no previews while off');
+  assert.deepEqual((await (await fetch(`${base}/health`)).json()).relay, { enabled: false });
+  assert.equal(fake.seen.length, before, 'relay never contacted while off');
+
+  const settings = await (await fetch(`${base}/settings`, { headers: { Authorization: ADMIN } })).text();
+  assert.match(settings, /Turn relay on/);
+
+  const on = await postToggle(base, 'true');
+  assert.equal(on.headers.get('location'), '/settings?relay=on');
+  assert.equal((await get(`/api/relay/stream?url=${enc(KNOWN)}`)).status, 200);
+});
+
+test('toggle: refuses to turn on without relay variables (so the next boot cannot fail)', async (t) => {
+  const { base } = await setup(t);
+  t.after(() => updateConfig({ relayEnabled: true }));
+  await postToggle(base, 'false');
+  delete process.env.RELAY_SECRET;
+  const r = await postToggle(base, 'true');
+  assert.equal(r.headers.get('location'), '/settings?relay=missing');
+  assert.equal(getConfig().relayEnabled, false);
+});
+
+test('toggle: admin only', async (t) => {
+  const { base } = await setup(t);
+  assert.equal((await postToggle(base, 'false', BASIC)).status, 401, 'viewer cannot toggle');
+  assert.equal(getConfig().relayEnabled, true);
 });

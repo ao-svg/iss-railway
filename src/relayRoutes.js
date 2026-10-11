@@ -48,7 +48,7 @@ function readBody(stream, limit) {
   });
 }
 
-function mountRelayRoutes(app, { requireAuth, isRelayable }) {
+function mountRelayRoutes(app, { requireAuth, isRelayable, isEnabled }) {
   const isAllowed = (target, sig) => relay.verifySignature(target, sig) || isRelayable(target);
 
   app.get(HLS_JS_URL, (req, res) => {
@@ -57,6 +57,7 @@ function mountRelayRoutes(app, { requireAuth, isRelayable }) {
   });
 
   app.get('/api/relay/stream', requireAuth('viewer'), async (req, res) => {
+    if (!isEnabled()) return res.status(503).type('text/plain').send('Relay is turned off');
     const target = relay.validateTarget(req.query.url);
     if (!target) return res.status(400).type('text/plain').send('Invalid url');
     if (!isAllowed(target, req.query.sig)) return res.status(403).type('text/plain').send('Not an allowed source');
@@ -114,6 +115,7 @@ function mountRelayRoutes(app, { requireAuth, isRelayable }) {
     const placeholder = (code) =>
       res.status(code).set('Cache-Control', 'no-store').type('image/svg+xml').send(PLACEHOLDER_SVG);
 
+    if (!isEnabled()) return placeholder(503);
     const target = relay.validateTarget(req.query.url);
     if (!target) return placeholder(400);
     if (!isAllowed(target, req.query.sig)) return placeholder(403);

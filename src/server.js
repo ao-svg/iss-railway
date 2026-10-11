@@ -905,12 +905,28 @@ function renderTranslations(state, getAllTranslations) {
   );
 }
 
-function renderSettings(config, saved) {
+function renderSettings(config, saved, relayFlash = '') {
+  const relayOn = config.relayEnabled;
+  const relayReady = relay.isRelayConfigured();
+  const relayMsg = {
+    on: '<p class="status-ok">Relay turned on.</p>',
+    off: '<p class="status-ok">Relay turned off.</p>',
+    missing: '<p class="status-err">Cannot turn the relay on: RELAY_SECRET and RELAY_INTERNAL_URL/RELAY_URL must be set on this service first.</p>',
+  }[relayFlash] || '';
   return layout(
     'iss-railway settings',
     `
     <h1>Settings</h1>
     ${saved ? '<p class="status-ok">Saved. Changes apply immediately; next scheduled run (or "Run now") will use them.</p>' : ''}
+    ${relayMsg}
+    <div class="card">
+      <form method="POST" action="/settings/relay">
+        <strong>Relay proxy:</strong> ${relayOn ? '<span class="status-ok">ON</span>' : '<span class="status-err">OFF</span>'}
+        <span class="muted">— stream playback and thumbnails on /browse through the Relay service. Off = /api/relay/* answer 503, no previews or players are shown, and the app starts without RELAY_SECRET.${relayReady ? '' : ' RELAY_SECRET / relay URL not set on this service yet.'}</span>
+        <input type="hidden" name="enabled" value="${relayOn ? 'false' : 'true'}">
+        <button type="submit">${relayOn ? 'Turn relay off' : 'Turn relay on'}</button>
+      </form>
+    </div>
     <div class="card">
       <form method="POST" action="/settings">
         <label for="apiKey">TheSportsDB API key</label>
@@ -943,9 +959,8 @@ function renderSettings(config, saved) {
         <button type="submit">Save settings</button>
       </form>
     </div>
-    <p class="muted">Note: settings saved here live on this container's disk and apply immediately, but a Railway
-    redeploy resets them back to the service's environment variables. Set the env vars too if you want a change
-    to survive a redeploy.</p>
+    <p class="muted">Settings saved here apply immediately and persist in the data dir (across redeploys when a
+    volume is attached). A field left at its environment-variable value keeps following that variable.</p>
   `,
     '/settings'
   );
@@ -1005,16 +1020,21 @@ function createServer({
 
   // Relay: { ok, ffmpeg } only — never its URL or secret.
   app.get('/health', async (req, res) =>
-    res.json({ ok: true, persistentData: IS_PERSISTENT, relay: await relay.relayHealth() })
+    res.json({
+      ok: true,
+      persistentData: IS_PERSISTENT,
+      relay: getConfig().relayEnabled ? { enabled: true, ...(await relay.relayHealth()) } : { enabled: false },
+    })
   );
 
   // A source may go through the relay only if this app actually matched it
   // and it isn't excluded (see index.js).
+  const isRelayEnabled = () => getConfig().relayEnabled;
   const isRelayable = (url) => {
-    if (!relay.validateTarget(url) || isRelayExcluded(url)) return false;
+    if (!isRelayEnabled() || !relay.validateTarget(url) || isRelayExcluded(url)) return false;
     return knownSourceUrls(getState()).has(url);
   };
-  mountRelayRoutes(app, { requireAuth, isRelayable });
+  mountRelayRoutes(app, { requireAuth, isRelayable, isEnabled: isRelayEnabled });
 
   // Live, click-time redirect to wherever a source URL currently points.
   // Exports embed THIS link instead of a raw CDN URL — periodic source
@@ -1175,7 +1195,17 @@ function createServer({
   });
 
   app.get('/settings', requireAuth('admin'), (req, res) => {
-    res.send(renderSettings(getConfig(), req.query.saved === '1'));
+    res.send(renderSettings(getConfig(), req.query.saved === '1', req.query.relay));
+  });
+
+  // Relay on/off switch. Turning it ON requires the relay variables, so
+  // the switch can never leave the next boot failing its startup check.
+  app.post('/settings/relay', requireAuth('admin'), (req, res) => {
+    const enable = req.body.enabled === 'true';
+    if (enable && !relay.isRelayConfigured()) return res.redirect('/settings?relay=missing');
+    updateConfig({ relayEnabled: enable });
+    console.log(`[relay] turned ${enable ? 'on' : 'off'} from Settings`);
+    res.redirect(`/settings?relay=${enable ? 'on' : 'off'}`);
   });
 
   app.post('/settings', requireAuth('admin'), (req, res) => {

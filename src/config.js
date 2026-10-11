@@ -46,6 +46,9 @@ function envDefaults() {
     // "Big 5" US pro leagues by default — the rest of the site's ~16
     // league pages are mostly NCAA sub-variants, noisier/lower-value by
     // default, opt-in via Settings same as SPORTSDB_LEAGUE_IDS already works.
+    // Admin on/off switch for the Relay proxy (Settings page). Env sets the
+    // default; the Settings toggle overrides it and persists in config.json.
+    relayEnabled: process.env.RELAY_ENABLED !== 'false',
     livesportsontvLeagues: (process.env.LIVESPORTSONTV_LEAGUES || 'nfl,nba,mlb,nhl,mls')
       .split(',')
       .map((s) => s.trim())
@@ -82,6 +85,9 @@ function updateConfig(patch) {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
+  }
+  if (typeof normalized.relayEnabled === 'string') {
+    normalized.relayEnabled = ['true', 'on', '1'].includes(normalized.relayEnabled.toLowerCase());
   }
   if (normalized.wtmDays !== undefined) {
     normalized.wtmDays = Number(normalized.wtmDays) || current.wtmDays;

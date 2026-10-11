@@ -33,7 +33,11 @@ function relaySecret() {
   return process.env.RELAY_SECRET || '';
 }
 
-// Called once at startup (index.js).
+function isRelayConfigured() {
+  return Boolean(relaySecret() && relayBase());
+}
+
+// Called once at startup (index.js), only while the relay is switched on.
 function assertRelayConfig() {
   if (!relaySecret()) throw new Error('RELAY_SECRET is not set — refusing to start (see .env.example)');
   if (!relayBase()) throw new Error('Neither RELAY_INTERNAL_URL nor RELAY_URL is set — refusing to start');
@@ -206,6 +210,7 @@ async function checkRelayAuth({ timeoutMs = 8000 } = {}) {
 module.exports = {
   ALLOWED_EXTENSIONS,
   assertRelayConfig,
+  isRelayConfigured,
   redact,
   relayStreamRequestUrl,
   relayThumbRequestUrl,
