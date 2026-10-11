@@ -100,6 +100,18 @@ test('hub endpoints', async (t) => {
     assert.equal((await (await config()).json()).player_site, 'https://zhibo83.example');
   });
 
+  await t.test('rotation: sites get the destination list only while it is on', async () => {
+    let res = await adminPost('/api/hub/rotation', { rotation: 'https://zazhibo82.example\nnot a url', rotationEnabled: '1' });
+    assert.match(decodeURIComponent(res.headers.get('location')), /error:Rotation destination "not a url"/);
+
+    res = await adminPost('/api/hub/rotation', { rotation: 'https://zazhibo82.example\nhttps://zhibo83.example', rotationEnabled: '1' });
+    assert.equal(res.status, 302);
+    assert.deepEqual((await (await config()).json()).rotation, ['https://zhibo83.example', 'https://zazhibo82.example']);
+
+    await adminPost('/api/hub/rotation', { rotation: 'https://zazhibo82.example' });   // checkbox unticked
+    assert.deepEqual((await (await config()).json()).rotation, []);
+  });
+
   await t.test('invalid destination is refused with a message', async () => {
     const res = await adminPost('/api/hub/destination', { defaultTarget: 'javascript:alert(1)' });
     assert.match(decodeURIComponent(res.headers.get('location')), /error:Destination is not a valid/);

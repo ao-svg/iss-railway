@@ -26,6 +26,10 @@ const DEFAULT_SETTINGS = {
   pageSize: 30,
   cacheMinutes: 5,
   autoUpdate: true,
+  // Optional: each click opens one of these at random (together with defaultTarget).
+  // Off by default; domains with an override always use their override.
+  rotationEnabled: false,
+  rotation: [],
 };
 
 // ── Pure helpers (tested) ────────────────────────────────────
@@ -48,6 +52,14 @@ function cleanUrl(value) {
 function targetFor(host, settings, overrides) {
   const twin = host.startsWith('www.') ? host.slice(4) : `www.${host}`;
   return overrides[host] || overrides[twin] || settings.defaultTarget;
+}
+
+// Destinations a site's clicks are spread over: [] unless rotation is on and the site has no override
+function rotationFor(host, settings, overrides) {
+  const twin = host.startsWith('www.') ? host.slice(4) : `www.${host}`;
+  if (!settings.rotationEnabled || overrides[host] || overrides[twin]) return [];
+  const all = [...new Set([settings.defaultTarget, ...(settings.rotation || [])])];
+  return all.length > 1 ? all : [];
 }
 
 function compareVersions(a, b) {
@@ -162,6 +174,7 @@ function configFor(host, baseUrl) {
   const r = store.release;
   return {
     player_site: targetFor(host, s, store.overrides),
+    rotation: rotationFor(host, s, store.overrides),
     feeds: {
       fixtures: s.feedFixtures || `${baseUrl}/fixtures.json`,
       live: s.feedLive || `${baseUrl}/live.json`,
@@ -195,6 +208,19 @@ function updateSettings(fields) {
   if (fields.pageSize !== undefined) next.pageSize = Math.max(0, Math.min(500, parseInt(fields.pageSize, 10) || 0));
   if (fields.cacheMinutes !== undefined) next.cacheMinutes = Math.max(0, Math.min(60, parseInt(fields.cacheMinutes, 10) || 0));
   if (fields.autoUpdate !== undefined) next.autoUpdate = Boolean(fields.autoUpdate);
+  if (fields.rotationEnabled !== undefined) next.rotationEnabled = Boolean(fields.rotationEnabled);
+  if (fields.rotation !== undefined) {
+    const lines = (Array.isArray(fields.rotation) ? fields.rotation : String(fields.rotation).split(/[\r\n,]+/))
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const urls = [];
+    for (const line of lines) {
+      const u = cleanUrl(line);
+      if (u) { if (!urls.includes(u)) urls.push(u); } else errors.push(`Rotation destination "${line.slice(0, 60)}" is not a valid URL`);
+    }
+    if (urls.length > 20) errors.push('At most 20 rotation destinations');
+    next.rotation = urls;
+  }
   if (errors.length) throw new Error(errors.join(' · '));
   store.settings = next;
   save();
@@ -257,6 +283,7 @@ module.exports = {
   cleanHost,
   cleanUrl,
   targetFor,
+  rotationFor,
   compareVersions,
   readZip,
   pluginVersionFromZip,

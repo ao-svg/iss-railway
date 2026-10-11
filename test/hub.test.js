@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const zlib = require('zlib');
 const { buildZip } = require('../src/zip');
-const { cleanHost, cleanUrl, targetFor, compareVersions, readZip, pluginVersionFromZip, PLUGIN_SLUG } = require('../src/hub');
+const { cleanHost, cleanUrl, targetFor, rotationFor, compareVersions, readZip, pluginVersionFromZip, PLUGIN_SLUG } = require('../src/hub');
 
 const pluginZip = (version, extra = []) =>
   buildZip([
@@ -73,4 +73,14 @@ test('pluginVersionFromZip rejects zips with files outside the plugin folder', (
 
 test('pluginVersionFromZip rejects zips without the main plugin file', () => {
   assert.throws(() => pluginVersionFromZip(buildZip([{ name: `${PLUGIN_SLUG}/readme.txt`, data: Buffer.from('x') }])), /Version header/);
+});
+
+test('rotationFor: off, on (default first, no duplicates), and never for overridden domains', () => {
+  const settings = { defaultTarget: 'https://zhibo82.com', rotationEnabled: false, rotation: ['https://zazhibo82.com', 'https://zhibo82.com'] };
+  const overrides = { 'www.fixed.com': 'https://fixed.test' };
+  assert.deepEqual(rotationFor('a.com', settings, overrides), []);
+  const on = { ...settings, rotationEnabled: true };
+  assert.deepEqual(rotationFor('a.com', on, overrides), ['https://zhibo82.com', 'https://zazhibo82.com']);
+  assert.deepEqual(rotationFor('fixed.com', on, overrides), []);
+  assert.deepEqual(rotationFor('a.com', { ...on, rotation: [] }, overrides), []);   // only one destination: nothing to rotate
 });

@@ -40,7 +40,13 @@ function renderSites({ layout, escapeHtml }, base, flash) {
   const latest = st.release && st.release.version;
   const dayAgo = Date.now() - 86400000;
   const sites = Object.entries(st.sites)
-    .map(([host, x]) => ({ host, ...x, target: hub.targetFor(host, s, st.overrides), override: st.overrides[host] || null }))
+    .map(([host, x]) => ({
+      host,
+      ...x,
+      target: hub.targetFor(host, s, st.overrides),
+      override: st.overrides[host] || null,
+      rotating: hub.rotationFor(host, s, st.overrides).length,
+    }))
     .sort((a, b) => a.host.localeCompare(b.host));
   const outdated = sites.filter((x) => latest && hub.compareVersions(x.version, latest) < 0).length;
   const silent = sites.filter((x) => new Date(x.lastSeen).getTime() < dayAgo).length;
@@ -52,7 +58,7 @@ function renderSites({ layout, escapeHtml }, base, flash) {
       const stale = new Date(x.lastSeen).getTime() < dayAgo;
       return `<tr>
     <td><a href="${escapeHtml(x.home || `https://${x.host}`)}" target="_blank" rel="noopener">${escapeHtml(x.host)}</a></td>
-    <td><code>${bare(x.target)}</code>${x.override ? ' <span class="rank rank-medium">override</span>' : ''}</td>
+    <td>${x.rotating ? `<span class="rank rank-working">rotating × ${x.rotating}</span>` : `<code>${bare(x.target)}</code>`}${x.override ? ' <span class="rank rank-medium">override</span>' : ''}</td>
     <td><span class="rank ${old ? 'rank-medium' : 'rank-working'}">v${escapeHtml(x.version || '?')}</span></td>
     <td class="${stale ? 'status-err' : 'muted'}" title="${escapeHtml(x.lastSeen)}">${ago(x.lastSeen)}</td>
     <td class="muted">${x.theme === 'zhibo-child' ? '✓' : escapeHtml(x.theme || '—')}</td>
@@ -105,6 +111,14 @@ function renderSites({ layout, escapeHtml }, base, flash) {
       <form method="POST" action="/api/hub/destination" onsubmit="return confirm('Send visitors from every site without an override to ' + this.defaultTarget.value + '?');">
         <input type="text" name="defaultTarget" value="${escapeHtml(s.defaultTarget)}" required>
         <button type="submit">Save destination</button>
+      </form>
+      <form method="POST" action="/api/hub/rotation" style="margin-top:1.25rem">
+        <strong>Rotation (optional)</strong>
+        <p class="muted">Spread clicks over several destinations: each click opens one of them at random — the destination above plus these. Domains with their own destination below are not rotated. Search engines see the destination above.</p>
+        <label for="hub-rot">Other destinations, one per line</label>
+        <textarea id="hub-rot" name="rotation" rows="4" placeholder="https://zazhibo82.com" style="width:100%;box-sizing:border-box;padding:0.5rem;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg);color:var(--text);font:inherit;font-size:0.9rem">${escapeHtml((s.rotation || []).join('\n'))}</textarea>
+        <label style="display:flex;gap:0.5rem;align-items:center"><input type="checkbox" name="rotationEnabled" value="1" ${s.rotationEnabled ? 'checked' : ''}> Rotate between them${s.rotationEnabled && (s.rotation || []).length ? ` — on, ${new Set([s.defaultTarget, ...s.rotation]).size} destinations` : ''}</label>
+        <button type="submit">Save rotation</button>
       </form>
     </div>
 
@@ -248,6 +262,14 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
     if (b.autoUpdate !== undefined) fields.autoUpdate = b.autoUpdate === '1';
     attempt(res, () => hub.updateSettings(fields), 'Saved.');
   });
+
+  app.post('/api/hub/rotation', requireAuth('admin'), sameOrigin, (req, res) =>
+    attempt(
+      res,
+      () => hub.updateSettings({ rotation: req.body.rotation || '', rotationEnabled: req.body.rotationEnabled === '1' }),
+      req.body.rotationEnabled === '1' ? 'Rotation on — sites pick it up within a few minutes.' : 'Rotation off.'
+    )
+  );
 
   app.post('/api/hub/forget', requireAuth('admin'), sameOrigin, (req, res) =>
     attempt(res, () => hub.forgetSite(req.body.host), 'Removed from the list.')
