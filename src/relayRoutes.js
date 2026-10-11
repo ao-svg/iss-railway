@@ -97,6 +97,16 @@ function mountRelayRoutes(app, { requireAuth, isRelayable, isEnabled }) {
       }
     }
 
+    // A media request answered as a playlist means the relay "rewrote" the
+    // media bytes as if they were a playlist (seen live 2026-10-11 on an
+    // Amagi .ts): the body is corrupt AND now carries relay URLs. Never
+    // forward that — it would leak the relay host to the browser.
+    if (/mpegurl/i.test(contentType)) {
+      upstream.data.destroy();
+      logError('stream upstream', 'relay returned a playlist for a media segment');
+      return res.status(502).type('text/plain').send('Stream unavailable');
+    }
+
     // Binary (segment / key / subtitle): stream straight through.
     for (const h of FORWARD_HEADERS) {
       if (upstream.headers[h]) res.set(h, upstream.headers[h]);

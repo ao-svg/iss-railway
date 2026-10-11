@@ -83,8 +83,17 @@ function validateTarget(raw) {
   return raw;
 }
 
-const isPlaylist = (target, contentType) =>
-  PLAYLIST_CT_RE.test(contentType || '') || new URL(target).pathname.toLowerCase().endsWith('.m3u8');
+// A media extension wins over the content type: the live relay labels
+// some .ts segments application/vnd.apple.mpegurl (seen 2026-10-11 on an
+// Amagi stream), and treating 1-2MB of video as a playlist to rewrite
+// broke playback.
+const MEDIA_EXTENSIONS = ALLOWED_EXTENSIONS.filter((ext) => ext !== '.m3u8');
+const isPlaylist = (target, contentType) => {
+  const pathname = new URL(target).pathname.toLowerCase();
+  if (pathname.endsWith('.m3u8')) return true;
+  if (MEDIA_EXTENSIONS.some((ext) => pathname.endsWith(ext))) return false;
+  return PLAYLIST_CT_RE.test(contentType || '');
+};
 
 // Per-process key for signing the segment/key/subtitle URLs this app
 // itself writes into rewritten playlists, so /api/relay/stream can accept

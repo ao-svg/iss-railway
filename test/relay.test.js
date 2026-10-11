@@ -47,6 +47,11 @@ function fakeRelay() {
     if (!target) return res.status(400).send('missing url');
     if (target.includes('upstream-down')) return res.status(502).send(`upstream ${target} unreachable`);
     if (target.includes('upstream-404')) return res.status(404).send(`upstream 404 for ${target}`);
+    if (target.includes('mislabeled')) {
+      // what the live relay does to some .ts: binary "rewritten" as a playlist
+      const relayUri = `http://${req.headers.host}/stream?secret=${encodeURIComponent(SECRET)}&url=${encodeURIComponent('https://cdn.example.com/G@garbage')}`;
+      return res.type('application/vnd.apple.mpegurl').send(`${relayUri}\n` + 'x'.repeat(6 * 1024 * 1024));
+    }
     const back = (u) => `http://${req.headers.host}/stream?secret=${encodeURIComponent(SECRET)}&url=${encodeURIComponent(u)}`;
     if (target.endsWith('.m3u8') || target.includes('.m3u8?')) {
       const origin = new URL(target);
@@ -486,6 +491,19 @@ test('/go: relay failing health -> direct redirect', async (t) => {
   const res = await fetch(base + goPath(src), { redirect: 'manual' });
   assert.equal(res.status, 302);
   assert.match(res.headers.get('location'), /^http:\/\/127\.0\.0\.1:\d+\/live\.m3u8\?token=/);
+});
+
+test('a media segment the relay answers as a playlist -> generic 502, relay body never forwarded', async (t) => {
+  const { get, relayBase, logs } = await setup(t);
+  const seg = 'https://cdn.example.com/live/mislabeled/seg9.ts';
+  const res = await get(relay.localStreamPath(seg));
+  assert.equal(res.status, 502);
+  const body = await res.text();
+  assert.equal(body, 'Stream unavailable');
+  assert.ok(!body.includes(new URL(relayBase).host) && !/secret/i.test(body + logs.join('\n')));
+  assert.ok(logs.some((l) => l.includes('relay returned a playlist for a media segment')), 'took the guard branch, not some other 502');
+  assert.equal(relay.isPlaylist('https://a.b/x.ts', 'application/vnd.apple.mpegurl'), false, 'never buffered as a playlist');
+  assert.equal(relay.isPlaylist('https://a.b/x.m3u8', 'video/mp2t'), true);
 });
 
 // --- relay playability probe / thumbnails -----------------------------------
