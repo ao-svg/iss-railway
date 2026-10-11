@@ -11,7 +11,6 @@ const manualChannels = require('./manualChannels');
 const { buildZip } = require('./zip');
 const relay = require('./relay');
 const { mountRelayRoutes, relayPreviewHtml } = require('./relayRoutes');
-const { mountHubRoutes } = require('./hubRoutes');
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({
@@ -167,7 +166,6 @@ function layout(title, body, activePath = '') {
       ${navLink('/leagues', 'Leagues', activePath)}
       ${navLink('/manual-channels', 'Manual channels', activePath)}
       ${navLink('/translations', 'Translations', activePath)}
-      ${navLink('/sites', 'WordPress sites', activePath)}
       ${navLink('/users', 'Users', activePath)}
       ${navLink('/settings', 'Settings', activePath)}
     </div>
@@ -1037,8 +1035,6 @@ function createServer({
     return knownSourceUrls(getState()).has(url);
   };
   mountRelayRoutes(app, { requireAuth, isRelayable, isEnabled: isRelayEnabled });
-  // WordPress sites running the Zhibo Streaming Table plugin: settings, check-ins, updates
-  mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig });
 
   // Live, click-time redirect to wherever a source URL currently points.
   // Exports embed THIS link instead of a raw CDN URL — periodic source
