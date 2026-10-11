@@ -389,3 +389,17 @@ test('toggle: admin only', async (t) => {
   assert.equal((await postToggle(base, 'false', BASIC)).status, 401, 'viewer cannot toggle');
   assert.equal(getConfig().relayEnabled, true);
 });
+
+test('checkRelayAuth: ok when only our secret passes, not-enforced when any secret passes', async (t) => {
+  await setup(t);
+  assert.equal((await relay.checkRelayAuth()).auth, 'ok');
+
+  const lax = express();
+  lax.get('/health', (req, res) => res.json({ ok: true, ffmpeg: false }));
+  lax.get('/stream', (req, res) => res.status(400).send('missing url'));
+  const server = await listen(lax);
+  t.after(() => server.close());
+  process.env.RELAY_INTERNAL_URL = `http://127.0.0.1:${server.address().port}`;
+  const r = await relay.checkRelayAuth();
+  assert.deepEqual(r, { ok: true, ffmpeg: false, auth: 'not-enforced' });
+});

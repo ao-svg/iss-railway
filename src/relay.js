@@ -185,24 +185,27 @@ async function relayHealth({ timeoutMs = 5000, force = false } = {}) {
 }
 
 /**
- * Startup diagnostic: health plus whether the relay accepts RELAY_SECRET
- * (a /stream call with no url: 401 = wrong secret, 400 = got past auth).
+ * Diagnostic: health plus how the relay treats RELAY_SECRET, from two
+ * /stream calls with no url — ours, and a deliberately wrong secret:
+ *   'ok'           ours gets past auth (400 missing url), wrong one gets 401
+ *   'rejected'     ours gets 401
+ *   'not-enforced' a wrong secret gets past auth too — the relay isn't
+ *                  checking secrets at all (seen on the live relay 2026-10-11)
+ *   'unknown'      anything else
  * Output is safe to log.
  */
 async function checkRelayAuth({ timeoutMs = 8000 } = {}) {
   const health = await relayHealth({ timeoutMs, force: true });
   let auth = 'unknown';
   if (health.ok && relaySecret()) {
-    try {
-      const res = await axios.get(`${relayBase()}/stream?secret=${encodeURIComponent(relaySecret())}`, {
-        timeout: timeoutMs,
-        validateStatus: () => true,
-      });
-      if (res.status === 401) auth = 'rejected';
-      else if (res.status === 400) auth = 'ok';
-    } catch {
-      // stays 'unknown'
-    }
+    const probe = (secret) =>
+      axios
+        .get(`${relayBase()}/stream?secret=${encodeURIComponent(secret)}`, { timeout: timeoutMs, validateStatus: () => true })
+        .then((r) => r.status, () => null);
+    const [ours, wrong] = await Promise.all([probe(relaySecret()), probe(`wrong-${crypto.randomBytes(8).toString('hex')}`)]);
+    if (ours === 401) auth = 'rejected';
+    else if (ours === 400 && wrong === 401) auth = 'ok';
+    else if (ours === 400 && wrong === 400) auth = 'not-enforced';
   }
   return { ...health, auth };
 }
