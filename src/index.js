@@ -49,6 +49,7 @@ const state = {
 
 let cronTask = null;
 let sourceCheckTask = null;
+let liveTask = null;
 
 async function runOnce() {
   if (state.running) return state;
@@ -409,6 +410,24 @@ function scheduleCron() {
     });
     console.log(`[index] source checks scheduled: ${getConfig().sourceCheckCronExpr}`);
   }
+
+  // Live streams on their own schedule too. runLiveTvFetch() no-ops while a fetch is running.
+  if (liveTask) liveTask.stop();
+  liveTask = null;
+  const { liveCronExpr, liveTvDomain } = getConfig();
+  if (!liveCronExpr) {
+    console.log('[index] live streams: no schedule (dashboard button only)');
+  } else if (!cron.validate(liveCronExpr)) {
+    console.error(`[index] invalid LIVE_CRON "${liveCronExpr}", falling back to every 10 min`);
+    getConfig().liveCronExpr = '*/10 * * * *';
+  }
+  if (getConfig().liveCronExpr) {
+    liveTask = cron.schedule(getConfig().liveCronExpr, () => {
+      if (!getConfig().liveTvDomain) return; // feature off until the domain is set (config may change at runtime)
+      runLiveTvFetch().catch((err) => console.error('[liveTv]', err.message));
+    });
+    console.log(`[index] live streams scheduled: ${getConfig().liveCronExpr}${liveTvDomain ? '' : ' (idle until LIVETV_DOMAIN is set)'}`);
+  }
 }
 
 // Sources from the doms9 playlist never go through the relay: they're
@@ -434,6 +453,8 @@ if (runOnlyFlag) {
   }
   runOnce();
   scheduleCron();
+  // live.json is empty after a restart until the first fetch — don't wait for the first tick
+  if (getConfig().liveTvDomain) runLiveTvFetch().catch((err) => console.error('[liveTv]', err.message));
 
   const app = createServer({
     getState: () => state,

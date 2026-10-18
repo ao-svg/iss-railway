@@ -42,6 +42,11 @@ function envDefaults() {
     // and pointing it at the wrong/any domain is a real content-provenance
     // decision, not something to default to a hardcoded value for.
     liveTvDomain: process.env.LIVETV_DOMAIN || '',
+    // How often live streams are fetched (only while liveTvDomain is set). live.json lives in
+    // memory, so without a schedule it stays empty after every restart until someone presses
+    // "Fetch live streams now" — and the WordPress sites lose their live YouTube matches.
+    // Blank = no schedule (dashboard button only).
+    liveCronExpr: process.env.LIVE_CRON ?? '*/10 * * * *',
     outputLiveCsvPath: process.env.OUTPUT_LIVE_CSV_PATH || dataPath('live.csv'),
     // "Big 5" US pro leagues by default — the rest of the site's ~16
     // league pages are mostly NCAA sub-variants, noisier/lower-value by
