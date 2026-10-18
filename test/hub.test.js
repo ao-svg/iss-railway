@@ -84,3 +84,13 @@ test('rotationFor: off, on (default first, no duplicates), and never for overrid
   assert.deepEqual(rotationFor('fixed.com', on, overrides), []);
   assert.deepEqual(rotationFor('a.com', { ...on, rotation: [] }, overrides), []);   // only one destination: nothing to rotate
 });
+
+test('cleanSetupArgs keeps known fields and plausible sport names only', () => {
+  const { cleanSetupArgs } = require('../src/hub');
+  assert.deepEqual(cleanSetupArgs({ brand: '  Zhibo882 ', theme: 1, menu: 0, sports: ['Football', 'Ice Hockey', 'Football', '<script>', 'UFC/MMA'], evil: 'x' }), {
+    brand: 'Zhibo882',
+    theme: true,
+    menu: false,
+    sports: ['Football', 'Ice Hockey', 'UFC/MMA'],
+  });
+});

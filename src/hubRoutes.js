@@ -8,6 +8,7 @@
 // request to this host, so every admin POST/PUT also has to come from this app's own pages.
 
 const express = require('express');
+const axios = require('axios');
 const fs = require('fs');
 const hub = require('./hub');
 
@@ -34,6 +35,133 @@ function ago(iso) {
   return `${Math.round(s / 86400)} days ago`;
 }
 
+const pendingCount = (host) => hub.commandsFor(host).filter((c) => c.status === 'queued' || c.status === 'sent').length;
+
+// Version that understands hub commands (setup / uninstall)
+const COMMANDS_SINCE = '2.2.0';
+
+// Sports offered on the setup form: the main ones first (zhibo82.com's menu), then the rest
+const SETUP_SPORTS = [
+  ['Football', '足球'], ['Basketball', '篮球'], ['Tennis', '网球'], ['American Football', '美式橄榄球'],
+  ['Ice Hockey', '冰球'], ['Cricket', '板球'], ['Baseball', '棒球'], ['Rugby', '橄榄球'], ['Golf', '高尔夫'],
+  ['Boxing', '拳击'], ['UFC/MMA', '综合格斗'], ['Motorsport', '赛车'], ['Cycling', '自行车'], ['Darts', '飞镖'],
+  ['Snooker', '斯诺克'], ['Horse Racing', '赛马'], ['Australian Rules', '澳式橄榄球'], ['Athletics', '田径'],
+  ['Volleyball', '排球'], ['Table Tennis', '乒乓球'], ['Handball', '手球'],
+];
+
+// "Ask your hub now" — the site only acts on what its own hub hands out, so this needs no secret
+async function pokeSite(site) {
+  const home = hub.cleanUrl(site && site.home);
+  if (!home) return { ok: false, error: 'no address on record' };
+  try {
+    const res = await axios.post(`${home}/?rest_route=/zhibo/v1/poke`, {}, { timeout: 10000, maxRedirects: 2, validateStatus: () => true });
+    return res.status === 200 ? { ok: true } : { ok: false, error: `HTTP ${res.status}` };
+  } catch (err) {
+    return { ok: false, error: err.code || err.message };
+  }
+}
+
+function renderSite({ layout, escapeHtml }, host, flash) {
+  const st = hub.getState();
+  const x = st.sites[host];
+  const d = x.details || {};
+  const cmds = hub.commandsFor(host).slice().reverse();
+  const canCommand = hub.compareVersions(x.version, COMMANDS_SINCE) >= 0;
+  const pagesHave = new Set(Object.keys(d.pages || {}));
+  const statusTag = (s) => ({ done: 'rank-working', failed: 'rank-low', cancelled: 'rank-unverified', sent: 'rank-medium', queued: 'rank-medium' })[s] || 'rank-unverified';
+  const flashHtml =
+    flash && flash.startsWith('error:') ? `<p class="status-err">${escapeHtml(flash.slice(6))}</p>` : flash ? `<p class="status-ok">${escapeHtml(flash)}</p>` : '';
+
+  const cmdRows = cmds
+    .map(
+      (c) => `<tr>
+    <td class="muted" title="${escapeHtml(c.createdAt)}">${ago(c.createdAt)}</td>
+    <td>${c.type === 'uninstall' ? 'Remove' : 'Set up'}${c.local ? ' <span class="muted">(from the site’s admin)</span>' : ''}</td>
+    <td class="muted">${c.type === 'setup' ? escapeHtml(describeSetup(c.args)) : ''}</td>
+    <td><span class="rank ${statusTag(c.status)}">${escapeHtml(c.status)}</span></td>
+    <td class="muted">${(c.log || []).map((l) => `<div class="${/^ERROR/.test(l) ? 'status-err' : ''}">${escapeHtml(l)}</div>`).join('')}</td>
+    <td>${c.status === 'queued' || c.status === 'sent' ? `<form class="inline-form" method="POST" action="/api/hub/cancel"><input type="hidden" name="host" value="${escapeHtml(host)}"><input type="hidden" name="id" value="${escapeHtml(c.id)}"><button type="submit" class="secondary">Cancel</button></form>` : ''}</td>
+  </tr>`
+    )
+    .join('');
+
+  const sportBoxes = SETUP_SPORTS.map(
+    ([type, cn], i) =>
+      `<label style="display:inline-flex;gap:0.35rem;align-items:center;margin:0.25rem 1rem 0.25rem 0;color:var(--text)"><input type="checkbox" name="sports" value="${escapeHtml(type)}" ${pagesHave.has(type) || (!pagesHave.size && i < 6) ? 'checked' : ''}> ${escapeHtml(cn)} <span class="muted">${escapeHtml(type)}</span>${pagesHave.has(type) ? ' <span class="status-ok">✓</span>' : ''}</label>`
+  ).join('');
+
+  return layout(
+    `${host} · WordPress sites`,
+    `
+    <p class="muted"><a href="/sites">← WordPress sites</a></p>
+    <h1>${escapeHtml(host)}${x.removed ? ' <span class="rank rank-low">removed</span>' : ''}</h1>
+    ${flashHtml}
+    <div class="card">
+      <table>
+        <tr><th>Site</th><td><a href="${escapeHtml(x.home || `https://${host}`)}" target="_blank" rel="noopener">${escapeHtml(x.home || host)}</a></td></tr>
+        <tr><th>Plugin</th><td>v${escapeHtml(x.version || '?')} · WordPress ${escapeHtml(x.wp || '?')} · PHP ${escapeHtml(x.php || '?')}</td></tr>
+        <tr><th>Last check-in</th><td>${ago(x.lastSeen)}</td></tr>
+        <tr><th>Opens on</th><td><code>${escapeHtml(hub.targetFor(host, st.settings, st.overrides))}</code>${st.overrides[host] ? ' (override)' : ''}</td></tr>
+        <tr><th>Theme</th><td>${escapeHtml(d.theme || x.theme || '—')}</td></tr>
+        <tr><th>Homepage table</th><td>${d.at ? (d.homepage ? 'yes' : 'no') : '—'}</td></tr>
+        <tr><th>Sport pages</th><td>${pagesHave.size ? Object.entries(d.pages).map(([t, p]) => `${escapeHtml(t)} <code>${escapeHtml(p)}</code>`).join(' · ') : `${Number(x.pages) || 0}`}</td></tr>
+        <tr><th>ABS3 bridge</th><td>${d.at ? (d.bridge ? 'installed (removal adds 301s through it)' : 'not installed') : '—'}</td></tr>
+      </table>
+      <form class="inline-form" method="POST" action="/api/hub/poke" style="margin-top:0.75rem">
+        <input type="hidden" name="host" value="${escapeHtml(host)}">
+        <button type="submit" class="secondary">Check now</button>
+        <span class="muted">Sites pick up commands within 5 minutes; this asks the site to do it right away.</span>
+      </form>
+    </div>
+
+    ${canCommand ? '' : `<p class="status-warn">This site runs plugin v${escapeHtml(x.version || '?')}; remote set-up and removal need v${COMMANDS_SINCE} or later. Publish it under Plugin updates and wait for the site to update.</p>`}
+
+    <div class="card">
+      <strong>Set up</strong>
+      <p class="muted">Same steps as the plugin's setup wizard, run on the site. Pages that already exist are kept as they are.</p>
+      <form method="POST" action="/api/hub/command">
+        <input type="hidden" name="host" value="${escapeHtml(host)}">
+        <input type="hidden" name="type" value="setup">
+        <label for="s-brand">Brand name (empty = the site title)</label>
+        <input type="text" id="s-brand" name="brand" value="${escapeHtml(d.brand || '')}">
+        <label style="display:flex;gap:0.5rem;align-items:center"><input type="checkbox" name="theme" value="1" ${d.theme === 'zhibo-child' ? '' : 'checked'}> Install GeneratePress + the Zhibo child theme (the zhibo82.com look)</label>
+        <label style="display:flex;gap:0.5rem;align-items:center"><input type="checkbox" name="homepage" value="1" checked> Table on the homepage</label>
+        <label style="display:flex;gap:0.5rem;align-items:center"><input type="checkbox" name="menu" value="1" checked> Header menu (直播首页 + the first four sports), if the site has none</label>
+        <label>Sport pages (table under the heading, starter SEO text below)</label>
+        <div>${sportBoxes}</div>
+        <button type="submit" ${canCommand ? '' : 'disabled'}>Queue set-up</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <strong>Remove from this site</strong>
+      <p class="muted">Takes the table out of every page, post and widget; keeps the sport pages with their own text; restores the theme, front page and menu the site had before; adds 301s for anything removed (needs the ABS3 bridge); deletes the plugin's settings and then the plugin itself.</p>
+      <form method="POST" action="/api/hub/command" onsubmit="return confirm('Remove the plugin and everything it added from ${escapeHtml(host)}?');">
+        <input type="hidden" name="host" value="${escapeHtml(host)}">
+        <input type="hidden" name="type" value="uninstall">
+        <button type="submit" class="secondary" ${canCommand && !x.removed ? '' : 'disabled'}>Remove from site</button>
+      </form>
+    </div>
+
+    <h2 class="section-heading">Commands</h2>
+    <div class="card">
+      ${cmdRows ? `<table><tr><th>When</th><th>Command</th><th>Details</th><th>Status</th><th>Result</th><th></th></tr>${cmdRows}</table>` : '<p class="muted">None yet.</p>'}
+    </div>
+  `,
+    '/sites'
+  );
+}
+
+function describeSetup(a) {
+  const parts = [];
+  if (a.theme) parts.push('theme');
+  if (a.homepage !== false) parts.push('homepage');
+  if (a.menu) parts.push('menu');
+  if (a.sports && a.sports.length) parts.push(`${a.sports.length} sport pages`);
+  if (a.brand) parts.push(`brand "${a.brand}"`);
+  return parts.join(', ');
+}
+
 function renderSites({ layout, escapeHtml }, base, flash) {
   const st = hub.getState();
   const s = st.settings;
@@ -57,7 +185,7 @@ function renderSites({ layout, escapeHtml }, base, flash) {
       const old = latest && hub.compareVersions(x.version, latest) < 0;
       const stale = new Date(x.lastSeen).getTime() < dayAgo;
       return `<tr>
-    <td><a href="${escapeHtml(x.home || `https://${x.host}`)}" target="_blank" rel="noopener">${escapeHtml(x.host)}</a></td>
+    <td><a href="/sites/${encodeURIComponent(x.host)}"><strong>${escapeHtml(x.host)}</strong></a>${x.removed ? ' <span class="rank rank-low">removed</span>' : ''}${pendingCount(x.host) ? ` <span class="rank rank-medium">${pendingCount(x.host)} pending</span>` : ''}</td>
     <td>${x.rotating ? `<span class="rank rank-working">rotating × ${x.rotating}</span>` : `<code>${bare(x.target)}</code>`}${x.override ? ' <span class="rank rank-medium">override</span>' : ''}</td>
     <td><span class="rank ${old ? 'rank-medium' : 'rank-working'}">v${escapeHtml(x.version || '?')}</span></td>
     <td class="${stale ? 'status-err' : 'muted'}" title="${escapeHtml(x.lastSeen)}">${ago(x.lastSeen)}</td>
@@ -242,7 +370,56 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
     fs.createReadStream(file).pipe(res);
   });
 
+  // Sites: command results + their current state
+  app.post('/api/hub/report', express.json({ limit: '256kb' }), (req, res) => {
+    if (!hub.keyMatches(req.get('x-zhibo-key'))) return res.status(401).json({ error: 'bad key' });
+    const ok = hub.recordReport(req.body && req.body.site, req.body || {});
+    res.status(ok ? 200 : 404).json({ ok });
+  });
+
   // ── Admin ──
+  const siteBack = (res, host, flash) => res.redirect(`/sites/${encodeURIComponent(host)}?flash=${encodeURIComponent(flash)}`);
+
+  app.get('/sites/:host', requireAuth('admin'), (req, res) => {
+    const host = hub.cleanHost(req.params.host);
+    if (!hub.getState().sites[host]) return res.status(404).send(layout('Not found', '<p>No such site. <a href="/sites">Back</a></p>', '/sites'));
+    res.send(renderSite({ layout, escapeHtml }, host, req.query.flash));
+  });
+
+  app.post('/api/hub/command', requireAuth('admin'), sameOrigin, async (req, res) => {
+    const host = hub.cleanHost(req.body.host);
+    const type = req.body.type;
+    try {
+      const args =
+        type === 'setup'
+          ? {
+              brand: req.body.brand || '',
+              theme: req.body.theme === '1',
+              homepage: req.body.homepage === '1',
+              menu: req.body.menu === '1',
+              sports: [].concat(req.body.sports || []),
+            }
+          : {};
+      hub.queueCommand(host, type, args);
+    } catch (err) {
+      return siteBack(res, host, `error:${err.message}`);
+    }
+    const poke = await pokeSite(hub.getState().sites[host]);
+    siteBack(res, host, poke.ok ? 'Queued — the site is on it; refresh in a minute for the result.' : `Queued — the site picks it up within 5 minutes (couldn't reach it now: ${poke.error}).`);
+  });
+
+  app.post('/api/hub/cancel', requireAuth('admin'), sameOrigin, (req, res) => {
+    const host = hub.cleanHost(req.body.host);
+    hub.cancelCommand(host, String(req.body.id || ''));
+    siteBack(res, host, 'Cancelled.');
+  });
+
+  app.post('/api/hub/poke', requireAuth('admin'), sameOrigin, async (req, res) => {
+    const host = hub.cleanHost(req.body.host);
+    const poke = await pokeSite(hub.getState().sites[host]);
+    siteBack(res, host, poke.ok ? 'The site checked in.' : `error:Couldn't reach the site: ${poke.error}`);
+  });
+
   app.get('/sites', requireAuth('admin'), (req, res) => {
     res.send(renderSites({ layout, escapeHtml }, baseUrl(req, getConfig), req.query.flash));
   });

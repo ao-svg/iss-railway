@@ -55,6 +55,7 @@ test('hub endpoints', async (t) => {
     st.overrides = saved.overrides;
     st.release = saved.release;
     hub.forgetSite(SITE);
+    delete st.commands[SITE];
     auth.remove(ADMIN_USER);
   });
 
@@ -110,6 +111,49 @@ test('hub endpoints', async (t) => {
 
     await adminPost('/api/hub/rotation', { rotation: 'https://zazhibo82.example' });   // checkbox unticked
     assert.deepEqual((await (await config()).json()).rotation, []);
+  });
+
+  await t.test('commands: queued on the hub, handed out with the settings, finished by the site\x27s report', async () => {
+    let res = await adminPost('/api/hub/command', { host: SITE, type: 'setup', brand: 'Test', theme: '1', homepage: '1', sports: 'Football' });
+    assert.equal(res.status, 302);
+    let cfg = await (await config()).json();
+    assert.equal(cfg.commands.length, 1);
+    const cmd = cfg.commands[0];
+    assert.deepEqual(cmd.args, { brand: 'Test', theme: true, homepage: true, menu: false, sports: ['Football'] });
+
+    // Handed out again until the site reports (the plugin skips ids it already ran)
+    assert.equal((await (await config()).json()).commands.length, 1);
+
+    const report = (body, key = hub.networkKey()) =>
+      fetch(`${base}/api/hub/report`, { method: 'POST', headers: { 'X-Zhibo-Key': key, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    assert.equal((await report({ site: SITE, results: [] }, 'wrong')).status, 401);
+    res = await report({ site: SITE, results: [{ id: cmd.id, ok: true, log: ['Theme: ok'] }], status: { theme: 'zhibo-child', homepage: true, pages: { Football: '/football/' } } });
+    assert.equal(res.status, 200);
+    assert.equal((await (await config()).json()).commands.length, 0);
+    const done = hub.commandsFor(SITE).find((c) => c.id === cmd.id);
+    assert.equal(done.status, 'done');
+    assert.equal(hub.getState().sites[SITE].details.pages.Football, '/football/');
+
+    // Removal: cancels what is still queued, and the report marks the site removed
+    await adminPost('/api/hub/command', { host: SITE, type: 'setup' });
+    await adminPost('/api/hub/command', { host: SITE, type: 'uninstall' });
+    cfg = await (await config()).json();
+    assert.deepEqual(cfg.commands.map((c) => c.type), ['uninstall']);
+    await report({ site: SITE, results: [{ id: cfg.commands[0].id, ok: true, log: ['Settings removed'], removed: true }] });
+    assert.equal(hub.getState().sites[SITE].removed, true);
+
+    // Checking in again (plugin reinstalled) clears the flag
+    await config();
+    assert.equal(hub.getState().sites[SITE].removed, false);
+
+    res = await fetch(`${base}/sites/${SITE}`, { headers: { Authorization: basic } });
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /Settings removed/);
+  });
+
+  await t.test('commands for an unknown site are refused', async () => {
+    const res = await adminPost('/api/hub/command', { host: 'nope.example', type: 'setup' });
+    assert.match(decodeURIComponent(res.headers.get('location')), /error:Unknown site/);
   });
 
   await t.test('invalid destination is refused with a message', async () => {

@@ -125,9 +125,9 @@ function pluginVersionFromZip(buf) {
 function loadStore() {
   try {
     const data = JSON.parse(fs.readFileSync(STORE_PATH, 'utf8'));
-    return { overrides: {}, sites: {}, release: null, ...data, settings: { ...DEFAULT_SETTINGS, ...(data.settings || {}) } };
+    return { overrides: {}, sites: {}, release: null, commands: {}, ...data, settings: { ...DEFAULT_SETTINGS, ...(data.settings || {}) } };
   } catch {
-    return { networkKey: null, settings: { ...DEFAULT_SETTINGS }, overrides: {}, sites: {}, release: null };
+    return { networkKey: null, settings: { ...DEFAULT_SETTINGS }, overrides: {}, sites: {}, release: null, commands: {} };
   }
 }
 
@@ -163,9 +163,99 @@ function keyMatches(given) {
 
 function recordCheckin(host, info) {
   const now = new Date().toISOString();
-  const prev = store.sites[host];
-  store.sites[host] = { ...info, firstSeen: (prev && prev.firstSeen) || now, lastSeen: now };
+  const prev = store.sites[host] || {};
+  // A site that checks in again after a removal has the plugin back
+  store.sites[host] = { ...prev, ...info, removed: false, firstSeen: prev.firstSeen || now, lastSeen: now };
   saveSoon();
+}
+
+// ── Commands to sites ────────────────────────────────────────
+// Queued here, handed out with the site's settings (/api/hub/config) until the site reports a
+// result (/api/hub/report). The plugin skips ids it already ran, so re-sending is safe.
+const COMMAND_TYPES = ['setup', 'uninstall'];
+const MAX_COMMANDS_PER_SITE = 30;
+
+function cleanSetupArgs(args) {
+  const out = {};
+  if (args.brand !== undefined) out.brand = String(args.brand).trim().slice(0, 80);
+  if (args.theme !== undefined) out.theme = Boolean(args.theme);
+  if (args.menu !== undefined) out.menu = Boolean(args.menu);
+  if (args.homepage !== undefined) out.homepage = Boolean(args.homepage);
+  if (args.sports !== undefined) {
+    out.sports = [...new Set((Array.isArray(args.sports) ? args.sports : [args.sports]).map((x) => String(x).trim()).filter((x) => /^[A-Za-z][A-Za-z /-]{1,40}$/.test(x)))].slice(0, 40);
+  }
+  return out;
+}
+
+function queueCommand(host, type, args = {}) {
+  const h = cleanHost(host);
+  if (!store.sites[h]) throw new Error(`Unknown site ${h}`);
+  if (!COMMAND_TYPES.includes(type)) throw new Error(`Unknown command ${type}`);
+  const list = store.commands[h] || [];
+  const cmd = {
+    id: crypto.randomBytes(8).toString('hex'),
+    type,
+    args: type === 'setup' ? cleanSetupArgs(args) : {},
+    status: 'queued',
+    createdAt: new Date().toISOString(),
+  };
+  // A new removal makes older queued setups pointless
+  const kept = type === 'uninstall' ? list.map((c) => (c.status === 'queued' || c.status === 'sent' ? { ...c, status: 'cancelled' } : c)) : list;
+  store.commands[h] = [...kept, cmd].slice(-MAX_COMMANDS_PER_SITE);
+  save();
+  return cmd;
+}
+
+function cancelCommand(host, id) {
+  const c = (store.commands[cleanHost(host)] || []).find((x) => x.id === id);
+  if (c && (c.status === 'queued' || c.status === 'sent')) { c.status = 'cancelled'; save(); }
+}
+
+function commandsFor(host) {
+  return store.commands[cleanHost(host)] || [];
+}
+
+// What goes out with the settings: everything not finished yet, marked as sent
+function pendingFor(host) {
+  const list = store.commands[host] || [];
+  const out = [];
+  for (const c of list) {
+    if (c.status !== 'queued' && c.status !== 'sent') continue;
+    if (c.status === 'queued') { c.status = 'sent'; c.sentAt = new Date().toISOString(); saveSoon(); }
+    out.push({ id: c.id, type: c.type, args: c.args });
+  }
+  return out;
+}
+
+// A site's results (and its current state, as it describes it)
+function recordReport(host, { results, status }) {
+  const h = cleanHost(host);
+  if (!store.sites[h]) return false;
+  const now = new Date().toISOString();
+  for (const r of Array.isArray(results) ? results : []) {
+    if (!r || typeof r !== 'object') continue;
+    const log = (Array.isArray(r.log) ? r.log : []).map((l) => String(l).slice(0, 500)).slice(0, 100);
+    const c = (store.commands[h] || []).find((x) => x.id === r.id);
+    if (c) Object.assign(c, { status: r.ok ? 'done' : 'failed', finishedAt: now, log });
+    else if (r.removed) {
+      // Removed from the site's own admin (no hub command): keep it in the history
+      store.commands[h] = [...(store.commands[h] || []), { id: String(r.id || 'local').slice(0, 40), type: 'uninstall', args: {}, status: r.ok ? 'done' : 'failed', createdAt: now, finishedAt: now, log, local: true }].slice(-MAX_COMMANDS_PER_SITE);
+    }
+    if (r.removed) store.sites[h].removed = true;
+  }
+  if (status && typeof status === 'object') {
+    store.sites[h].details = {
+      theme: String(status.theme || '').slice(0, 80),
+      homepage: Boolean(status.homepage),
+      bridge: Boolean(status.bridge),
+      brand: String(status.brand || '').slice(0, 80),
+      mode: String(status.mode || '').slice(0, 20),
+      pages: Object.fromEntries(Object.entries(status.pages || {}).slice(0, 60).map(([k, v]) => [String(k).slice(0, 40), String(v || '').slice(0, 200)])),
+      at: now,
+    };
+  }
+  save();
+  return true;
 }
 
 // What a site gets from /api/hub/config. baseUrl = this app's public address.
@@ -182,6 +272,7 @@ function configFor(host, baseUrl) {
     page_size: s.pageSize,
     cache: s.cacheMinutes,
     auto_update: s.autoUpdate,
+    commands: pendingFor(host),
     latest: r
       ? {
           version: r.version,
@@ -290,6 +381,11 @@ module.exports = {
   networkKey,
   keyMatches,
   recordCheckin,
+  cleanSetupArgs,
+  queueCommand,
+  cancelCommand,
+  commandsFor,
+  recordReport,
   configFor,
   updateSettings,
   setOverride,
