@@ -4,9 +4,15 @@
 // source check (see index.js) and on demand from the dashboard.
 //
 // Same one-browser-per-pass shape as liveTv.js / livesportsontv.js, with
-// a small pool of pages. Web security is disabled in THIS browser only so
-// 'nocors' streams can be captured too — it's our own verification
-// browser, nothing is served through it.
+// a small pool of pages. Web security stays ON: until 2026-10-18 this
+// browser ran with --disable-web-security, so a capture also "succeeded"
+// for streams no visitor's browser could play (no CORS on a hop), and
+// those captures drove sourceRank 'working'. The player page is served
+// from an https origin (PLAYER_ORIGIN, intercepted — never a real host),
+// so CORS and mixed content (an http:// stream on an https site) apply
+// exactly as they do on the WordPress sites. Fewer captures is the
+// intended outcome. What this still can't see: geo-blocking — the browser
+// runs in a US datacenter (see sourceGeo in sourceChecks.js for that hint).
 //
 // Latest capture only, per URL under data/screenshots/, indexed in
 // data/screenshots.json. Video sources get a still PNG (a frame from the
@@ -47,6 +53,12 @@ const UNVERIFIED_TIMEOUT_MS = 30000;
 const DEAD_TIMEOUT_MS = 4000;
 const MAX_RUNTIME_MS = 25 * 60 * 1000;
 const HLS_JS_URL = 'https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js';
+// Origin the player page is served from. Never resolved or fetched: each
+// page's CDP Fetch handler (newHardenedPage) answers requests for it with
+// playerHtml() itself. .invalid is reserved, so it can't collide with a
+// real site, and https makes an http:// stream fail as mixed content the
+// same way it does for a visitor.
+const PLAYER_ORIGIN = 'https://capture-player.invalid';
 const WIDTH = 640;
 const HEIGHT = 360;
 // A still can be a stale frame someone already jumped past — a few seconds
@@ -198,10 +210,12 @@ async function captureOne(page, url) {
   const id = screenshotId(url);
   try {
     if (isManifest) {
-      // data: URL rather than page.setContent — the latter goes through
-      // document.write, and Chrome may block a parser-blocking cross-site
-      // script (our hls.js include) loaded that way on a slow network.
-      await page.goto(`data:text/html;charset=utf-8,${encodeURIComponent(playerHtml(target))}`, { waitUntil: 'load', timeout });
+      // A real navigation to PLAYER_ORIGIN, answered locally by the page's
+      // Fetch handler. Not page.setContent (document.write — Chrome may
+      // block a parser-blocking cross-site script loaded that way), and not
+      // a data: URL either: its opaque origin skips the mixed-content check
+      // a visitor's https page would hit.
+      await page.goto(playerUrl(target), { waitUntil: 'load', timeout });
       // readyState >= 2 (HAVE_CURRENT_DATA) = a frame is decoded for the
       // current position; that's the picture we want. Requiring playback
       // to have advanced too (currentTime > 0) just adds a second or two
@@ -289,8 +303,44 @@ async function newHardenedPage(browser) {
   await page.setViewport({ width: WIDTH, height: HEIGHT });
   const client = await page.target().createCDPSession();
   await client.send('Page.setDownloadBehavior', { behavior: 'deny' }).catch(() => {});
-  await client.detach().catch(() => {});
+  // Serve the player page for PLAYER_ORIGIN. Only requests to that origin
+  // are paused, so stream/segment traffic never round-trips through Node.
+  // The session stays attached for the page's lifetime (detaching would
+  // turn interception off); closing the page ends it.
+  client.on('Fetch.requestPaused', (e) => {
+    const res = playerResponse(e.request.url);
+    client
+      .send('Fetch.fulfillRequest', {
+        requestId: e.requestId,
+        responseCode: res.status,
+        responseHeaders: [
+          { name: 'Content-Type', value: 'text/html; charset=utf-8' },
+          { name: 'Cache-Control', value: 'no-store' },
+        ],
+        body: Buffer.from(res.body).toString('base64'),
+      })
+      .catch(() => {});
+  });
+  await client.send('Fetch.enable', { patterns: [{ urlPattern: `${PLAYER_ORIGIN}/*`, requestStage: 'Request' }] });
   return page;
+}
+
+function playerUrl(streamUrl) {
+  return `${PLAYER_ORIGIN}/player.html?u=${encodeURIComponent(streamUrl)}`;
+}
+
+// What the Fetch handler answers under PLAYER_ORIGIN: the player for
+// /player.html?u=<stream>, an empty 404 for anything else (favicon).
+function playerResponse(url) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return { status: 404, body: '' };
+  }
+  const stream = u.searchParams.get('u');
+  if (u.origin !== PLAYER_ORIGIN || u.pathname !== '/player.html' || !stream) return { status: 404, body: '' };
+  return { status: 200, body: playerHtml(stream) };
 }
 
 /**
@@ -323,8 +373,9 @@ async function captureAll(urls, { onProgress, partial = false } = {}) {
   let browser;
   try {
     console.log(`[screenshots] before launch: ${formatStats(processStats())}`);
+    // No --disable-web-security (see the header comment): a capture only
+    // succeeds when a visitor's browser could play the stream too.
     browser = await launchBrowser([
-      '--disable-web-security',
       '--autoplay-policy=no-user-gesture-required',
       '--mute-audio',
       // Trim memory further on top of CONCURRENCY=1 above — no point
@@ -459,4 +510,18 @@ function saveRelayThumb(url, jpeg) {
   saveIndex(_index);
 }
 
-module.exports = { captureAll, saveRelayThumb, captureOne, getScreenshot, getAllScreenshots, screenshotId, playerHtml, encodeGif, DIR };
+module.exports = {
+  captureAll,
+  saveRelayThumb,
+  captureOne,
+  newHardenedPage,
+  getScreenshot,
+  getAllScreenshots,
+  screenshotId,
+  playerHtml,
+  playerUrl,
+  playerResponse,
+  PLAYER_ORIGIN,
+  encodeGif,
+  DIR,
+};

@@ -53,6 +53,9 @@ const HEADER = [
   // Plays through the relay proxy that Source_N (/go) hands viewers —
   // yes/no, blank = relay off / not HLS / not checked with the relay on.
   ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}RelayPlayable`),
+  // Region hint from the resolved host — 'us-only' for known geo-fenced
+  // CDNs (config.js GEO_FENCED_HOSTS), blank otherwise. A hint, not a rank.
+  ...Array.from({ length: MAX_SOURCES }, (_, i) => `Source${i + 1}Geo`),
 ];
 
 function yesNo(value) {
@@ -166,6 +169,8 @@ function rowsToCsv(rows) {
       const rankCols = Array.from({ length: MAX_SOURCES }, (_, i) => ranks[i] || '');
       const relay = ch.sourceRelayPlayable || [];
       const relayCols = Array.from({ length: MAX_SOURCES }, (_, i) => yesNo(relay[i]));
+      const geo = ch.sourceGeo || [];
+      const geoCols = Array.from({ length: MAX_SOURCES }, (_, i) => geo[i] || '');
       lines.push(
         [
           date,
@@ -192,6 +197,7 @@ function rowsToCsv(rows) {
           ...gifCols,
           ...rankCols,
           ...relayCols,
+          ...geoCols,
         ]
           .map(escapeCsvField)
           .join(',')

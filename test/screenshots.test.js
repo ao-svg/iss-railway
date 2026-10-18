@@ -83,3 +83,22 @@ test('encodeGif: accepts a plain Uint8Array per frame, not just a Buffer', async
   const buf = await encodeGif(frames, 4, 4);
   assert.equal(buf.slice(0, 6).toString('ascii'), 'GIF89a');
 });
+
+test('playerUrl/playerResponse: the player page is served from the https PLAYER_ORIGIN, 404 for anything else', () => {
+  const { playerUrl, playerResponse, PLAYER_ORIGIN } = require('../src/screenshots');
+  assert.ok(PLAYER_ORIGIN.startsWith('https://'), 'https, so an http:// stream fails as mixed content like on the real sites');
+  const stream = 'https://x.example/a.m3u8?t=1&b=2';
+  const url = playerUrl(stream);
+  assert.ok(url.startsWith(`${PLAYER_ORIGIN}/player.html?u=`));
+  const ok = playerResponse(url);
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body, playerHtml(stream));
+  assert.equal(playerResponse(`${PLAYER_ORIGIN}/favicon.ico`).status, 404);
+  assert.equal(playerResponse(`${PLAYER_ORIGIN}/player.html`).status, 404);
+  assert.equal(playerResponse('https://other.example/player.html?u=x').status, 404);
+});
+
+test('captureAll no longer launches the capture browser with web security disabled', () => {
+  const src = require('fs').readFileSync(require.resolve('../src/screenshots'), 'utf8');
+  assert.ok(!/'--disable-web-security'/.test(src));
+});

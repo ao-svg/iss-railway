@@ -161,10 +161,39 @@ test('enrichRowsWithSourceStatus: row with no channels stays empty, no crash', (
   assert.deepEqual(out[0].channels, []);
 });
 
+const PLAYABLE = { status: 'stream', isManifest: true, working: true, cors: true };
+
 test('rankFor: working requires both a real still AND a real gif, not just a still', () => {
-  assert.equal(rankFor(null, { ok: true, gifOk: true }), 'working');
-  assert.equal(rankFor(null, { ok: true, gifOk: false }), 'unverified'); // still only -> not enough
-  assert.equal(rankFor(null, { ok: false }), 'unverified');
+  assert.equal(rankFor(PLAYABLE, { ok: true, gifOk: true }), 'working');
+  assert.equal(rankFor(PLAYABLE, { ok: true, gifOk: false }), 'medium'); // still only -> not enough
+  assert.equal(rankFor(PLAYABLE, { ok: false }), 'medium');
+});
+
+test('rankFor: a capture alone is not working — the check must back it up', () => {
+  assert.equal(rankFor(null, { ok: true, gifOk: true }), 'unverified');
+});
+
+test('rankFor: a good capture of a stream with no CORS on some hop is medium at best', () => {
+  const nocors = { status: 'nocors', isManifest: true, working: true, cors: false };
+  assert.equal(rankFor(nocors, { ok: true, gifOk: true }), 'medium');
+});
+
+test('rankFor: a good capture whose segment is unverified (working null) is medium, not working', () => {
+  const unverified = { status: 'stream', isManifest: true, working: null, cors: true };
+  assert.equal(rankFor(unverified, { ok: true, gifOk: true }), 'medium');
+});
+
+test('rankFor: an old good capture never keeps a source working once the check says dead or 403', () => {
+  const shot = { ok: true, gifOk: true };
+  assert.equal(rankFor({ status: 'dead', isManifest: true, working: false, cors: null, consecutiveFailures: 1 }, shot), 'unverified');
+  assert.equal(rankFor({ status: 'dead', isManifest: true, working: false, consecutiveFailures: FLAG_AFTER_FAILURES }, shot), 'low');
+  assert.equal(rankFor({ status: 'dead', working: false, httpStatus: 403 }, shot), 'unauthorized');
+});
+
+test('rankFor: an HTML page needs status ok, not CORS (iframes do not need it)', () => {
+  const shot = { ok: true, gifOk: true };
+  assert.equal(rankFor({ status: 'ok', isManifest: false, working: true, cors: null }, shot), 'working');
+  assert.equal(rankFor({ status: 'blocked', isManifest: false, working: true, cors: null }, shot), 'unverified');
 });
 
 test('rankFor: a 401/403 is unauthorized, never low, regardless of consecutiveFailures', () => {
@@ -227,7 +256,7 @@ test('looksLikeDangerousFile: an empty/missing body with a normal URL is never f
 });
 
 test('rankFor: dangerous overrides every other signal, even a proven working capture', () => {
-  assert.equal(rankFor({ status: 'dangerous' }, { ok: true, gifOk: true }), 'dangerous');
+  assert.equal(rankFor({ ...PLAYABLE, status: 'dangerous' }, { ok: true, gifOk: true }), 'dangerous');
 });
 
 // checkUrl/resolveNow's own dangerous-file handling is a one-line call into
@@ -237,3 +266,112 @@ test('rankFor: dangerous overrides every other signal, even a proven working cap
 // confirmed independent of this test runner's sandboxing), which made that
 // kind of test permanently red here regardless of correctness — see
 // nextConsecutiveFailures above for the same reasoning applied to checkAll.
+
+test('geoHintFor: known geo-fenced CDN hosts and their subdomains are us-only, others null', () => {
+  const { geoHintFor } = require('../src/sourceChecks');
+  assert.equal(geoHintFor('https://turnerlive.warnermediacdn.com/hls/live/2023172/tbseast/x.m3u8'), 'us-only');
+  assert.equal(geoHintFor('https://amg19223-amg19223c4-amgplt0351.playout.now3.amagi.tv/playlist/p.m3u8'), 'us-only');
+  assert.equal(geoHintFor('https://fastly.live.brightcove.com/x/chunklist.m3u8'), null);
+  assert.equal(geoHintFor('https://evilplayout.now3.amagi.tv.example.com/p.m3u8'), null, 'suffix must be a whole domain label');
+  assert.equal(geoHintFor('not a url'), null);
+  assert.equal(geoHintFor('https://a.example/x', { 'eu-only': ['example'] }), 'eu-only');
+});
+
+test('enrichRowsWithSourceStatus: sourceGeo uses the resolved host when the check has one', () => {
+  const rows = [{ channels: [{ name: 'x', sources: ['https://redirector.example/tbs.m3u8', 'https://plain.example/a.m3u8', 'https://turnerlive.warnermediacdn.com/t.m3u8'] }] }];
+  const checks = {
+    'https://redirector.example/tbs.m3u8': { status: 'stream', resolvedUrl: 'https://turnerlive.warnermediacdn.com/hls/x.m3u8' },
+  };
+  const out = enrichRowsWithSourceStatus(rows, (u) => checks[u] || null);
+  assert.deepEqual(out[0].channels[0].sourceGeo, ['us-only', null, 'us-only']);
+});
+
+// Local origin servers for checkUrl's request behaviour (loopback works in
+// this environment again — relay.test.js relies on it too).
+async function withServer(handler, fn) {
+  const http = require('node:http');
+  const server = http.createServer(handler);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    return await fn(`http://127.0.0.1:${server.address().port}`);
+  } finally {
+    server.close();
+  }
+}
+
+test('checkUrl: a 403 to the ranged request is retried once without Range before calling it unauthorized', async () => {
+  const { checkUrl } = require('../src/sourceChecks');
+  const seen = [];
+  await withServer(
+    (req, res) => {
+      seen.push(req.headers.range || null);
+      if (req.headers.range) return res.writeHead(403).end();
+      res.writeHead(200, { 'Content-Type': 'text/html' }).end('<html>page</html>');
+    },
+    async (base) => {
+      const r = await checkUrl(`${base}/page`);
+      assert.equal(r.status, 'ok');
+      assert.equal(r.httpStatus, 200);
+    }
+  );
+  assert.deepEqual(seen, ['bytes=0-16383', null]);
+});
+
+test('checkUrl: a 403 that persists without Range stays unauthorized, after exactly one retry', async () => {
+  const { checkUrl } = require('../src/sourceChecks');
+  let hits = 0;
+  await withServer(
+    (req, res) => {
+      hits++;
+      res.writeHead(403).end();
+    },
+    async (base) => {
+      const r = await checkUrl(`${base}/live.m3u8`);
+      assert.equal(r.status, 'dead');
+      assert.equal(r.httpStatus, 403);
+      assert.equal(rankFor({ ...r, consecutiveFailures: 1 }, null), 'unauthorized');
+    }
+  );
+  assert.equal(hits, 2);
+});
+
+test('checkUrl: the no-Range retry reads only the first 16KB of an endless body', async () => {
+  const { checkUrl } = require('../src/sourceChecks');
+  let streamClosed = false;
+  await withServer(
+    (req, res) => {
+      if (req.headers.range) return res.writeHead(403).end();
+      res.writeHead(200, { 'Content-Type': 'video/mp2t' });
+      const chunk = Buffer.alloc(4096, 0x47);
+      const iv = setInterval(() => res.write(chunk), 5);
+      res.on('close', () => {
+        streamClosed = true;
+        clearInterval(iv);
+      });
+    },
+    async (base) => {
+      const r = await checkUrl(`${base}/endless`);
+      assert.equal(r.httpStatus, 200);
+      assert.notEqual(r.status, 'dead');
+    }
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(streamClosed, 'the endless response was cut off, not drained');
+});
+
+test('checkUrl: probes send an Origin header, so CDNs that only answer CORS to one count as cors', async () => {
+  const { checkUrl } = require('../src/sourceChecks');
+  await withServer(
+    (req, res) => {
+      const acao = req.headers.origin ? { 'Access-Control-Allow-Origin': '*' } : {};
+      if (req.url === '/master.m3u8') return res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl', ...acao }).end('#EXTM3U\n#EXTINF:6,\nseg.ts\n');
+      res.writeHead(200, { 'Content-Type': 'video/mp2t', ...acao }).end(Buffer.alloc(376, 0x47));
+    },
+    async (base) => {
+      const r = await checkUrl(`${base}/master.m3u8`);
+      assert.equal(r.cors, true);
+      assert.equal(r.working, true);
+      assert.equal(r.status, 'stream');
+    }
+  );
+});

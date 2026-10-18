@@ -23,6 +23,7 @@ const fs = require('fs');
 const path = require('path');
 const { dataPath } = require('./dataDir');
 const axios = require('axios');
+const { GEO_FENCED_HOSTS } = require('./config');
 
 const CACHE_PATH = dataPath('source-checks.json');
 const CHECK_TTL_MS = 12 * 60 * 60 * 1000; // HTML pages — comparatively stable
@@ -40,6 +41,15 @@ const CONCURRENCY = 8;
 const BROWSER_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36',
 };
+// What the classifying probes send: the browser UA plus an Origin, the way
+// hls.js's cross-origin XHR on a WordPress site does. CloudFront and other
+// CDNs only send Access-Control-Allow-Origin when the request has an Origin
+// (verified 2026-10-18: the TSN cloudfront stream answered with no ACAO
+// without one, `*` with one), so without it `cors` came out false for
+// streams any visitor's browser plays fine.
+const PROBE_ORIGIN = process.env.CORS_PROBE_ORIGIN || 'https://zhibo82.com';
+const PROBE_HEADERS = { ...BROWSER_HEADERS, Origin: PROBE_ORIGIN };
+const RANGE_BYTES = 16384;
 
 const MANIFEST_CONTENT_TYPES = [
   'application/vnd.apple.mpegurl',
@@ -175,15 +185,49 @@ async function resolveNow(url) {
  * it work" and "can a browser fetch it" are different questions with
  * different answers, and conflating them is what made 'blocked' useless.
  */
+/**
+ * GET the first RANGE_BYTES of a URL. Asks with a Range header first; on a
+ * 403, asks once more without it — some hosts refuse ranged requests
+ * outright (cdn.stmify.com: 403 to Range from Railway, 200 to a plain GET),
+ * and a browser player doesn't send Range for a manifest either. The plain
+ * retry is streamed and cut off after RANGE_BYTES, so an endless TS stream
+ * behind the URL can't be downloaded whole. Resolves with axios's response,
+ * `data` always a Buffer; rejects like axios on network errors.
+ */
+async function getFirstBytes(url) {
+  const opts = { timeout: REQUEST_TIMEOUT_MS, maxRedirects: 5, validateStatus: () => true };
+  const ranged = await axios.get(url, {
+    ...opts,
+    headers: { ...PROBE_HEADERS, Range: `bytes=0-${RANGE_BYTES - 1}` },
+    responseType: 'arraybuffer',
+  });
+  if (ranged.status !== 403) return ranged;
+  const res = await axios.get(url, { ...opts, headers: PROBE_HEADERS, responseType: 'stream' });
+  const chunks = [];
+  let length = 0;
+  await new Promise((resolve) => {
+    const timer = setTimeout(done, REQUEST_TIMEOUT_MS);
+    function done() {
+      clearTimeout(timer);
+      res.data.destroy();
+      resolve();
+    }
+    res.data.on('data', (chunk) => {
+      chunks.push(chunk);
+      length += chunk.length;
+      if (length >= RANGE_BYTES) done();
+    });
+    res.data.on('end', done);
+    res.data.on('error', done);
+  });
+  res.data = Buffer.concat(chunks).subarray(0, RANGE_BYTES);
+  res.retriedWithoutRange = true;
+  return res;
+}
+
 async function probeOnce(url) {
   try {
-    const res = await axios.get(url, {
-      timeout: REQUEST_TIMEOUT_MS,
-      maxRedirects: 5,
-      validateStatus: () => true,
-      headers: { ...BROWSER_HEADERS, Range: 'bytes=0-16383' },
-      responseType: 'arraybuffer',
-    });
+    const res = await getFirstBytes(url);
     return {
       reachable: res.status < 400,
       cors: hasCorsHeader(res.headers),
@@ -230,11 +274,20 @@ function nextConsecutiveFailures(status, previous) {
  *                  installer. Checked FIRST, overrides everything else —
  *                  even an old successful capture doesn't un-flag it, since
  *                  the danger signal is about what's there NOW.
- *   working      - has a real still AND a real gif capture, proof someone
- *                  can actually watch it right now.
+ *   working      - has a real still AND a real gif capture, AND the latest
+ *                  check agrees a visitor's browser can play it: a manifest
+ *                  needs working === true and cors === true (every hop sent
+ *                  Access-Control-Allow-Origin); an HTML page needs status
+ *                  'ok' (cors is n/a for iframes). A capture alone isn't
+ *                  enough — it's taken from one US datacenter, and older
+ *                  captures were taken with web security off, so a stream
+ *                  that later went dead or lacks CORS on a hop would
+ *                  otherwise stay "working" for real visitors who can't
+ *                  play it (measured 2026-10-18: 17 of 30 such sources).
  *   medium       - source-check says it's reachable/usable (ok/stream/
- *                  nocors), capture just hasn't landed a good image yet —
- *                  new, or waiting its turn, not broken.
+ *                  nocors), but there's no good capture yet or the check
+ *                  doesn't back it up (no CORS, segment unverified) — new,
+ *                  waiting its turn, or playable only via native/relay.
  *   unauthorized - confirmed 401/403. An access gate, not a broken link:
  *                  kept separate from 'low' on purpose, since this needs an
  *                  actual fix (headers, auth) rather than being written off.
@@ -243,13 +296,37 @@ function nextConsecutiveFailures(status, previous) {
  *   unverified   - none of the above yet: never checked, or dead only once
  *                  or twice so far (too soon to call it broken).
  */
+function browserPlayable(check) {
+  if (!check) return false;
+  if (check.isManifest === false) return check.status === 'ok';
+  return check.working === true && check.cors === true;
+}
+
 function rankFor(check, shot) {
   if (check && check.status === 'dangerous') return 'dangerous';
-  if (shot && shot.ok && shot.gifOk) return 'working';
+  if (shot && shot.ok && shot.gifOk && browserPlayable(check)) return 'working';
   if (check && (check.httpStatus === 401 || check.httpStatus === 403)) return 'unauthorized';
   if (check && (check.status === 'ok' || check.status === 'stream' || check.status === 'nocors')) return 'medium';
   if (check && check.status === 'dead' && (check.consecutiveFailures || 0) >= FLAG_AFTER_FAILURES) return 'low';
   return 'unverified';
+}
+
+/**
+ * Region hint for a source from its host: the GEO_FENCED_HOSTS key
+ * ('us-only') whose list contains the host or a parent domain of it, else
+ * null. Pure, so testable without config files or network.
+ */
+function geoHintFor(url, fenced = GEO_FENCED_HOSTS) {
+  let host;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+  for (const [hint, hosts] of Object.entries(fenced)) {
+    if (hosts.some((h) => host === h || host.endsWith(`.${h}`))) return hint;
+  }
+  return null;
 }
 
 // Extensions/content-types/magic bytes that mean "this is an executable or
@@ -296,6 +373,7 @@ function looksLikeBinaryMedia(buffer, contentType) {
  * Probe one URL. Uses a ranged GET (not HEAD — many stream CDNs reject HEAD)
  * to avoid downloading the whole file — the range is generous (16KB) so a
  * full HLS manifest is captured even with many variants/segments listed.
+ * A 403 to the ranged GET gets one capped plain GET (getFirstBytes).
  *
  * Every result carries two separate facts, exported alongside `status`:
  *   working - true  = a real media segment was fetched (HLS: verified up to
@@ -324,13 +402,9 @@ function looksLikeBinaryMedia(buffer, contentType) {
  */
 async function checkUrl(url) {
   try {
-    const res = await axios.get(url, {
-      timeout: REQUEST_TIMEOUT_MS,
-      maxRedirects: 5,
-      validateStatus: () => true,
-      headers: { ...BROWSER_HEADERS, Range: 'bytes=0-16383' },
-      responseType: 'arraybuffer',
-    });
+    // A 403 to the ranged request is retried once without Range before
+    // this counts as dead/unauthorized — see getFirstBytes.
+    const res = await getFirstBytes(url);
     const checkedAt = new Date().toISOString();
     // The URL the host actually served after redirects — stream CDNs
     // commonly bounce a stable URL to a per-session tokenized one, and the
@@ -545,6 +619,8 @@ async function checkAll(urls, { force = false, onProgress, relayProbe = null } =
  *   sourceRank     - one of 'working' / 'medium' / 'unauthorized' / 'low' /
  *                    'unverified' (see rankFor above) — the single-word
  *                    answer to "is this actually usable right now"
+ *   sourceGeo      - 'us-only' when the resolved host is a known geo-fenced
+ *                    CDN (see geoHintFor), else null — a hint, not a rank
  * Used to label fixtures.csv/fixtures.json exports, not just the /browse
  * page's dots. `getSourceStatus` / `getScreenshot` are injectable so this
  * is testable with fakes (and screenshots.js can depend on this module
@@ -591,6 +667,9 @@ function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus, { getScre
           return shot && shot.gifOk && shot.gifFile ? `${publicBaseUrl}/screenshots/${shot.gifFile}` : null;
         }),
         sourceRank: sources.map((url, i) => rankFor(results[i], getScreenshot(url))),
+        // 'us-only' when the host the source resolves to is a known
+        // geo-fenced CDN (config.js GEO_FENCED_HOSTS), else null.
+        sourceGeo: sources.map((url, i) => geoHintFor(results[i]?.resolvedUrl || url)),
       };
     }),
   }));
@@ -602,6 +681,7 @@ module.exports = {
   checkAll,
   checkUrl,
   rankFor,
+  geoHintFor,
   FLAG_AFTER_FAILURES,
   nextConsecutiveFailures,
   manifestStatus,

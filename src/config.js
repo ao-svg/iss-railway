@@ -113,4 +113,14 @@ function updateConfig(patch) {
   return current;
 }
 
-module.exports = { getConfig, updateConfig };
+// CDNs known to serve only US viewers. Every check and capture runs from
+// Railway's US datacenter, so these look fine here and fail for visitors
+// elsewhere (measured from Israel 2026-10-18: Turner/Akamai 403, amagi
+// playout manifest errors). A source whose resolved host matches one gets
+// sourceGeo 'us-only' in the exports — a hint for the WordPress sites, not
+// a rank change. An entry matches that host and any subdomain of it.
+const GEO_FENCED_HOSTS = {
+  'us-only': ['turnerlive.warnermediacdn.com', 'playout.now3.amagi.tv'],
+};
+
+module.exports = { getConfig, updateConfig, GEO_FENCED_HOSTS };

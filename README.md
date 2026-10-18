@@ -45,9 +45,30 @@ standalone pipeline you can deploy on Railway and pull CSV/JSON from.
   fixtures.json and `Source1Screenshot`/`Source1Gif`..`Source10Screenshot`/
   `Source10Gif` in fixtures.csv. Runs on every 3rd scheduled source check,
   with sources missing a good image retried on every check in between.
+  The capture browser runs with web security **on** and loads the player
+  from an https origin, so CORS and mixed content (an `http://` stream on
+  an https site) block a capture exactly as they block a visitor — a
+  capture only succeeds for what a normal browser can play. (Until
+  2026-10-18 it ran with `--disable-web-security`, which let streams no
+  visitor could play pass.) It still runs from Railway's US datacenter, so
+  it can't see geo-blocking — see `sourceGeo` below.
+- ✅ Source probes send an `Origin` header like a browser player does (some
+  CDNs, e.g. CloudFront, only return `Access-Control-Allow-Origin` when
+  asked), and a 403 to the ranged probe is retried once as a plain,
+  size-capped GET before the source counts as dead/unauthorized (some
+  hosts, e.g. cdn.stmify.com, refuse `Range`).
+- ✅ Flags sources on known US-only CDNs (`GEO_FENCED_HOSTS` in
+  `src/config.js` — Turner's `turnerlive.warnermediacdn.com`, amagi's
+  `*.playout.now3.amagi.tv`) as `sourceGeo: "us-only"` in fixtures.json and
+  `Source1Geo`..`Source10Geo` in fixtures.csv (null/blank otherwise). Based
+  on the host the source resolves to; a hint for the WordPress sites, not a
+  rank change.
 - ✅ Ranks every source into one word (`sourceChecks.rankFor`) — **working**
-  (real still + real gif, proven playable now), **medium** (reachable, just
-  no capture yet), **unauthorized** (confirmed 401/403 — an access gate to
+  (real still + real gif, AND the latest check agrees a visitor's browser
+  can play it: for a manifest, a real segment was fetched and every hop is
+  CORS-open; for an HTML page, status ok), **medium** (reachable, but no
+  good capture yet, or the check doesn't back the capture up — e.g. no
+  CORS on a hop), **unauthorized** (confirmed 401/403 — an access gate to
   fix, kept separate from dead links on purpose), **low** (confirmed dead
   across several checks in a row, not just one bad probe), **unverified**
   (not enough data yet). A single failed check never demotes a source by

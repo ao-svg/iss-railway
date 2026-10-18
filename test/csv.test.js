@@ -16,19 +16,27 @@ function baseRow(overrides = {}) {
   };
 }
 
-// Trailing per-source blocks, in order: 10 Status, 10 Working, 10 Cors, 10 Resolved, 10 Screenshot, 10 Gif, 10 Rank, 10 RelayPlayable.
-const TRAILING = 80;
-const statusBlock = (cols) => cols.slice(-80, -70);
-const workingBlock = (cols) => cols.slice(-70, -60);
-const corsBlock = (cols) => cols.slice(-60, -50);
-const resolvedBlock = (cols) => cols.slice(-50, -40);
-const screenshotBlock = (cols) => cols.slice(-40, -30);
-const gifBlock = (cols) => cols.slice(-30, -20);
-const rankBlock = (cols) => cols.slice(-20, -10);
-const relayBlock = (cols) => cols.slice(-10);
+// Trailing per-source blocks, in order: 10 Status, 10 Working, 10 Cors, 10 Resolved, 10 Screenshot, 10 Gif, 10 Rank, 10 RelayPlayable, 10 Geo.
+const TRAILING = 90;
+const statusBlock = (cols) => cols.slice(-90, -80);
+const workingBlock = (cols) => cols.slice(-80, -70);
+const corsBlock = (cols) => cols.slice(-70, -60);
+const resolvedBlock = (cols) => cols.slice(-60, -50);
+const screenshotBlock = (cols) => cols.slice(-50, -40);
+const gifBlock = (cols) => cols.slice(-40, -30);
+const rankBlock = (cols) => cols.slice(-30, -20);
+const relayBlock = (cols) => cols.slice(-20, -10);
+const geoBlock = (cols) => cols.slice(-10);
 
-test('HEADER ends with 10 Source_N_RelayPlayable columns, after Rank', () => {
+test('HEADER has 10 Source_N_RelayPlayable columns after Rank, then ends with 10 Source_N_Geo', () => {
   assert.deepEqual(relayBlock(HEADER), Array.from({ length: 10 }, (_, i) => `Source${i + 1}RelayPlayable`));
+  assert.deepEqual(geoBlock(HEADER), Array.from({ length: 10 }, (_, i) => `Source${i + 1}Geo`));
+});
+
+test('sourceGeo renders in Source_N_Geo, blank when null', () => {
+  const csv = rowsToCsv([baseRow({ channels: [{ name: 'X', sources: ['/go?u=a', '/go?u=b'], sourceGeo: ['us-only', null] }] })]);
+  const cols = csv.trim().split('\n')[1].split(',');
+  assert.deepEqual(geoBlock(cols).slice(0, 3), ['us-only', '', '']);
 });
 
 test('sourceRelayPlayable renders as yes/no, null as blank', () => {
