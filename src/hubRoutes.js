@@ -195,18 +195,40 @@ function renderSites({ layout, escapeHtml }, base, flash) {
         <input type="hidden" name="host" value="${escapeHtml(x.host)}">
         <button type="submit" class="secondary">Forget</button>
       </form>`;
-  const playerRows = players
-    .map((x) => {
-      const stale = new Date(x.lastSeen).getTime() < dayAgo;
+  // ── Destination sites: one list; main one + optional rotation ──
+  const dests = hub.destinations();
+  const multi = dests.length > 1;
+  const destRows = dests
+    .map((d) => {
+      const p = d.player;
+      const stale = p && new Date(p.lastSeen).getTime() < dayAgo;
+      const status = p
+        ? `<span class="${stale ? 'status-err' : 'status-ok'}">● connected</span> <span class="muted">v${escapeHtml(p.version || '?')} · ${ago(p.lastSeen)}</span>`
+        : '<span class="muted">not connected — install the zhibo82 plugin there and connect it (Settings → Zhibo82 → Hub)</span>';
+      const sending = usedBy({ host: d.host, home: d.url });
       return `<tr>
-    <td><a href="${escapeHtml(x.home || `https://${x.host}`)}" target="_blank" rel="noopener"><strong>${escapeHtml(x.host)}</strong></a></td>
-    <td><span class="rank ${isOld(x) ? 'rank-medium' : 'rank-working'}">v${escapeHtml(x.version || '?')}</span></td>
-    <td class="${stale ? 'status-err' : 'muted'}" title="${escapeHtml(x.lastSeen)}">${ago(x.lastSeen)}</td>
-    <td class="muted">${usedBy(x)} schedule site${usedBy(x) === 1 ? '' : 's'}</td>
-    <td>${forgetForm(x)}</td>
+    <td><label style="display:flex;gap:0.4rem;align-items:center;margin:0;color:var(--text)"><input type="radio" name="main" value="${escapeHtml(d.url)}" ${d.main ? 'checked' : ''}> ${d.main ? '<strong>Main</strong>' : 'Main'}</label></td>
+    ${multi ? `<td><input type="checkbox" name="rotate" value="${escapeHtml(d.url)}" ${d.inRotation ? 'checked' : ''} aria-label="Rotate to ${escapeHtml(d.host)}"></td>` : ''}
+    <td><a href="${escapeHtml(d.url)}" target="_blank" rel="noopener"><strong>${escapeHtml(d.host)}</strong></a></td>
+    <td>${status}</td>
+    <td class="muted">${sending} schedule site${sending === 1 ? '' : 's'}</td>
+    <td>${d.manual && !d.main ? `<button type="submit" class="secondary" form="hub-dest-remove" name="url" value="${escapeHtml(d.url)}" formnovalidate onclick="return confirm('Remove ${escapeHtml(d.host)} from the destinations?')">Remove</button>` : ''}</td>
   </tr>`;
     })
     .join('');
+
+  // "Opens on": default (main / rotation) or one destination, per schedule site
+  const opensOn = (x) => {
+    const current = x.override ? hub.cleanHost(x.override) : '';
+    const def = s.rotationEnabled && multi ? `Default — rotating × ${hub.rotationFor('', s, {}).length}` : `Default — ${hub.cleanHost(s.defaultTarget)}`;
+    return `<form class="inline-form" method="POST" action="/api/hub/override">
+        <input type="hidden" name="host" value="${escapeHtml(x.host)}">
+        <select name="target" onchange="this.form.submit()" style="width:auto">
+          <option value="">${escapeHtml(def)}</option>
+          ${dests.map((d) => `<option value="${escapeHtml(d.url)}" ${current === d.host ? 'selected' : ''}>${escapeHtml(d.host)} only</option>`).join('')}
+        </select>
+      </form>`;
+  };
 
   const siteRows = schedules
     .map((x) => {
@@ -214,7 +236,7 @@ function renderSites({ layout, escapeHtml }, base, flash) {
       const stale = new Date(x.lastSeen).getTime() < dayAgo;
       return `<tr>
     <td><a href="/sites/${encodeURIComponent(x.host)}"><strong>${escapeHtml(x.host)}</strong></a>${x.removed ? ' <span class="rank rank-low">removed</span>' : ''}${pendingCount(x.host) ? ` <span class="rank rank-medium">${pendingCount(x.host)} pending</span>` : ''}</td>
-    <td>${x.rotating ? `<span class="rank rank-working">rotating × ${x.rotating}</span>` : `<code>${bare(x.target)}</code>`}${x.override ? ' <span class="rank rank-medium">override</span>' : ''}</td>
+    <td>${opensOn(x)}</td>
     <td><span class="rank ${old ? 'rank-medium' : 'rank-working'}">v${escapeHtml(x.version || '?')}</span></td>
     <td class="${stale ? 'status-err' : 'muted'}" title="${escapeHtml(x.lastSeen)}">${ago(x.lastSeen)}</td>
     <td class="muted">${x.theme === 'zhibo-child' ? '✓' : escapeHtml(x.theme || '—')}</td>
@@ -222,23 +244,6 @@ function renderSites({ layout, escapeHtml }, base, flash) {
     <td>${forgetForm(x)}</td>
   </tr>`;
     })
-    .join('');
-
-  const overrideRows = Object.entries(st.overrides)
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(
-      ([host, target]) => `<tr>
-    <td>${escapeHtml(host)}</td>
-    <td><code>${bare(target)}</code></td>
-    <td>
-      <form class="inline-form" method="POST" action="/api/hub/override">
-        <input type="hidden" name="host" value="${escapeHtml(host)}">
-        <input type="hidden" name="target" value="">
-        <button type="submit" class="secondary">Remove</button>
-      </form>
-    </td>
-  </tr>`
-    )
     .join('');
 
   const flashHtml =
@@ -252,46 +257,25 @@ function renderSites({ layout, escapeHtml }, base, flash) {
     'WordPress sites',
     `
     <h1>WordPress sites</h1>
-    <p class="muted">Sites running the Zhibo Streaming Table plugin in Network mode get their settings and plugin updates from here, and check in every few minutes.</p>
+    <p class="muted">Destination sites are where visitors watch (zhibo82 plugin). Schedule sites list the matches and send visitors to them (zhibo882 plugin). Both check in here every few minutes and take their plugin updates from here.</p>
     ${flashHtml}
 
+    <h2 class="section-heading">Destination sites</h2>
     <div class="card">
-      <strong>Destination</strong>
-      <p class="muted">The player site every schedule site's matches open on (each match: <code>&lt;destination&gt;/#match-…</code>) — pick one of the player sites below. Sites switch within ${s.cacheMinutes || 5} minutes — sites with full-page caching once their cache expires.</p>
-      <form method="POST" action="/api/hub/destination" onsubmit="return confirm('Send visitors from every site without an override to ' + this.defaultTarget.value + '?');">
-        <input type="text" name="defaultTarget" value="${escapeHtml(s.defaultTarget)}" required list="hub-players">
-        <datalist id="hub-players">${players.filter((p) => !p.removed).map((p) => `<option value="${escapeHtml(hub.cleanUrl(p.home) || `https://${p.host}`)}">`).join('')}</datalist>
-        <button type="submit">Save destination</button>
-      </form>
-      <form method="POST" action="/api/hub/rotation" style="margin-top:1.25rem">
-        <strong>Rotation (optional)</strong>
-        <p class="muted">Spread clicks over several destinations: each click opens one of them at random — the destination above plus these. Domains with their own destination below are not rotated. Search engines see the destination above.</p>
-        <label for="hub-rot">Other destinations, one per line</label>
-        <textarea id="hub-rot" name="rotation" rows="4" placeholder="https://zazhibo82.com" style="width:100%;box-sizing:border-box;padding:0.5rem;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg);color:var(--text);font:inherit;font-size:0.9rem">${escapeHtml((s.rotation || []).join('\n'))}</textarea>
-        <label style="display:flex;gap:0.5rem;align-items:center"><input type="checkbox" name="rotationEnabled" value="1" ${s.rotationEnabled ? 'checked' : ''}> Rotate between them${s.rotationEnabled && (s.rotation || []).length ? ` — on, ${new Set([s.defaultTarget, ...s.rotation]).size} destinations` : ''}</label>
-        <button type="submit">Save rotation</button>
-      </form>
-    </div>
-
-    <div class="card">
-      <strong>Per-domain destinations</strong>
-      <p class="muted">Send some domains elsewhere. Everything not listed uses the destination above.</p>
-      ${overrideRows ? `<table><tr><th>Domain</th><th>Destination</th><th></th></tr>${overrideRows}</table>` : '<p class="muted">None.</p>'}
-      <form method="POST" action="/api/hub/override">
-        <label for="ov-host">Domain</label>
-        <input type="text" id="ov-host" name="host" placeholder="example.com" required list="hub-hosts">
-        <datalist id="hub-hosts">${schedules.map((x) => `<option value="${escapeHtml(x.host)}">`).join('')}</datalist>
-        <label for="ov-target">Destination</label>
-        <input type="text" id="ov-target" name="target" placeholder="https://…" required list="hub-players">
+      <p class="muted">Matches on every schedule site open on the <strong>main</strong> destination${multi ? ' — or, with rotation on, on one of the ticked ones at random for each click' : ''}. Changes reach the sites within ${s.cacheMinutes || 5} minutes.</p>
+      <form method="POST" action="/api/hub/destinations">
+        <table>
+          <tr><th>Main</th>${multi ? '<th>Rotate</th>' : ''}<th>Site</th><th>Status</th><th>Receives from</th><th></th></tr>
+          ${destRows}
+        </table>
+        ${multi ? `<label style="display:flex;gap:0.5rem;align-items:center"><input type="checkbox" name="rotationEnabled" value="1" ${s.rotationEnabled ? 'checked' : ''}> Rotate between the ticked sites${s.rotationEnabled ? ` — on, ${hub.rotationFor('', s, {}).length} sites` : ''}</label>` : ''}
         <button type="submit">Save</button>
       </form>
-    </div>
-
-    <h2 class="section-heading">Player sites</h2>
-    <div class="card">
-      <p class="muted">Where visitors watch (zhibo82 plugin). Schedule sites send their visitors here.</p>
-      ${players.length ? summary(players) : ''}
-      ${players.length ? `<table><tr><th>Domain</th><th>Plugin</th><th>Last check-in</th><th>Receives from</th><th></th></tr>${playerRows}</table>` : '<p class="muted">No player site has checked in yet — connect one under Settings → Zhibo82 → Hub.</p>'}
+      <form id="hub-dest-remove" method="POST" action="/api/hub/destinations/remove"></form>
+      <form class="inline-form" method="POST" action="/api/hub/destinations/add" style="margin-top:1rem">
+        <input type="text" name="url" placeholder="https://another-destination.com" required>
+        <button type="submit" class="secondary">Add destination</button>
+      </form>
     </div>
 
     <h2 class="section-heading">Schedule sites</h2>
@@ -476,6 +460,23 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
     if (b.autoUpdate !== undefined) fields.autoUpdate = b.autoUpdate === '1';
     attempt(res, () => hub.updateSettings(fields), 'Saved.');
   });
+
+  // Destination sites card: main one, rotation ticks, rotation on/off
+  app.post('/api/hub/destinations', requireAuth('admin'), sameOrigin, (req, res) =>
+    attempt(
+      res,
+      () => hub.setDestinations({ main: req.body.main, rotate: [].concat(req.body.rotate || []), rotationEnabled: req.body.rotationEnabled === '1' }),
+      'Saved — schedule sites switch within a few minutes.'
+    )
+  );
+
+  app.post('/api/hub/destinations/add', requireAuth('admin'), sameOrigin, (req, res) =>
+    attempt(res, () => hub.addDestination(req.body.url), 'Destination added.')
+  );
+
+  app.post('/api/hub/destinations/remove', requireAuth('admin'), sameOrigin, (req, res) =>
+    attempt(res, () => hub.removeDestination(req.body.url), 'Destination removed.')
+  );
 
   app.post('/api/hub/rotation', requireAuth('admin'), sameOrigin, (req, res) =>
     attempt(

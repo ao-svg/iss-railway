@@ -207,6 +207,41 @@ test('hub endpoints', async (t) => {
     assert.match(decodeURIComponent(cmd.headers.get('location')), /error:.*player site/);
   });
 
+  await t.test('destination sites: one list, a main one, optional rotation, per-site choice', async () => {
+    // The player site that checked in above is listed without being added
+    assert.ok(hub.destinations().some((d) => d.host === PLAYER && d.player));
+
+    let res = await adminPost('/api/hub/destinations/add', { url: 'https://zazhibo82.example/' });
+    assert.equal(res.status, 302);
+    assert.ok(hub.destinations().some((d) => d.host === 'zazhibo82.example' && d.manual));
+
+    // Main = the player site, rotate with the added one
+    res = await adminPost('/api/hub/destinations', { main: `https://${PLAYER}`, rotate: ['https://zazhibo82.example'], rotationEnabled: '1' });
+    assert.equal(res.status, 302);
+    let cfg = await (await config()).json();
+    assert.equal(cfg.player_site, `https://${PLAYER}`);
+    assert.deepEqual(cfg.rotation, [`https://${PLAYER}`, 'https://zazhibo82.example']);
+
+    // A destination that isn't in the list can't be made main
+    res = await adminPost('/api/hub/destinations', { main: 'https://nowhere.example' });
+    assert.match(decodeURIComponent(res.headers.get('location')), /error:Pick the main destination/);
+
+    // Per site: one destination only, then back to the default
+    await adminPost('/api/hub/override', { host: SITE, target: 'https://zazhibo82.example' });
+    cfg = await (await config()).json();
+    assert.equal(cfg.player_site, 'https://zazhibo82.example');
+    assert.deepEqual(cfg.rotation, []);
+    await adminPost('/api/hub/override', { host: SITE, target: '' });
+
+    // The main one can't be removed; a hand-added one can, and leaves the rotation with it
+    res = await adminPost('/api/hub/destinations/remove', { url: `https://${PLAYER}` });
+    assert.match(decodeURIComponent(res.headers.get('location')), /error:That is the main destination/);
+    await adminPost('/api/hub/destinations/remove', { url: 'https://zazhibo82.example' });
+    cfg = await (await config()).json();
+    assert.equal(cfg.player_site, `https://${PLAYER}`);
+    assert.deepEqual(cfg.rotation, []);
+  });
+
   await t.test('a zip that is not the plugin is refused', async () => {
     const res = await fetch(`${base}/api/hub/release`, {
       method: 'PUT',

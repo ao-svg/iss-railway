@@ -39,6 +39,8 @@ const DEFAULT_SETTINGS = {
   // Off by default; domains with an override always use their override.
   rotationEnabled: false,
   rotation: [],
+  // Destination sites added by hand (player sites that check in are listed automatically)
+  destinations: [],
 };
 
 // ── Pure helpers (tested) ────────────────────────────────────
@@ -322,6 +324,60 @@ function playerSites() {
     .map(([host, x]) => ({ host, home: cleanUrl(x.home) || `https://${host}`, lastSeen: x.lastSeen, version: x.version }));
 }
 
+// Every destination site: the main one, the rotation ones, the ones added by hand and the player
+// sites that check in — one entry per host, with what the hub knows about it
+function destinations() {
+  const s = store.settings;
+  const byHost = new Map();
+  const add = (url, extra = {}) => {
+    const u = cleanUrl(url);
+    if (!u) return;
+    const host = cleanHost(u);
+    byHost.set(host, { url: u, host, ...(byHost.get(host) || {}), ...extra });
+  };
+  add(s.defaultTarget);
+  (s.rotation || []).forEach((u) => add(u));
+  (s.destinations || []).forEach((u) => add(u, { manual: true }));
+  playerSites().forEach((p) => add(p.home, { player: p }));
+  const mainHost = cleanHost(s.defaultTarget);
+  const rotHosts = new Set((s.rotation || []).map(cleanHost));
+  return [...byHost.values()]
+    .map((d) => ({ ...d, main: d.host === mainHost, inRotation: d.host === mainHost || rotHosts.has(d.host) }))
+    .sort((a, b) => (b.main - a.main) || a.host.localeCompare(b.host));
+}
+
+// The Destination sites form in one go: main site, which ones rotate, rotation on/off
+function setDestinations({ main, rotate = [], rotationEnabled }) {
+  const known = new Map(destinations().map((d) => [d.host, d.url]));
+  const mainUrl = known.get(cleanHost(main));
+  if (!mainUrl) throw new Error('Pick the main destination from the list');
+  const others = [...new Set([].concat(rotate).map((r) => known.get(cleanHost(r))).filter((u) => u && cleanHost(u) !== cleanHost(mainUrl)))];
+  store.settings = { ...store.settings, defaultTarget: mainUrl, rotation: others, rotationEnabled: Boolean(rotationEnabled) && others.length > 0 };
+  save();
+}
+
+function addDestination(url) {
+  const u = cleanUrl(url);
+  if (!u) throw new Error('Not a valid http(s) address');
+  const list = store.settings.destinations || [];
+  if (!list.some((x) => cleanHost(x) === cleanHost(u))) store.settings = { ...store.settings, destinations: [...list, u] };
+  save();
+  return u;
+}
+
+// Only hand-added ones, and never the main destination
+function removeDestination(url) {
+  const host = cleanHost(url);
+  if (host === cleanHost(store.settings.defaultTarget)) throw new Error('That is the main destination — pick another main one first');
+  store.settings = {
+    ...store.settings,
+    destinations: (store.settings.destinations || []).filter((x) => cleanHost(x) !== host),
+    rotation: (store.settings.rotation || []).filter((x) => cleanHost(x) !== host),
+  };
+  for (const [h, t] of Object.entries(store.overrides)) if (cleanHost(t) === host) delete store.overrides[h];
+  save();
+}
+
 function updateSettings(fields) {
   const next = { ...store.settings };
   const errors = [];
@@ -416,6 +472,10 @@ module.exports = {
   knownPlugin,
   pluginFromZip,
   playerSites,
+  destinations,
+  setDestinations,
+  addDestination,
+  removeDestination,
   MAX_ZIP_BYTES,
   cleanHost,
   cleanUrl,
