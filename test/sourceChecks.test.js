@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+// checkAll persists its cache — keep it out of the repo's own data/.
+process.env.DATA_DIR = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'sourcechecks-test-'));
 const {
   bodyLooksLikeManifest,
   looksLikeBinaryMedia,
@@ -372,6 +374,26 @@ test('checkUrl: probes send an Origin header, so CDNs that only answer CORS to o
       assert.equal(r.cors, true);
       assert.equal(r.working, true);
       assert.equal(r.status, 'stream');
+    }
+  );
+});
+
+test('carryOver: a swapped-in URL starts from the old result, minus the old token facts, never overwriting its own', async () => {
+  const sc = require('../src/sourceChecks');
+  const from = 'https://carry.example/live.m3u8?token=old';
+  const to = 'https://carry.example/live.m3u8?token=new';
+  await withServer(
+    (req, res) => res.writeHead(200, { 'Content-Type': 'text/html' }).end('<html></html>'),
+    async (base) => {
+      // seed `from` with a real cache entry via checkAll against a local page
+      await sc.checkAll([`${base}/a`], { force: true });
+      const seeded = sc.getStatus(`${base}/a`);
+      sc.carryOver(`${base}/a`, to);
+      assert.equal(sc.getStatus(to).status, seeded.status);
+      assert.equal(sc.getStatus(to).resolvedUrl, to, 'never the old (expired) resolved URL');
+      assert.equal(sc.getStatus(to).carriedFrom, `${base}/a`);
+      sc.carryOver(from, to); // `from` unknown -> no-op
+      assert.equal(sc.getStatus(to).carriedFrom, `${base}/a`);
     }
   );
 });

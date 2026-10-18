@@ -102,3 +102,17 @@ test('captureAll no longer launches the capture browser with web security disabl
   const src = require('fs').readFileSync(require.resolve('../src/screenshots'), 'utf8');
   assert.ok(!/'--disable-web-security'/.test(src));
 });
+
+test('carryOver: the new URL keeps the old capture until it has its own', () => {
+  const screenshots = require('../src/screenshots');
+  const from = 'https://carry.example/a.m3u8?token=old';
+  const to = 'https://carry.example/a.m3u8?token=new';
+  screenshots.getAllScreenshots()[from] = { ok: true, file: 'x.png', gifOk: true, gifFile: 'x.gif' };
+  screenshots.carryOver(from, to);
+  assert.equal(screenshots.getScreenshot(to).file, 'x.png');
+  screenshots.getAllScreenshots()[to] = { ok: false, error: 'own' };
+  screenshots.carryOver(from, to);
+  assert.equal(screenshots.getScreenshot(to).error, 'own', 'never overwrites');
+  delete screenshots.getAllScreenshots()[from];
+  delete screenshots.getAllScreenshots()[to];
+});

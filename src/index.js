@@ -213,6 +213,40 @@ function removeManualChannelAndRefresh(name, index) {
   applyManualChannelsAndRefresh();
 }
 
+// doms9 republishes about every 90 min with fresh stream tokens (futlivehd
+// tokens carry a validity window of hours), but only a pipeline run
+// (PIPELINE_CRON, every 6 h) re-matches rows — so exported doms9 links
+// used to sit expired for hours, and their captures failed for it.
+// Re-fetching the playlist when the cached copy is older than this, then
+// swapping each stale URL for its fresh-token counterpart (iptv.
+// swapStaleUrls), keeps them current between runs.
+const DOMS9_REFRESH_MS = 20 * 60 * 1000;
+
+async function refreshDoms9Sources() {
+  const playlistUrl = getConfig().doms9PlaylistUrl;
+  // A running pipeline replaces lastRows with freshly matched ones anyway.
+  if (!playlistUrl || !state.lastRows || state.running) return;
+  const status = iptv.getPlaylistStatus(playlistUrl);
+  if (status && Date.now() - new Date(status.fetchedAt).getTime() < DOMS9_REFRESH_MS) return;
+  const previous = iptv.getCachedPlaylist(playlistUrl);
+  const fresh = await iptv.getPlaylist(playlistUrl, { force: true });
+  if (state.running || !state.lastRows) return; // a pipeline run started while fetching
+  const keep = new Set(Object.values(manualChannels.getAll()).flatMap((e) => e.urls || []));
+  const { rows, swaps } = iptv.swapStaleUrls(state.lastRows, fresh, { previous, keep });
+  if (!swaps.length) return;
+  for (const [from, to] of swaps) {
+    sourceChecks.carryOver(from, to);
+    screenshots.carryOver(from, to);
+  }
+  sourceChecks.persist();
+  screenshots.persist();
+  // /go's allowlist (server.js knownSourceUrls) is read from lastRows on
+  // every request, so it follows this swap with no extra bookkeeping.
+  state.lastRows = rows;
+  writeFixturesCsv();
+  console.log(`[doms9] refreshed playlist, swapped ${swaps.length} expired source URL(s) for fresh tokens`);
+}
+
 async function runSourceCheck(force = false) {
   if (state.checkRunning) return state;
   const urls = allSourceUrls();
@@ -399,6 +433,9 @@ function scheduleCron() {
   if (getConfig().sourceCheckCronExpr) {
     sourceCheckTask = cron.schedule(getConfig().sourceCheckCronExpr, async () => {
       if (state.checkRunning) return; // skipped ticks don't count toward the screenshot cadence
+      // Fresh doms9 tokens first, so this tick checks and captures the
+      // URLs visitors will actually be handed.
+      await refreshDoms9Sources().catch((err) => console.error('[doms9]', err.message));
       await runSourceCheck().catch((err) => console.error('[sourceChecks]', err.message));
       state.sourceCheckRuns += 1;
       // Every 3rd check (~9 min by default) re-captures every source; the

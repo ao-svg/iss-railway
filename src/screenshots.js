@@ -99,6 +99,19 @@ function getAllScreenshots() {
   return _index;
 }
 
+// Same as sourceChecks.carryOver: a swapped-in fresh-token URL keeps the
+// old URL's latest capture (same stream, same image files) until a pass
+// captures it under its own URL. The old entry is pruned by the next full
+// pass like any URL that left the dataset.
+function carryOver(fromUrl, toUrl) {
+  if (!_index[fromUrl] || _index[toUrl]) return;
+  _index[toUrl] = { ..._index[fromUrl], carriedFrom: fromUrl };
+}
+
+function persist() {
+  saveIndex(_index);
+}
+
 /**
  * Minimal player page: <video> + hls.js (Chromium has no native HLS).
  * Reports into window.__state so the capture loop can tell "frame
@@ -515,6 +528,8 @@ module.exports = {
   saveRelayThumb,
   captureOne,
   newHardenedPage,
+  carryOver,
+  persist,
   getScreenshot,
   getAllScreenshots,
   screenshotId,

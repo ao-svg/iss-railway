@@ -79,6 +79,24 @@ function getStatus(url) {
   return _cache[url] || null;
 }
 
+/**
+ * A source URL was swapped for a fresh-token version of the same stream
+ * (iptv.swapStaleUrls): start the new URL from the old one's last result
+ * so its rank doesn't drop to 'unverified' until the next check gets to
+ * it. Per-URL facts that belong to the old token (resolvedUrl, the hop
+ * URLs) are cleared — screenshots.js would otherwise capture the expired
+ * resolvedUrl. Never overwrites a result the new URL already has.
+ */
+function carryOver(fromUrl, toUrl) {
+  const prev = _cache[fromUrl];
+  if (!prev || _cache[toUrl]) return;
+  _cache[toUrl] = { ...prev, resolvedUrl: toUrl, nestedUrl: null, segmentUrl: null, carriedFrom: fromUrl };
+}
+
+function persist() {
+  saveCache(_cache);
+}
+
 function isBlockedByHeaders(headers) {
   const xfo = (headers['x-frame-options'] || '').toLowerCase();
   if (xfo.includes('deny') || xfo.includes('sameorigin')) return true;
@@ -677,6 +695,8 @@ function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus, { getScre
 
 module.exports = {
   getStatus,
+  carryOver,
+  persist,
   resolveNow,
   checkAll,
   checkUrl,

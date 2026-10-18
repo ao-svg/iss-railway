@@ -127,3 +127,70 @@ test('findChannelSourcesAcrossPlaylists: an exact match in one playlist suppress
   const iptvOrg = [ch('CBS KIRO-TV (1080p)', 'https://iptvorg/kiro.m3u8')];
   assert.deepEqual(findChannelSourcesAcrossPlaylists('CBS', [doms9, iptvOrg]), ['https://doms9/cbs.m3u8']);
 });
+
+test('streamIdentity: host + path, query (the rotating token) left out', () => {
+  const { streamIdentity } = require('../src/iptv');
+  assert.equal(
+    streamIdentity('https://khala.futlivehd.com/global/fox1ar/index.m3u8?token=abc-da-1792373409-1792319409'),
+    'khala.futlivehd.com/global/fox1ar/index.m3u8'
+  );
+  assert.equal(streamIdentity('not a url'), null);
+});
+
+test('swapStaleUrls: expired doms9 tokens are swapped for the fresh playlist entry of the same stream', () => {
+  const { swapStaleUrls } = require('../src/iptv');
+  const oldFox = 'https://khala.futlivehd.com/global/fox1ar/index.m3u8?token=old-1792300000';
+  const newFox = 'https://khala.futlivehd.com/global/fox1ar/index.m3u8?token=new-1792373409';
+  const oldCdn = 'https://cdnlivetv.tv/secure/api/v1/6a28/playlist.m3u8?token=OLD';
+  const newCdn = 'https://cdnlivetv.tv/secure/api/v1/6a28/playlist.m3u8?token=NEW';
+  const stable = 'https://cache0.wonvt.st/live/178232/master.m3u8';
+  const iptvOrg = 'https://iptv-org.example/espn.m3u8';
+  const gone = 'https://khala.futlivehd.com/global/ended-game/index.m3u8?token=old';
+  const rows = [
+    { eventId: 'e1', channels: [{ name: 'FOX Sports 1', sources: [oldFox, iptvOrg] }, { name: 'X', sources: [oldCdn, stable, gone] }] },
+    { eventId: 'e2', channels: [] },
+    { eventId: 'e3' },
+  ];
+  const fresh = [
+    { name: '[Bundesliga] A vs B | FOX Sports 1 AR (STRMXHD)', url: newFox },
+    { name: 'X (CDNLIVETV)', url: newCdn },
+    { name: 'W', url: stable },
+  ];
+  const { rows: out, swaps } = swapStaleUrls(rows, fresh);
+  assert.deepEqual(out[0].channels[0].sources, [newFox, iptvOrg]);
+  assert.deepEqual(out[0].channels[1].sources, [newCdn, stable, gone], 'a stream no longer listed is left as is');
+  assert.deepEqual(swaps, [
+    [oldFox, newFox],
+    [oldCdn, newCdn],
+  ]);
+  assert.deepEqual(out[1].channels, []);
+  assert.equal(out[2].channels, undefined);
+  assert.equal(rows[0].channels[0].sources[0], oldFox, 'input rows are not mutated');
+});
+
+test('swapStaleUrls: several fresh entries share a channel path — the old title wins, else the first', () => {
+  const { swapStaleUrls } = require('../src/iptv');
+  const old = 'https://khala.futlivehd.com/global/fox1ar/index.m3u8?token=old';
+  const fresh = [
+    { name: '[MLS] C vs D | FOX Sports 1 AR (STRMXHD)', url: 'https://khala.futlivehd.com/global/fox1ar/index.m3u8?token=n1' },
+    { name: '[Bundesliga] A vs B | FOX Sports 1 AR (STRMXHD)', url: 'https://khala.futlivehd.com/global/fox1ar/index.m3u8?token=n2' },
+  ];
+  const rows = [{ channels: [{ name: 'FOX', sources: [old] }] }];
+  const previous = [{ name: '[Bundesliga] A vs B | FOX Sports 1 AR (STRMXHD)', url: old }];
+  assert.deepEqual(swapStaleUrls(rows, fresh, { previous }).rows[0].channels[0].sources, [fresh[1].url]);
+  assert.deepEqual(swapStaleUrls(rows, fresh).rows[0].channels[0].sources, [fresh[0].url]);
+});
+
+test('swapStaleUrls: manual-channel URLs are kept, and two old tokens of one stream collapse to one source', () => {
+  const { swapStaleUrls } = require('../src/iptv');
+  const manual = 'https://cdnlivetv.tv/secure/api/v1/6a28/playlist.m3u8?token=MANUAL';
+  const a = 'https://cdnlivetv.tv/secure/api/v1/77/playlist.m3u8?token=A';
+  const b = 'https://cdnlivetv.tv/secure/api/v1/77/playlist.m3u8?token=B';
+  const fresh = [
+    { name: 'M', url: 'https://cdnlivetv.tv/secure/api/v1/6a28/playlist.m3u8?token=NEW' },
+    { name: 'S', url: 'https://cdnlivetv.tv/secure/api/v1/77/playlist.m3u8?token=C' },
+  ];
+  const { rows, swaps } = swapStaleUrls([{ channels: [{ name: 'x', sources: [manual, a, b] }] }], fresh, { keep: new Set([manual]) });
+  assert.deepEqual(rows[0].channels[0].sources, [manual, fresh[1].url]);
+  assert.equal(swaps.length, 2);
+});

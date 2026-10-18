@@ -301,7 +301,74 @@ async function matchChannels(channelNames, playlistUrls, limit = 10, ctx = {}) {
   }));
 }
 
+// host + path, no query — the part of a doms9 URL that names the stream.
+// The query is where the rotating access token lives (futlivehd's
+// ?token=<sig>-<expiry>-<start>, cdnlivetv's ?token=...), so it's left out.
+function streamIdentity(url) {
+  try {
+    const u = new URL(url);
+    return `${u.host.toLowerCase()}${u.pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Swap stale tokenized URLs in already-matched rows for their counterparts
+ * in a freshly fetched playlist. doms9 republishes every ~90 min with new
+ * tokens, while rows are only rebuilt by a pipeline run (every 6 h), so
+ * between runs the exported links expire (measured 2026-10-18: futlivehd
+ * tokens in the export expired hours before the next run).
+ *
+ * A source is swapped when it isn't in `fresh` verbatim but an entry with
+ * the same host+path is (streamIdentity). Measured across doms9 commits
+ * that identity is stable for futlivehd/cdnlivetv while titles are not
+ * (games end, several game titles share one channel path), so title only
+ * breaks ties: with `previous` (the playlist the rows were matched from),
+ * a candidate with the old entry's title wins, else the first one.
+ * URLs in `keep` (manual channels) are never touched. Pure — returns new
+ * rows plus the [oldUrl, newUrl] pairs, never mutates `rows`.
+ */
+function swapStaleUrls(rows, fresh, { previous = null, keep = new Set() } = {}) {
+  const freshUrls = new Set(fresh.map((e) => e.url));
+  const byIdentity = new Map();
+  for (const e of fresh) {
+    const id = streamIdentity(e.url);
+    if (!id) continue;
+    if (!byIdentity.has(id)) byIdentity.set(id, []);
+    byIdentity.get(id).push(e);
+  }
+  const oldTitle = new Map((previous || []).map((e) => [e.url, e.name]));
+  const swapped = new Map();
+
+  function replacement(url) {
+    if (swapped.has(url)) return swapped.get(url);
+    let next = url;
+    if (!freshUrls.has(url) && !keep.has(url)) {
+      const candidates = byIdentity.get(streamIdentity(url)) || [];
+      const title = oldTitle.get(url);
+      const pick = candidates.find((e) => title && e.name === title) || candidates[0];
+      if (pick) next = pick.url;
+    }
+    swapped.set(url, next);
+    return next;
+  }
+
+  const out = rows.map((r) =>
+    r.channels
+      ? {
+          ...r,
+          channels: r.channels.map((ch) => (ch.sources ? { ...ch, sources: [...new Set(ch.sources.map(replacement))] } : ch)),
+        }
+      : r
+  );
+  const swaps = [...swapped].filter(([from, to]) => from !== to);
+  return { rows: out, swaps };
+}
+
 module.exports = {
+  streamIdentity,
+  swapStaleUrls,
   parseM3U,
   getPlaylist,
   getCachedPlaylist,
