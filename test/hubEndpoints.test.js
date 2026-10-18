@@ -242,6 +242,35 @@ test('hub endpoints', async (t) => {
     assert.deepEqual(cfg.rotation, []);
   });
 
+  await t.test('zips dropped into hub-incoming/ are published; the page offers them for download', async () => {
+    const fs = require('fs');
+    const path = require('path');
+    fs.mkdirSync(hub.INCOMING_DIR, { recursive: true });
+    const good = path.join(hub.INCOMING_DIR, 'test-player.zip');
+    const bad = path.join(hub.INCOMING_DIR, 'test-bad.zip');
+    const zip = buildZip([{ name: `${hub.PLAYER_SLUG}/zhibo82-streaming-table.php`, data: Buffer.from('<?php\n/*\n * Version: 4.9.5\n */') }]);
+    fs.writeFileSync(good, zip);
+    fs.writeFileSync(bad, buildZip([{ name: 'other/x.php', data: Buffer.from('x') }]));
+    const old = new Date(Date.now() - 60000);
+    fs.utimesSync(good, old, old);
+    fs.utimesSync(bad, old, old);
+
+    const published = hub.importIncoming();
+    assert.deepEqual(published.map((r) => `${r.slug} ${r.version}`), [`${hub.PLAYER_SLUG} 4.9.5`]);
+    assert.equal(fs.existsSync(good), false);
+    assert.equal(fs.existsSync(`${bad}.rejected`), true);
+    assert.match(fs.readFileSync(`${bad}.rejected.txt`, 'utf8'), /one plugin folder/);
+    fs.rmSync(`${bad}.rejected`, { force: true });
+    fs.rmSync(`${bad}.rejected.txt`, { force: true });
+
+    assert.equal((await fetch(`${base}/sites/download?plugin=${hub.PLAYER_SLUG}`)).status, 401);
+    const res = await fetch(`${base}/sites/download?plugin=${hub.PLAYER_SLUG}`, { headers: { Authorization: basic } });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-disposition'), /zhibo82-streaming-table-v3-4\.9\.5\.zip/);
+    assert.deepEqual(Buffer.from(await res.arrayBuffer()), zip);
+    assert.match(await (await fetch(`${base}/sites`, { headers: { Authorization: basic } })).text(), /Download zip/);
+  });
+
   await t.test('a zip that is not the plugin is refused', async () => {
     const res = await fetch(`${base}/api/hub/release`, {
       method: 'PUT',

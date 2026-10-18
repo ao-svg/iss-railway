@@ -461,6 +461,34 @@ function releasePath(slug = PLUGIN_SLUG) {
   return file && fs.existsSync(file) ? file : null;
 }
 
+// Zips dropped into hub-incoming/ on the volume (e.g. over `railway ssh`) are published like an
+// upload on the WordPress sites page, then removed. A zip that isn't a known plugin is renamed
+// to .rejected with the reason next to it, so it's never retried.
+const INCOMING_DIR = dataPath('hub-incoming');
+function importIncoming() {
+  let names;
+  try { names = fs.readdirSync(INCOMING_DIR).filter((n) => /\.zip$/i.test(n)); } catch { return []; }
+  const done = [];
+  for (const name of names) {
+    const file = path.join(INCOMING_DIR, name);
+    try {
+      // Still being written? Wait for the next pass.
+      if (Date.now() - fs.statSync(file).mtimeMs < 5000) continue;
+      const release = publishRelease(fs.readFileSync(file), `uploaded to the hub's storage (${name})`);
+      fs.rmSync(file, { force: true });
+      console.log(`[hub] published ${release.slug} v${release.version} from ${name}`);
+      done.push(release);
+    } catch (err) {
+      fs.renameSync(file, `${file}.rejected`);
+      fs.writeFileSync(`${file}.rejected.txt`, String(err.message));
+      console.error(`[hub] ${name} rejected: ${err.message}`);
+    }
+  }
+  return done;
+}
+importIncoming();
+setInterval(importIncoming, 60_000).unref();
+
 function getState() {
   return store;
 }
@@ -476,6 +504,8 @@ module.exports = {
   setDestinations,
   addDestination,
   removeDestination,
+  importIncoming,
+  INCOMING_DIR,
   MAX_ZIP_BYTES,
   cleanHost,
   cleanUrl,

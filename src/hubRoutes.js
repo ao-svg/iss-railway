@@ -298,7 +298,7 @@ function renderSites({ layout, escapeHtml }, base, flash) {
       <table>${Object.entries(hub.PLUGINS).map(([slug, p]) => {
         const r = st.releases[slug];
         return `<tr><th>${escapeHtml(p.label)}</th><td>${
-          r ? `<strong>v${escapeHtml(r.version)}</strong> · ${ago(r.uploadedAt)} · ${Math.round(r.size / 1024)} KB${r.notes ? ` — ${escapeHtml(r.notes)}` : ''}` : '<span class="muted">nothing published — sites keep the version they have</span>'
+          r ? `<strong>v${escapeHtml(r.version)}</strong> · ${ago(r.uploadedAt)} · ${Math.round(r.size / 1024)} KB · <a href="/sites/download?plugin=${encodeURIComponent(slug)}">Download zip</a>${r.notes ? ` — ${escapeHtml(r.notes)}` : ''}` : '<span class="muted">nothing published — sites keep the version they have</span>'
         }</td></tr>`;
       }).join('')}</table>
       <label for="hub-zip">Plugin zip — either plugin; the hub sees which one from its folder (<code>${Object.keys(hub.PLUGINS).join('/</code> or <code>')}/</code>) and only sites running that plugin get it</label>
@@ -409,6 +409,17 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
 
   // ── Admin ──
   const siteBack = (res, host, flash) => res.redirect(`/sites/${encodeURIComponent(host)}?flash=${encodeURIComponent(flash)}`);
+
+  // Before /sites/:host, which would otherwise take "download" for a domain
+  app.get('/sites/download', requireAuth('admin'), (req, res) => {
+    const plugin = hub.knownPlugin(String(req.query.plugin || ''));
+    const file = hub.releasePath(plugin);
+    if (!file) return res.status(404).send(layout('Not found', '<p>Nothing published for that plugin yet. <a href="/sites">Back</a></p>', '/sites'));
+    const r = hub.getState().releases[plugin];
+    res.set('Cache-Control', 'no-store');
+    res.type('application/zip').attachment(`${plugin}-${r.version}.zip`);
+    fs.createReadStream(file).pipe(res);
+  });
 
   app.get('/sites/:host', requireAuth('admin'), (req, res) => {
     const host = hub.cleanHost(req.params.host);
