@@ -94,3 +94,15 @@ test('cleanSetupArgs keeps known fields and plausible sport names only', () => {
     sports: ['Football', 'Ice Hockey', 'UFC/MMA'],
   });
 });
+
+test('pluginFromZip tells the two plugins apart by folder', () => {
+  const { pluginFromZip, PLAYER_SLUG } = require('../src/hub');
+  assert.deepEqual(pluginFromZip(pluginZip('2.3.0')), { slug: PLUGIN_SLUG, version: '2.3.0' });
+  const player = buildZip([{ name: `${PLAYER_SLUG}/zhibo82-streaming-table.php`, data: Buffer.from('<?php\n/**\n * Version: 4.2.0\n */') }]);
+  assert.deepEqual(pluginFromZip(player), { slug: PLAYER_SLUG, version: '4.2.0' });
+  const mixed = buildZip([
+    { name: `${PLAYER_SLUG}/zhibo82-streaming-table.php`, data: Buffer.from('x') },
+    { name: `${PLUGIN_SLUG}/${PLUGIN_SLUG}.php`, data: Buffer.from('x') },
+  ]);
+  assert.throws(() => pluginFromZip(mixed), /one plugin folder/);
+});

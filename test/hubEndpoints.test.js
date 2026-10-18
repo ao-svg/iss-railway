@@ -8,6 +8,7 @@ const { buildZip } = require('../src/zip');
 const ADMIN_USER = 'test-admin-hubEndpoints';
 const ADMIN_PASS = 'admin-pass-hub-123';
 const SITE = 'hub-endpoints-test.example';
+const PLAYER = 'hub-endpoints-player.example';
 
 const basic = 'Basic ' + Buffer.from(`${ADMIN_USER}:${ADMIN_PASS}`).toString('base64');
 
@@ -32,7 +33,7 @@ function fakeDeps() {
 test('hub endpoints', async (t) => {
   auth.upsert({ username: ADMIN_USER, password: ADMIN_PASS, role: 'admin' });
   const st = hub.getState();
-  const saved = { settings: { ...st.settings }, overrides: { ...st.overrides }, release: st.release };
+  const saved = { settings: { ...st.settings }, overrides: { ...st.overrides }, releases: { ...st.releases } };
 
   const server = await new Promise((resolve) => {
     const s = createServer(fakeDeps()).listen(0, () => resolve(s));
@@ -53,7 +54,8 @@ test('hub endpoints', async (t) => {
     // Leave the store as this test found it
     st.settings = saved.settings;
     st.overrides = saved.overrides;
-    st.release = saved.release;
+    st.releases = saved.releases;
+    hub.forgetSite(PLAYER);
     hub.forgetSite(SITE);
     delete st.commands[SITE];
     auth.remove(ADMIN_USER);
@@ -180,6 +182,29 @@ test('hub endpoints', async (t) => {
     assert.deepEqual(Buffer.from(await pkg.arrayBuffer()), zip);
 
     assert.equal((await fetch(`${base}/api/hub/package?key=wrong`)).status, 401);
+  });
+
+  await t.test('player sites: own role and release, no destination or commands', async () => {
+    const res = await fetch(`${base}/api/hub/config?site=${PLAYER}&plugin=${hub.PLAYER_SLUG}&v=4.0.0&home=https://${PLAYER}/`, { headers: { 'X-Zhibo-Key': key } });
+    const body = await res.json();
+    assert.equal(body.role, 'player');
+    assert.equal(body.player_site, undefined);
+    assert.equal(body.commands, undefined);
+    assert.equal(body.feeds.fixtures, `${base}/fixtures.json`);
+    assert.equal(hub.getState().sites[PLAYER].role, 'player');
+    assert.deepEqual(hub.playerSites().map((p) => p.host), [PLAYER]);
+
+    // A player-plugin zip is a release for player sites only
+    const zip = buildZip([{ name: `${hub.PLAYER_SLUG}/zhibo82-streaming-table.php`, data: Buffer.from('<?php\n/*\n * Version: 4.9.0\n */') }]);
+    const up = await fetch(`${base}/api/hub/release`, { method: 'PUT', headers: { Authorization: basic, Origin: base, 'Content-Type': 'application/zip' }, body: zip });
+    assert.equal((await up.json()).slug, hub.PLAYER_SLUG);
+    const playerLatest = (await (await fetch(`${base}/api/hub/config?site=${PLAYER}&plugin=${hub.PLAYER_SLUG}`, { headers: { 'X-Zhibo-Key': key } })).json()).latest;
+    assert.equal(playerLatest.version, '4.9.0');
+    assert.deepEqual(Buffer.from(await (await fetch(playerLatest.package)).arrayBuffer()), zip);
+    assert.equal((await (await config()).json()).latest.version, '9.9.9');   // the schedule plugin's release is untouched
+
+    const cmd = await adminPost('/api/hub/command', { host: PLAYER, type: 'setup' });
+    assert.match(decodeURIComponent(cmd.headers.get('location')), /error:.*player site/);
   });
 
   await t.test('a zip that is not the plugin is refused', async () => {

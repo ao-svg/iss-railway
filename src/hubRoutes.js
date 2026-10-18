@@ -66,7 +66,8 @@ function renderSite({ layout, escapeHtml }, host, flash) {
   const x = st.sites[host];
   const d = x.details || {};
   const cmds = hub.commandsFor(host).slice().reverse();
-  const canCommand = hub.compareVersions(x.version, COMMANDS_SINCE) >= 0;
+  const isPlayer = x.role === 'player';
+  const canCommand = !isPlayer && hub.compareVersions(x.version, COMMANDS_SINCE) >= 0;
   const pagesHave = new Set(Object.keys(d.pages || {}));
   const statusTag = (s) => ({ done: 'rank-working', failed: 'rank-low', cancelled: 'rank-unverified', sent: 'rank-medium', queued: 'rank-medium' })[s] || 'rank-unverified';
   const flashHtml =
@@ -114,7 +115,7 @@ function renderSite({ layout, escapeHtml }, host, flash) {
       </form>
     </div>
 
-    ${canCommand ? '' : `<p class="status-warn">This site runs plugin v${escapeHtml(x.version || '?')}; remote set-up and removal need v${COMMANDS_SINCE} or later. Publish it under Plugin updates and wait for the site to update.</p>`}
+    ${isPlayer ? '<p class="muted">A player site (zhibo82 plugin): it checks in and takes its updates from here; set-up and removal are for schedule sites.</p>' : canCommand ? '' : `<p class="status-warn">This site runs plugin v${escapeHtml(x.version || '?')}; remote set-up and removal need v${COMMANDS_SINCE} or later. Publish it under Plugin updates and wait for the site to update.</p>`}
 
     <div class="card">
       <strong>Set up</strong>
@@ -165,7 +166,7 @@ function describeSetup(a) {
 function renderSites({ layout, escapeHtml }, base, flash) {
   const st = hub.getState();
   const s = st.settings;
-  const latest = st.release && st.release.version;
+  const latestOf = (x) => { const r = st.releases[hub.knownPlugin(x.plugin)]; return r && r.version; };
   const dayAgo = Date.now() - 86400000;
   const sites = Object.entries(st.sites)
     .map(([host, x]) => ({
@@ -176,13 +177,40 @@ function renderSites({ layout, escapeHtml }, base, flash) {
       rotating: hub.rotationFor(host, s, st.overrides).length,
     }))
     .sort((a, b) => a.host.localeCompare(b.host));
-  const outdated = sites.filter((x) => latest && hub.compareVersions(x.version, latest) < 0).length;
-  const silent = sites.filter((x) => new Date(x.lastSeen).getTime() < dayAgo).length;
+  const isOld = (x) => latestOf(x) && hub.compareVersions(x.version, latestOf(x)) < 0;
+
+  const players = sites.filter((x) => x.role === 'player');
+  const schedules = sites.filter((x) => x.role !== 'player');
+  const summary = (list) => {
+    const old = list.filter(isOld).length;
+    const silent = list.filter((x) => new Date(x.lastSeen).getTime() < dayAgo).length;
+    return `<p><strong>${list.length}</strong> sites · <strong>${old}</strong> need the update · <strong class="${silent ? 'status-err' : ''}">${silent}</strong> silent for a day+</p>`;
+  };
+  // How many schedule sites send their visitors to each player site
+  const usedBy = (p) => schedules.filter((x) => !x.removed && (x.target === p.home || hub.cleanHost(x.target) === p.host || (x.rotating && hub.rotationFor(x.host, s, st.overrides).some((u) => hub.cleanHost(u) === p.host)))).length;
+
   const bare = (u) => escapeHtml(String(u).replace(/^https?:\/\//, ''));
 
-  const siteRows = sites
+  const forgetForm = (x) => `<form class="inline-form" method="POST" action="/api/hub/forget" onsubmit="return confirm('Remove ${escapeHtml(x.host)} from the list? It comes back on its next check-in if it still runs the plugin.');">
+        <input type="hidden" name="host" value="${escapeHtml(x.host)}">
+        <button type="submit" class="secondary">Forget</button>
+      </form>`;
+  const playerRows = players
     .map((x) => {
-      const old = latest && hub.compareVersions(x.version, latest) < 0;
+      const stale = new Date(x.lastSeen).getTime() < dayAgo;
+      return `<tr>
+    <td><a href="${escapeHtml(x.home || `https://${x.host}`)}" target="_blank" rel="noopener"><strong>${escapeHtml(x.host)}</strong></a></td>
+    <td><span class="rank ${isOld(x) ? 'rank-medium' : 'rank-working'}">v${escapeHtml(x.version || '?')}</span></td>
+    <td class="${stale ? 'status-err' : 'muted'}" title="${escapeHtml(x.lastSeen)}">${ago(x.lastSeen)}</td>
+    <td class="muted">${usedBy(x)} schedule site${usedBy(x) === 1 ? '' : 's'}</td>
+    <td>${forgetForm(x)}</td>
+  </tr>`;
+    })
+    .join('');
+
+  const siteRows = schedules
+    .map((x) => {
+      const old = isOld(x);
       const stale = new Date(x.lastSeen).getTime() < dayAgo;
       return `<tr>
     <td><a href="/sites/${encodeURIComponent(x.host)}"><strong>${escapeHtml(x.host)}</strong></a>${x.removed ? ' <span class="rank rank-low">removed</span>' : ''}${pendingCount(x.host) ? ` <span class="rank rank-medium">${pendingCount(x.host)} pending</span>` : ''}</td>
@@ -191,12 +219,7 @@ function renderSites({ layout, escapeHtml }, base, flash) {
     <td class="${stale ? 'status-err' : 'muted'}" title="${escapeHtml(x.lastSeen)}">${ago(x.lastSeen)}</td>
     <td class="muted">${x.theme === 'zhibo-child' ? '✓' : escapeHtml(x.theme || '—')}</td>
     <td class="muted">${Number(x.pages) || 0}</td>
-    <td>
-      <form class="inline-form" method="POST" action="/api/hub/forget" onsubmit="return confirm('Remove ${escapeHtml(x.host)} from the list? It comes back on its next check-in if it still runs the plugin.');">
-        <input type="hidden" name="host" value="${escapeHtml(x.host)}">
-        <button type="submit" class="secondary">Forget</button>
-      </form>
-    </td>
+    <td>${forgetForm(x)}</td>
   </tr>`;
     })
     .join('');
@@ -218,7 +241,6 @@ function renderSites({ layout, escapeHtml }, base, flash) {
     )
     .join('');
 
-  const r = st.release;
   const flashHtml =
     flash && flash.startsWith('error:')
       ? `<p class="status-err">${escapeHtml(flash.slice(6))}</p>`
@@ -235,9 +257,10 @@ function renderSites({ layout, escapeHtml }, base, flash) {
 
     <div class="card">
       <strong>Destination</strong>
-      <p class="muted">Where every site's matches open (each match: <code>&lt;destination&gt;/#match-…</code>). Sites switch within ${s.cacheMinutes || 5} minutes — sites with full-page caching once their cache expires.</p>
+      <p class="muted">The player site every schedule site's matches open on (each match: <code>&lt;destination&gt;/#match-…</code>) — pick one of the player sites below. Sites switch within ${s.cacheMinutes || 5} minutes — sites with full-page caching once their cache expires.</p>
       <form method="POST" action="/api/hub/destination" onsubmit="return confirm('Send visitors from every site without an override to ' + this.defaultTarget.value + '?');">
-        <input type="text" name="defaultTarget" value="${escapeHtml(s.defaultTarget)}" required>
+        <input type="text" name="defaultTarget" value="${escapeHtml(s.defaultTarget)}" required list="hub-players">
+        <datalist id="hub-players">${players.filter((p) => !p.removed).map((p) => `<option value="${escapeHtml(hub.cleanUrl(p.home) || `https://${p.host}`)}">`).join('')}</datalist>
         <button type="submit">Save destination</button>
       </form>
       <form method="POST" action="/api/hub/rotation" style="margin-top:1.25rem">
@@ -257,27 +280,35 @@ function renderSites({ layout, escapeHtml }, base, flash) {
       <form method="POST" action="/api/hub/override">
         <label for="ov-host">Domain</label>
         <input type="text" id="ov-host" name="host" placeholder="example.com" required list="hub-hosts">
-        <datalist id="hub-hosts">${sites.map((x) => `<option value="${escapeHtml(x.host)}">`).join('')}</datalist>
+        <datalist id="hub-hosts">${schedules.map((x) => `<option value="${escapeHtml(x.host)}">`).join('')}</datalist>
         <label for="ov-target">Destination</label>
-        <input type="text" id="ov-target" name="target" placeholder="https://…" required>
+        <input type="text" id="ov-target" name="target" placeholder="https://…" required list="hub-players">
         <button type="submit">Save</button>
       </form>
     </div>
 
-    <h2 class="section-heading">Sites</h2>
+    <h2 class="section-heading">Player sites</h2>
     <div class="card">
-      <p><strong>${sites.length}</strong> sites · <strong>${outdated}</strong> need the update · <strong class="${silent ? 'status-err' : ''}">${silent}</strong> silent for a day+</p>
-      ${sites.length ? `<table><tr><th>Domain</th><th>Opens on</th><th>Plugin</th><th>Last check-in</th><th>Theme</th><th>Sport pages</th><th></th></tr>${siteRows}</table>` : '<p class="muted">No site has checked in yet.</p>'}
+      <p class="muted">Where visitors watch (zhibo82 plugin). Schedule sites send their visitors here.</p>
+      ${players.length ? summary(players) : ''}
+      ${players.length ? `<table><tr><th>Domain</th><th>Plugin</th><th>Last check-in</th><th>Receives from</th><th></th></tr>${playerRows}</table>` : '<p class="muted">No player site has checked in yet — connect one under Settings → Zhibo82 → Hub.</p>'}
+    </div>
+
+    <h2 class="section-heading">Schedule sites</h2>
+    <div class="card">
+      ${summary(schedules)}
+      ${schedules.length ? `<table><tr><th>Domain</th><th>Opens on</th><th>Plugin</th><th>Last check-in</th><th>Theme</th><th>Sport pages</th><th></th></tr>${siteRows}</table>` : '<p class="muted">No schedule site has checked in yet.</p>'}
     </div>
 
     <div class="card">
       <strong>Plugin updates</strong>
-      <p class="muted">${
-        r
-          ? `Published: <strong>v${escapeHtml(r.version)}</strong> · ${ago(r.uploadedAt)} · ${Math.round(r.size / 1024)} KB${r.notes ? ` — ${escapeHtml(r.notes)}` : ''}`
-          : 'Nothing published yet — sites keep the version they have.'
-      }</p>
-      <label for="hub-zip">Plugin zip (must contain the <code>${hub.PLUGIN_SLUG}/</code> folder)</label>
+      <table>${Object.entries(hub.PLUGINS).map(([slug, p]) => {
+        const r = st.releases[slug];
+        return `<tr><th>${escapeHtml(p.label)}</th><td>${
+          r ? `<strong>v${escapeHtml(r.version)}</strong> · ${ago(r.uploadedAt)} · ${Math.round(r.size / 1024)} KB${r.notes ? ` — ${escapeHtml(r.notes)}` : ''}` : '<span class="muted">nothing published — sites keep the version they have</span>'
+        }</td></tr>`;
+      }).join('')}</table>
+      <label for="hub-zip">Plugin zip — either plugin; the hub sees which one from its folder (<code>${Object.keys(hub.PLUGINS).join('/</code> or <code>')}/</code>) and only sites running that plugin get it</label>
       <input type="file" id="hub-zip" accept=".zip,application/zip">
       <label for="hub-notes">What changed (optional)</label>
       <input type="text" id="hub-notes">
@@ -309,7 +340,7 @@ function renderSites({ layout, escapeHtml }, base, flash) {
 
     <div class="card">
       <strong>Connecting a site</strong>
-      <p class="muted">Install the plugin, then in WordPress: 直播设置 → 1 · 连接 → Network, with:</p>
+      <p class="muted">Schedule site: install the zhibo882 plugin, then 直播设置 → 1 · 连接 → Network. Player site: in the zhibo82 plugin, Settings → Zhibo82 → Hub. Both with:</p>
       <table>
         <tr><th>Hub URL</th><td><code>${escapeHtml(base)}</code></td></tr>
         <tr><th>Network key</th><td><code>${escapeHtml(hub.networkKey())}</code></td></tr>
@@ -330,7 +361,7 @@ function renderSites({ layout, escapeHtml }, base, flash) {
       fetch('/api/hub/release?notes=' + encodeURIComponent(document.getElementById('hub-notes').value), {
         method: 'PUT', body: f, headers: { 'Content-Type': 'application/zip' }, credentials: 'same-origin'
       }).then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || r.status); return j; }); })
-        .then(function (j) { location.href = '/sites?flash=' + encodeURIComponent('v' + j.version + ' published to all sites'); })
+        .then(function (j) { location.href = '/sites?flash=' + encodeURIComponent((j.label || 'Plugin') + ' v' + j.version + ' published'); })
         .catch(function (e) { st.textContent = 'Failed: ' + e.message; btn.disabled = false; });
     });
     </script>
@@ -357,16 +388,22 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
     const host = hub.cleanHost(req.query.site);
     if (!host) return res.status(400).json({ error: 'site missing' });
     const q = (k) => String(req.query[k] || '').slice(0, 200);
-    hub.recordCheckin(host, { home: q('home'), version: q('v'), wp: q('wp'), php: q('php'), theme: q('theme'), pages: Number(q('pages')) || 0 });
-    res.json(hub.configFor(host, baseUrl(req, getConfig)));
+    // Which plugin is asking (sites before player-site support don't say: the schedule plugin)
+    const plugin = hub.knownPlugin(q('plugin'));
+    hub.recordCheckin(host, {
+      home: q('home'), version: q('v'), wp: q('wp'), php: q('php'), theme: q('theme'), pages: Number(q('pages')) || 0,
+      plugin, role: hub.PLUGINS[plugin].role,
+    });
+    res.json(hub.configFor(host, baseUrl(req, getConfig), plugin));
   });
 
   app.get('/api/hub/package', (req, res) => {
     if (!hub.keyMatches(req.query.key)) return res.status(401).type('text/plain').send('bad key');
-    const file = hub.releasePath();
+    const plugin = hub.knownPlugin(String(req.query.plugin || ''));
+    const file = hub.releasePath(plugin);
     if (!file) return res.status(404).type('text/plain').send('no release');
     res.set('Cache-Control', 'no-store');
-    res.type('application/zip').attachment(`${hub.PLUGIN_SLUG}.zip`);
+    res.type('application/zip').attachment(`${plugin}.zip`);
     fs.createReadStream(file).pipe(res);
   });
 
@@ -464,7 +501,7 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
     (req, res) => {
       try {
         const release = hub.publishRelease(Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0), req.query.notes);
-        res.json({ ok: true, version: release.version });
+        res.json({ ok: true, slug: release.slug, version: release.version, label: hub.PLUGINS[release.slug].label });
       } catch (err) {
         res.status(400).json({ error: err.message });
       }

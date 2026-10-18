@@ -1,11 +1,14 @@
-// Hub for the WordPress sites running the Zhibo Streaming Table plugin.
+// Hub for the WordPress sites of the network. Two kinds:
+//   player sites   (zhibo82.com …) — where visitors watch; plugin zhibo82-streaming-table-v3
+//   schedule sites (zhibo882.com …) — list the matches and send visitors to a player site;
+//                                    plugin zhibo882-streaming-table
 //
-// Every site asks GET /api/hub/config every few minutes for its settings — which destination
-// site its matches open on, which feeds to read (this app's own fixtures.json / live.json by
-// default), the latest published plugin version — and checks in while doing so. Changing the
-// destination here moves every site at once; per-domain overrides send some elsewhere.
+// Every site asks GET /api/hub/config every few minutes for its settings — which feeds to read
+// (the same for every site, so schedule sites list exactly the player sites' matches), the latest
+// published version of its plugin, and for schedule sites which player site their matches open
+// on — and checks in while doing so.
 //
-// State: hub.json in the data dir (network key, settings, overrides, site check-ins, release);
+// State: hub.json in the data dir (network key, settings, overrides, site check-ins, releases);
 // published plugin zips in hub-releases/.
 
 const fs = require('fs');
@@ -16,7 +19,13 @@ const { dataPath } = require('./dataDir');
 
 const STORE_PATH = dataPath('hub.json');
 const RELEASES_DIR = dataPath('hub-releases');
-const PLUGIN_SLUG = 'zhibo882-streaming-table';
+const PLUGIN_SLUG = 'zhibo882-streaming-table';   // schedule plugin (also the default for old clients)
+const PLAYER_SLUG = 'zhibo82-streaming-table-v3';
+// Plugin folder → its main file and the kind of site it makes
+const PLUGINS = {
+  [PLUGIN_SLUG]: { main: 'zhibo882-streaming-table.php', role: 'schedule', label: 'Schedule plugin (zhibo882)' },
+  [PLAYER_SLUG]: { main: 'zhibo82-streaming-table.php', role: 'player', label: 'Player plugin (zhibo82)' },
+};
 const MAX_ZIP_BYTES = 25 * 1024 * 1024;
 
 const DEFAULT_SETTINGS = {
@@ -108,26 +117,42 @@ function readZip(buf) {
   };
 }
 
-// The plugin version inside an uploaded zip, or throws with a message for the admin
-function pluginVersionFromZip(buf) {
+// Which known plugin an uploaded zip holds, and its version — or throws with a message for the admin
+function pluginFromZip(buf) {
   const zip = readZip(buf);
-  const outside = zip.names.filter((n) => !n.startsWith(`${PLUGIN_SLUG}/`));
-  if (outside.length) {
-    throw new Error(`Everything in the zip must be inside a "${PLUGIN_SLUG}/" folder (found: ${outside.slice(0, 3).join(', ')})`);
+  const top = [...new Set(zip.names.map((n) => n.split('/')[0]))];
+  const slug = top.length === 1 && PLUGINS[top[0]] ? top[0] : null;
+  if (!slug) {
+    const known = Object.keys(PLUGINS).map((s) => `"${s}/"`).join(' or ');
+    throw new Error(`Everything in the zip must be inside one plugin folder, ${known} (found: ${top.slice(0, 3).join(', ') || 'nothing'})`);
   }
-  const main = zip.read(`${PLUGIN_SLUG}/${PLUGIN_SLUG}.php`);
+  const mainFile = PLUGINS[slug].main;
+  const main = zip.read(`${slug}/${mainFile}`);
   const match = main && /^[ \t*#@]*Version:\s*([0-9A-Za-z.-]+)/im.exec(main.toString('utf8'));
-  if (!match) throw new Error(`No ${PLUGIN_SLUG}.php with a Version header in the zip`);
-  return match[1];
+  if (!match) throw new Error(`No ${mainFile} with a Version header in the zip`);
+  return { slug, version: match[1] };
+}
+
+// Kept for callers that only need the version
+function pluginVersionFromZip(buf) {
+  return pluginFromZip(buf).version;
+}
+
+function knownPlugin(slug) {
+  return PLUGINS[slug] ? slug : PLUGIN_SLUG;
 }
 
 // ── Store ────────────────────────────────────────────────────
 function loadStore() {
   try {
     const data = JSON.parse(fs.readFileSync(STORE_PATH, 'utf8'));
-    return { overrides: {}, sites: {}, release: null, commands: {}, ...data, settings: { ...DEFAULT_SETTINGS, ...(data.settings || {}) } };
+    const s = { overrides: {}, sites: {}, releases: {}, commands: {}, ...data, settings: { ...DEFAULT_SETTINGS, ...(data.settings || {}) } };
+    // One release per plugin now; the single "release" of earlier versions was the schedule plugin's
+    if (s.release && !s.releases[PLUGIN_SLUG]) s.releases[PLUGIN_SLUG] = s.release;
+    delete s.release;
+    return s;
   } catch {
-    return { networkKey: null, settings: { ...DEFAULT_SETTINGS }, overrides: {}, sites: {}, release: null, commands: {} };
+    return { networkKey: null, settings: { ...DEFAULT_SETTINGS }, overrides: {}, sites: {}, releases: {}, commands: {} };
   }
 }
 
@@ -190,6 +215,7 @@ function cleanSetupArgs(args) {
 function queueCommand(host, type, args = {}) {
   const h = cleanHost(host);
   if (!store.sites[h]) throw new Error(`Unknown site ${h}`);
+  if (store.sites[h].role === 'player') throw new Error(`${h} is a player site — set-up and removal are for schedule sites`);
   if (!COMMAND_TYPES.includes(type)) throw new Error(`Unknown command ${type}`);
   const list = store.commands[h] || [];
   const cmd = {
@@ -258,29 +284,42 @@ function recordReport(host, { results, status }) {
   return true;
 }
 
-// What a site gets from /api/hub/config. baseUrl = this app's public address.
-function configFor(host, baseUrl) {
+// What a site gets from /api/hub/config. baseUrl = this app's public address; slug = its plugin.
+function configFor(host, baseUrl, slug = PLUGIN_SLUG) {
+  slug = knownPlugin(slug);
   const s = store.settings;
-  const r = store.release;
-  return {
-    player_site: targetFor(host, s, store.overrides),
-    rotation: rotationFor(host, s, store.overrides),
+  const r = store.releases[slug];
+  const common = {
+    role: PLUGINS[slug].role,
     feeds: {
       fixtures: s.feedFixtures || `${baseUrl}/fixtures.json`,
       live: s.feedLive || `${baseUrl}/live.json`,
     },
-    page_size: s.pageSize,
     cache: s.cacheMinutes,
     auto_update: s.autoUpdate,
-    commands: pendingFor(host),
     latest: r
       ? {
           version: r.version,
           notes: r.notes || '',
-          package: `${baseUrl}/api/hub/package?key=${encodeURIComponent(networkKey())}&v=${encodeURIComponent(r.version)}`,
+          package: `${baseUrl}/api/hub/package?key=${encodeURIComponent(networkKey())}&plugin=${encodeURIComponent(slug)}&v=${encodeURIComponent(r.version)}`,
         }
       : null,
   };
+  if (PLUGINS[slug].role === 'player') return common;
+  return {
+    ...common,
+    player_site: targetFor(host, s, store.overrides),
+    rotation: rotationFor(host, s, store.overrides),
+    page_size: s.pageSize,
+    commands: pendingFor(host),
+  };
+}
+
+// Player sites that have checked in (not removed) — the destinations to pick from
+function playerSites() {
+  return Object.entries(store.sites)
+    .filter(([, x]) => x.role === 'player' && !x.removed)
+    .map(([host, x]) => ({ host, home: cleanUrl(x.home) || `https://${host}`, lastSeen: x.lastSeen, version: x.version }));
 }
 
 function updateSettings(fields) {
@@ -338,14 +377,16 @@ function rotateKey() {
   save();
 }
 
+// A new version of whichever plugin the zip holds; the sites running that plugin get it
 function publishRelease(buf, notes) {
   if (buf.length > MAX_ZIP_BYTES) throw new Error('Zip is larger than 25 MB');
-  const version = pluginVersionFromZip(buf);
+  const { slug, version } = pluginFromZip(buf);
   fs.mkdirSync(RELEASES_DIR, { recursive: true });
-  const file = `${PLUGIN_SLUG}-${version}-${crypto.randomBytes(4).toString('hex')}.zip`;
+  const file = `${slug}-${version}-${crypto.randomBytes(4).toString('hex')}.zip`;
   fs.writeFileSync(path.join(RELEASES_DIR, file), buf);
-  const old = store.release;
-  store.release = {
+  const old = store.releases[slug];
+  store.releases[slug] = {
+    slug,
     version,
     file,
     size: buf.length,
@@ -355,11 +396,11 @@ function publishRelease(buf, notes) {
   };
   save();
   if (old && old.file && old.file !== file) fs.rm(path.join(RELEASES_DIR, old.file), { force: true }, () => {});
-  return store.release;
+  return store.releases[slug];
 }
 
-function releasePath() {
-  const r = store.release;
+function releasePath(slug = PLUGIN_SLUG) {
+  const r = store.releases[knownPlugin(slug)];
   const file = r && path.join(RELEASES_DIR, r.file);
   return file && fs.existsSync(file) ? file : null;
 }
@@ -370,6 +411,11 @@ function getState() {
 
 module.exports = {
   PLUGIN_SLUG,
+  PLAYER_SLUG,
+  PLUGINS,
+  knownPlugin,
+  pluginFromZip,
+  playerSites,
   MAX_ZIP_BYTES,
   cleanHost,
   cleanUrl,
