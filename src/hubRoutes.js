@@ -212,7 +212,15 @@ function renderSites({ layout, escapeHtml }, base, flash) {
     <td><a href="${escapeHtml(d.url)}" target="_blank" rel="noopener"><strong>${escapeHtml(d.host)}</strong></a></td>
     <td>${status}</td>
     <td class="muted">${sending} schedule site${sending === 1 ? '' : 's'}</td>
-    <td>${d.manual && !d.main ? `<button type="submit" class="secondary" form="hub-dest-remove" name="url" value="${escapeHtml(d.url)}" formnovalidate onclick="return confirm('Remove ${escapeHtml(d.host)} from the destinations?')">Remove</button>` : ''}</td>
+    <td>${
+      d.main
+        ? ''
+        : d.player
+          ? `<button type="submit" class="secondary" form="hub-dest-forget" name="host" value="${escapeHtml(d.host)}" formnovalidate onclick="return confirm('Remove ${escapeHtml(d.host)} from the list? It comes back on its next check-in if it still runs the plugin and is connected.')">Forget</button>`
+          : d.manual
+            ? `<button type="submit" class="secondary" form="hub-dest-remove" name="url" value="${escapeHtml(d.url)}" formnovalidate onclick="return confirm('Remove ${escapeHtml(d.host)} from the destinations?')">Remove</button>`
+            : ''
+    }</td>
   </tr>`;
     })
     .join('');
@@ -272,6 +280,7 @@ function renderSites({ layout, escapeHtml }, base, flash) {
         <button type="submit">Save</button>
       </form>
       <form id="hub-dest-remove" method="POST" action="/api/hub/destinations/remove"></form>
+      <form id="hub-dest-forget" method="POST" action="/api/hub/forget"></form>
       <form class="inline-form" method="POST" action="/api/hub/destinations/add" style="margin-top:1rem">
         <input type="text" name="url" placeholder="https://another-destination.com" required>
         <button type="submit" class="secondary">Add destination</button>
