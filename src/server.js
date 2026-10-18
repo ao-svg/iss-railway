@@ -1069,12 +1069,12 @@ function createServer({
     // Through the relay when possible: wrap the FRESHLY resolved address
     // (tokens expire, the stored one may be stale) in this app's own
     // proxy, signed, so the browser never sees the relay or its secret.
-    // Relayed links need a viewer login (Basic auth: the browser prompts,
-    // then repeats this same /go request). Anything else — relay off or
+    // No login: these are the links public sites (WordPress via
+    // fixtures.json) hand their visitors. Anything else — relay off or
     // failing health, an excluded (doms9) source, a resolved address that
     // isn't a relay-supported type — keeps the plain redirect.
     if (await shouldRelay(target, result.url)) {
-      return requireAuth('viewer')(req, res, () => res.redirect(302, relay.localStreamPath(result.url)));
+      return res.redirect(302, relay.localStreamPath(result.url));
     }
     res.redirect(302, result.url);
   });

@@ -329,11 +329,18 @@ test('AC1: HTML pages carry no secret and no relay address', async (t) => {
   assert.ok((await get(`/player?url=${enc(KNOWN)}`).then((r) => r.text())).includes(`/go?u=${enc(KNOWN)}`));
 });
 
-test('proxy routes require login', async (t) => {
+test('unsigned proxy requests need login; signed ones and the player are public', async (t) => {
   const { base } = await setup(t);
-  for (const p of [`/api/relay/stream?url=${enc(KNOWN)}`, `/api/relay/thumb?url=${enc(KNOWN)}`, `/player?url=${enc(KNOWN)}`]) {
-    assert.equal((await fetch(base + p)).status, 401, p);
+  for (const p of [`/api/relay/stream?url=${enc(KNOWN)}`, `/api/relay/thumb?url=${enc(KNOWN)}`]) {
+    assert.equal((await fetch(base + p)).status, 401, `unsigned ${p}`);
   }
+  assert.equal((await fetch(base + `/api/relay/stream?url=${enc(KNOWN)}&sig=forged`)).status, 401, 'forged signature is not a pass');
+  assert.equal((await fetch(base + relay.localStreamPath(KNOWN))).status, 200, 'signed stream link, no login');
+
+  const player = await fetch(base + `/player?url=${enc(KNOWN)}`);
+  assert.equal(player.status, 200, 'player is public');
+  assert.match(await player.text(), /Sign in<\/a> for the full fixture list \(optional/);
+  assert.equal((await fetch(base + `/player?url=${enc(UNKNOWN)}`)).status, 404, 'player only for matched sources');
 });
 
 // --- admin on/off switch ------------------------------------------------------
@@ -446,13 +453,21 @@ test('/go: relayable stream -> 302 to the signed relay proxy for the FRESHLY res
   assert.ok(!/secret/i.test(await play.text()));
 });
 
-test('/go: relayed link without login -> 401 Basic challenge (browser prompts, then retries /go)', async (t) => {
+test('/go: relayed link plays end to end with NO login (public sites)', async (t) => {
   const origin = await startOrigin(t);
   const src = `${origin}/live.m3u8`;
   const { base } = await setup(t, { extraSources: [src] });
-  const res = await fetch(base + goPath(src), { redirect: 'manual' });
-  assert.equal(res.status, 401);
-  assert.match(res.headers.get('www-authenticate') || '', /^Basic/);
+  const go = await fetch(base + goPath(src), { redirect: 'manual' });
+  assert.equal(go.status, 302);
+  const loc = go.headers.get('location');
+  assert.ok(loc.startsWith('/api/relay/stream?url='), loc);
+
+  const playlist = await fetch(base + loc); // no Authorization header anywhere
+  assert.equal(playlist.status, 200);
+  const segment = (await playlist.text()).split('\n').find((l) => l.startsWith('/api/relay/stream'));
+  const seg = await fetch(base + segment);
+  assert.equal(seg.status, 200, 'segments inside the playlist are signed too');
+  assert.equal(Buffer.from(await seg.arrayBuffer()).length, SEGMENT.length);
 });
 
 test('/go: doms9 (excluded) sources keep the direct redirect, no login', async (t) => {

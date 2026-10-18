@@ -51,12 +51,22 @@ function readBody(stream, limit) {
 function mountRelayRoutes(app, { requireAuth, isRelayable, isEnabled }) {
   const isAllowed = (target, sig) => relay.verifySignature(target, sig) || isRelayable(target);
 
+  // Public by design (reach first): a link this process signed — what /go
+  // hands out, and every URI inside a rewritten playlist — needs no login.
+  // Unsigned requests (raw known-source URLs) still need a viewer login, so
+  // the proxy can't be pointed at arbitrary URLs by anyone.
+  const signedOrViewer = (req, res, next) => {
+    const target = relay.validateTarget(req.query.url);
+    if (target && relay.verifySignature(target, req.query.sig)) return next();
+    return requireAuth('viewer')(req, res, next);
+  };
+
   app.get(HLS_JS_URL, (req, res) => {
     res.set('Cache-Control', 'public, max-age=86400');
     res.type('application/javascript').sendFile(HLS_JS_PATH);
   });
 
-  app.get('/api/relay/stream', requireAuth('viewer'), async (req, res) => {
+  app.get('/api/relay/stream', signedOrViewer, async (req, res) => {
     if (!isEnabled()) return res.status(503).type('text/plain').send('Relay is turned off');
     const target = relay.validateTarget(req.query.url);
     if (!target) return res.status(400).type('text/plain').send('Invalid url');
@@ -121,7 +131,7 @@ function mountRelayRoutes(app, { requireAuth, isRelayable, isEnabled }) {
     upstream.data.pipe(res);
   });
 
-  app.get('/api/relay/thumb', requireAuth('viewer'), async (req, res) => {
+  app.get('/api/relay/thumb', signedOrViewer, async (req, res) => {
     const placeholder = (code) =>
       res.status(code).set('Cache-Control', 'no-store').type('image/svg+xml').send(PLACEHOLDER_SVG);
 
@@ -148,7 +158,8 @@ function mountRelayRoutes(app, { requireAuth, isRelayable, isEnabled }) {
     }
   });
 
-  app.get('/player', requireAuth('viewer'), (req, res) => {
+  // Public: anyone can watch a matched source; signing in is only suggested.
+  app.get('/player', (req, res) => {
     const target = relay.validateTarget(req.query.url);
     if (!target || !isRelayable(target)) return res.status(404).type('text/plain').send('Unknown source');
     // Through /go: it re-resolves the source at play time (fresh token)
@@ -162,6 +173,7 @@ function mountRelayRoutes(app, { requireAuth, isRelayable, isEnabled }) {
 <video id="v" controls autoplay muted playsinline></video>
 <p id="status">Loading…</p>
 <p class="muted">${escapeHtml(target)}</p>
+<p>Want every match in one place? <a href="/browse" style="color:#93c5fd">Sign in</a> for the full fixture list (optional — playback works without it).</p>
 <script src="${HLS_JS_URL}"></script>
 <script>
   var src = ${JSON.stringify(src).replace(/</g, '\\u003c')};
