@@ -10,7 +10,7 @@ const iptv = require('./iptv');
 const manualChannels = require('./manualChannels');
 const { buildZip } = require('./zip');
 const relay = require('./relay');
-const { mountRelayRoutes, relayPreviewHtml } = require('./relayRoutes');
+const { mountRelayRoutes, relayPreviewHtml, allowAnyOrigin } = require('./relayRoutes');
 const { mountHubRoutes } = require('./hubRoutes');
 
 function escapeHtml(value) {
@@ -1057,8 +1057,9 @@ function createServer({
   // redirect chain fresh at the moment it's clicked, closing that gap
   // entirely instead of just shrinking it. `u` must be a source URL this
   // app actually knows about (current fixtures/live rows) — otherwise this
-  // would be an open redirect to anywhere.
-  app.get('/go', async (req, res) => {
+  // would be an open redirect to anywhere. CORS-open (allowAnyOrigin) so
+  // hls.js on other sites can follow it.
+  app.get('/go', allowAnyOrigin, async (req, res) => {
     const target = req.query.u;
     if (typeof target !== 'string' || !knownSourceUrls(getState()).has(target)) {
       return res.status(404).send('Unknown source URL');

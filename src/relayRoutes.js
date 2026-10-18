@@ -18,6 +18,22 @@ const HLS_JS_PATH = require.resolve('hls.js/dist/hls.min.js');
 const HLS_JS_URL = '/static/hls.min.js';
 const FORWARD_HEADERS = ['content-type', 'content-length', 'content-range', 'accept-ranges'];
 
+// Public playback links (/go, /api/relay/stream) are fetched by hls.js on
+// other sites — the WordPress plugin's player page. Any origin, never
+// credentials, and on EVERY response (redirects and errors too) so the
+// player can read the status instead of an opaque CORS failure.
+const allowAnyOrigin = (req, res, next) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  next();
+};
+const streamCors = (req, res, next) => {
+  res.set({
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges',
+  });
+  next();
+};
+
 const PLACEHOLDER_SVG = Buffer.from(
   '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180">' +
     '<rect width="320" height="180" fill="#1e293b"/>' +
@@ -66,7 +82,17 @@ function mountRelayRoutes(app, { requireAuth, isRelayable, isEnabled }) {
     res.type('application/javascript').sendFile(HLS_JS_PATH);
   });
 
-  app.get('/api/relay/stream', signedOrViewer, async (req, res) => {
+  app.options('/api/relay/stream', streamCors, (req, res) => {
+    res.set({
+      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+      'Access-Control-Allow-Headers': 'Range',
+      'Access-Control-Max-Age': '86400',
+    });
+    res.sendStatus(204);
+  });
+
+  // streamCors before signedOrViewer: a 401 must carry the header too.
+  app.get('/api/relay/stream', streamCors, signedOrViewer, async (req, res) => {
     if (!isEnabled()) return res.status(503).type('text/plain').send('Relay is turned off');
     const target = relay.validateTarget(req.query.url);
     if (!target) return res.status(400).type('text/plain').send('Invalid url');
@@ -199,4 +225,4 @@ function relayPreviewHtml(url) {
   return ` <a class="relay-play" href="/player?url=${enc}" target="_blank" rel="noopener" title="Play via relay"><img class="relay-thumb" loading="lazy" width="96" height="54" alt="" src="/api/relay/thumb?url=${enc}" onerror="this.onerror=null;this.style.visibility='hidden'">▶</a>`;
 }
 
-module.exports = { mountRelayRoutes, relayPreviewHtml, PLACEHOLDER_SVG };
+module.exports = { mountRelayRoutes, relayPreviewHtml, allowAnyOrigin, PLACEHOLDER_SVG };

@@ -470,6 +470,60 @@ test('/go: relayed link plays end to end with NO login (public sites)', async (t
   assert.equal(Buffer.from(await seg.arrayBuffer()).length, SEGMENT.length);
 });
 
+test('CORS: /go and /api/relay/stream are readable by hls.js on other sites, errors included', async (t) => {
+  const origin = await startOrigin(t);
+  const src = `${origin}/live.m3u8`;
+  const direct = `${origin}/page.html`;
+  const { base } = await setup(t, { extraSources: [src, direct] });
+  const ORIGIN = { Origin: 'https://zhibo82.com' };
+  const cors = (res, what) => {
+    assert.equal(res.headers.get('access-control-allow-origin'), '*', what);
+    assert.equal(res.headers.get('access-control-allow-credentials'), null, `${what}: no credentials`);
+  };
+  const exposes = (res, what) =>
+    assert.equal(res.headers.get('access-control-expose-headers'), 'Content-Length, Content-Range, Accept-Ranges', what);
+
+  const go = await fetch(base + goPath(src), { redirect: 'manual', headers: ORIGIN });
+  assert.equal(go.status, 302);
+  cors(go, '/go relay redirect');
+  const goDirect = await fetch(base + goPath(direct), { redirect: 'manual', headers: ORIGIN });
+  assert.equal(goDirect.status, 302);
+  cors(goDirect, '/go direct redirect');
+  const goUnknown = await fetch(base + goPath(UNKNOWN), { redirect: 'manual', headers: ORIGIN });
+  assert.equal(goUnknown.status, 404);
+  cors(goUnknown, '/go 404');
+
+  const playlist = await fetch(base + go.headers.get('location'), { headers: ORIGIN });
+  assert.equal(playlist.status, 200);
+  cors(playlist, 'playlist');
+  exposes(playlist, 'playlist');
+  const segment = (await playlist.text()).split('\n').find((l) => l.startsWith('/api/relay/stream'));
+  const seg = await fetch(base + segment, { headers: { ...ORIGIN, Range: 'bytes=0-99' } });
+  assert.equal(seg.status, 206);
+  cors(seg, 'segment');
+  exposes(seg, 'segment');
+  await seg.arrayBuffer();
+
+  const unsigned = await fetch(base + `/api/relay/stream?url=${enc(KNOWN)}`, { headers: ORIGIN });
+  assert.equal(unsigned.status, 401, 'signature/viewer check unchanged');
+  cors(unsigned, 'stream 401');
+  const forged = await fetch(base + `/api/relay/stream?url=${enc(UNKNOWN)}&sig=forged`, { headers: { ...ORIGIN, Authorization: BASIC } });
+  assert.equal(forged.status, 403);
+  cors(forged, 'stream 403');
+
+  const pre = await fetch(base + segment, {
+    method: 'OPTIONS',
+    headers: { ...ORIGIN, 'Access-Control-Request-Method': 'GET', 'Access-Control-Request-Headers': 'range' },
+  });
+  assert.equal(pre.status, 204);
+  cors(pre, 'preflight');
+  assert.equal(pre.headers.get('access-control-allow-methods'), 'GET, HEAD, OPTIONS');
+  assert.equal(pre.headers.get('access-control-allow-headers'), 'Range');
+
+  const admin = await fetch(base + '/', { headers: { ...ORIGIN, Authorization: BASIC } });
+  assert.equal(admin.headers.get('access-control-allow-origin'), null, 'admin routes stay closed');
+});
+
 test('/go: doms9 (excluded) sources keep the direct redirect, no login', async (t) => {
   const origin = await startOrigin(t);
   const src = `${origin}/doms9/live.m3u8`;
