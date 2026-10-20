@@ -67,13 +67,20 @@ test('times outside tolerance stay separate', () => {
   assert.equal(merged.length, 2);
 });
 
-test('swapped home/away does NOT merge — treated as a different game', () => {
+test('swapped home/away at the same kickoff is the same game (sources disagree on home side)', () => {
+  const rows = [
+    row({ eventId: 'a', homeTeam: 'Pittsburgh Steelers', awayTeam: 'New Orleans Saints', sportType: 'American Football' }),
+    row({ eventId: 'b', homeTeam: 'New Orleans Saints', awayTeam: 'Pittsburgh Steelers', sportType: 'American Football', source: 'livesportsontv' }),
+  ];
+  assert.equal(mergeRows(rows).length, 1);
+});
+
+test('the return fixture (swapped, weeks later) stays a separate game', () => {
   const rows = [
     row({ eventId: 'a', homeTeam: 'Chelsea', awayTeam: 'Brentford' }),
-    row({ eventId: 'b', homeTeam: 'Brentford', awayTeam: 'Chelsea', source: 'sportsdb' }),
+    row({ eventId: 'b', homeTeam: 'Brentford', awayTeam: 'Chelsea', matchDateUTC: '2027-02-18T19:00:00Z' }),
   ];
-  const merged = mergeRows(rows);
-  assert.equal(merged.length, 2);
+  assert.equal(mergeRows(rows).length, 2);
 });
 
 test('3-way merge: all three sources reporting the same game merges into one row', () => {
@@ -202,6 +209,7 @@ test('the same game merges across spelling variants when kickoff and one team ma
     [['Bayern Munich', 'Arsenal'], ['Bayern München', 'Arsenal FC']],
     [['Real Madrid', 'Red Bull Leipzig'], ['Real Madrid', 'RB Leipzig']],
     [['Fenerbahçe', 'Slavia Prague'], ['Fenerbahce', 'Slavia Praha']],
+    [['Paris Saint Germain', 'Barcelona'], ['PSG', 'FC Barcelona']],
   ];
   for (const [[h1, a1], [h2, a2]] of pairs) {
     const merged = mergeRows([

@@ -74,6 +74,8 @@ function sameTeam(a, b) {
   const tb = teamTokens(b);
   if (!ta.length || !tb.length || !sameSide(ta, tb)) return false;
   const [short, long] = ta.length <= tb.length ? [ta, tb] : [tb, ta];
+  // An abbreviation of the full name: "PSG" = "Paris Saint-Germain"
+  if (short.length === 1 && long.length >= 2 && /^[a-z]{2,4}$/.test(short[0]) && short[0] === long.map((w) => w[0]).join('')) return true;
   const used = new Set();
   return short.every((w) => {
     const i = long.findIndex((l, idx) => !used.has(idx) && (l === w || (w.length >= 3 && l.startsWith(w))));
@@ -103,7 +105,11 @@ const sportKey = (s) => (/^soccer$/i.test(s || '') ? 'football' : (s || '').toLo
 
 /**
  * Same game: same sport (when both say), and both teams the same team — or
- * one the same team and the other likely the same. Events without an away
+ * one the same team and the other likely the same. Sources sometimes
+ * disagree on which side is home (an NFL game abroad, a neutral venue), so
+ * both teams matching the other way round counts too: callers only compare
+ * rows within minutes of each other, and the same two teams can't play two
+ * games at once (a return fixture is weeks apart). Events without an away
  * side (racing, golf: "Live Racing") match on the home name alone.
  */
 function sameGame(a, b) {
@@ -113,7 +119,8 @@ function sameGame(a, b) {
   if (!teamTokens(a.awayTeam).length && !teamTokens(b.awayTeam).length) return sameTeam(a.homeTeam, b.homeTeam);
   const home = sameTeam(a.homeTeam, b.homeTeam);
   const away = sameTeam(a.awayTeam, b.awayTeam);
-  return (home && away) || (home && likelySameTeam(a.awayTeam, b.awayTeam)) || (away && likelySameTeam(a.homeTeam, b.homeTeam));
+  if ((home && away) || (home && likelySameTeam(a.awayTeam, b.awayTeam)) || (away && likelySameTeam(a.homeTeam, b.homeTeam))) return true;
+  return sameTeam(a.homeTeam, b.awayTeam) && sameTeam(a.awayTeam, b.homeTeam);
 }
 
 // Reuses csv.js's parseMatchDate rather than `new Date(matchDateUTC)`
