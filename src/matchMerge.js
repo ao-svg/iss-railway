@@ -12,6 +12,11 @@
 const { parseMatchDate } = require('./csv');
 
 const TIME_TOLERANCE_MS = 15 * 60 * 1000; // 15 minutes
+// Sources sometimes disagree by more (NFL: 20:05 vs 20:25). Up to this far
+// apart, rows merge only when both teams are exactly the same teams —
+// the same two teams never play twice within an hour (an MLB doubleheader's
+// second game starts hours after the first).
+const SAME_TEAMS_TOLERANCE_MS = 60 * 60 * 1000;
 // Richest metadata first: SportsDB is the only source with real team
 // logos, wheresthematch has broader league/team-name conventions already
 // relied on elsewhere (league grouping, translations), livesportsontv is
@@ -112,6 +117,18 @@ const sportKey = (s) => (/^soccer$/i.test(s || '') ? 'football' : (s || '').toLo
  * games at once (a return fixture is weeks apart). Events without an away
  * side (racing, golf: "Live Racing") match on the home name alone.
  */
+// Both teams exactly the same (either way round), same sport.
+function sameTeams(a, b) {
+  const sa = sportKey(a.sportType);
+  const sb = sportKey(b.sportType);
+  if (sa && sb && sa !== 'other' && sb !== 'other' && sa !== sb) return false;
+  if (!teamTokens(a.awayTeam).length || !teamTokens(b.awayTeam).length) return false;
+  return (
+    (sameTeam(a.homeTeam, b.homeTeam) && sameTeam(a.awayTeam, b.awayTeam)) ||
+    (sameTeam(a.homeTeam, b.awayTeam) && sameTeam(a.awayTeam, b.homeTeam))
+  );
+}
+
 function sameGame(a, b) {
   const sa = sportKey(a.sportType);
   const sb = sportKey(b.sportType);
@@ -172,7 +189,8 @@ function pickPrimaryRow(clusterRows) {
  * a season in opposite home/away order.
  *
  * Rows are taken in kickoff order and join a cluster whose FIRST (earliest)
- * row is the same game and at most TIME_TOLERANCE_MS earlier — a sliding
+ * row is the same game and at most TIME_TOLERANCE_MS earlier (up to
+ * SAME_TEAMS_TOLERANCE_MS when both teams match exactly) — a sliding
  * window anchored to that first row, not a fixed time-bucket grid (which
  * would split same-game rows straddling a bucket boundary, e.g. 19:58 vs
  * 20:02) and not a chained previous-item comparison (which would let a
@@ -190,8 +208,11 @@ function mergeRows(rows) {
   for (const item of withTime) {
     let target = null;
     if (item.time !== null) {
-      for (let i = clusters.length - 1; i >= 0 && item.time - clusters[i].start <= TIME_TOLERANCE_MS; i--) {
-        if (clusters[i].start !== null && sameGame(clusters[i].rows[0], item.row)) {
+      for (let i = clusters.length - 1; i >= 0 && item.time - clusters[i].start <= SAME_TEAMS_TOLERANCE_MS; i--) {
+        if (clusters[i].start === null) continue;
+        const anchor = clusters[i].rows[0];
+        const close = item.time - clusters[i].start <= TIME_TOLERANCE_MS;
+        if (close ? sameGame(anchor, item.row) : sameTeams(anchor, item.row)) {
           target = clusters[i];
           break;
         }

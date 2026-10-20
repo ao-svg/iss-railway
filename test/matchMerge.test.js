@@ -59,9 +59,11 @@ test('same team pair + times within tolerance merges into one row with unioned c
 });
 
 test('times outside tolerance stay separate', () => {
+  // A loose name match (Munich / München) only merges within 15 min; the
+  // same teams exactly would merge up to an hour apart (tested below).
   const rows = [
-    row({ eventId: 'a', matchDateUTC: '2026-09-18T19:00:00Z' }),
-    row({ eventId: 'b', matchDateUTC: '2026-09-18T19:30:00Z' }), // 30 min later, outside 15-min tolerance
+    row({ eventId: 'a', homeTeam: 'Bayern Munich', awayTeam: 'Arsenal', matchDateUTC: '2026-09-18T19:00:00Z' }),
+    row({ eventId: 'b', homeTeam: 'Bayern München', awayTeam: 'Arsenal', matchDateUTC: '2026-09-18T19:30:00Z' }), // 30 min later
   ];
   const merged = mergeRows(rows);
   assert.equal(merged.length, 2);
@@ -146,10 +148,11 @@ test('a row with an unparseable matchDateUTC becomes its own singleton cluster',
 
 test('cluster anchoring uses the first row, not a chained previous-item comparison (no unbounded drift)', () => {
   // 19:00, 19:12 (12 min after first, merges), 19:24 (24 min after first -> NOT merged into first cluster)
+  // Loose name matches, so the 15-min window applies.
   const rows = [
-    row({ eventId: 'a', matchDateUTC: '2026-09-18T19:00:00Z' }),
-    row({ eventId: 'b', matchDateUTC: '2026-09-18T19:12:00Z' }),
-    row({ eventId: 'c', matchDateUTC: '2026-09-18T19:24:00Z' }),
+    row({ eventId: 'a', homeTeam: 'Bayern Munich', awayTeam: 'Arsenal', matchDateUTC: '2026-09-18T19:00:00Z' }),
+    row({ eventId: 'b', homeTeam: 'Bayern München', awayTeam: 'Arsenal', matchDateUTC: '2026-09-18T19:12:00Z' }),
+    row({ eventId: 'c', homeTeam: 'Bayern Muenchen', awayTeam: 'Arsenal', matchDateUTC: '2026-09-18T19:24:00Z' }),
   ];
   const merged = mergeRows(rows);
   assert.equal(merged.length, 2); // {a,b} merged, {c} separate
@@ -238,4 +241,24 @@ test('events without an away side merge on the name alone', () => {
   ]);
   assert.equal(merged.length, 1);
   assert.equal(merged[0].channels.length, 2);
+});
+
+test('the same two teams 20 minutes apart (sources disagree on kickoff) merge; other games that far apart do not', () => {
+  const nfl = { sportType: 'American Football', homeTeam: 'Las Vegas Raiders', awayTeam: 'Los Angeles Rams' };
+  assert.equal(mergeRows([
+    row({ eventId: 'w', ...nfl, matchDateUTC: '2026-10-25T20:05:00Z' }),
+    row({ eventId: 'l', ...nfl, source: 'livesportsontv', matchDateUTC: '2026-10-25T20:25:00.000Z' }),
+  ]).length, 1);
+  assert.equal(mergeRows([
+    row({ eventId: 'a', homeTeam: 'Bayern Munich', awayTeam: 'Arsenal', matchDateUTC: '2026-10-21T19:00:00Z' }),
+    row({ eventId: 'b', homeTeam: 'Bayern München', awayTeam: 'Arsenal', matchDateUTC: '2026-10-21T19:40:00Z' }),
+  ]).length, 2, 'a looser name match needs the kickoff to agree');
+});
+
+test('an MLB doubleheader (same teams, hours apart) stays two games', () => {
+  const mlb = { sportType: 'Baseball', homeTeam: 'Tampa Bay Rays', awayTeam: 'Milwaukee Brewers' };
+  assert.equal(mergeRows([
+    row({ eventId: 'g1', ...mlb, matchDateUTC: '2026-10-21T17:05:00Z' }),
+    row({ eventId: 'g2', ...mlb, matchDateUTC: '2026-10-21T21:10:00Z' }),
+  ]).length, 2);
 });
