@@ -19,19 +19,101 @@ const TIME_TOLERANCE_MS = 15 * 60 * 1000; // 15 minutes
 // regardless of which one wins as the metadata source below.
 const SOURCE_PRIORITY = ['sportsdb', 'wheresthematch', 'livesportsontv'];
 
-const TEAM_SUFFIX_RE = /\s+(FC|AFC|CF|SC)$/i;
+// Club-form words every source adds or drops at will ("Arsenal FC",
+// "AFC Bournemouth" / "Bournemouth AFC").
+const FILLER_TOKENS = new Set(['fc', 'afc', 'cf', 'sc', 'the']);
+// Words that make it a different team (women's, youth, reserve sides):
+// these must agree exactly, so "Arsenal Women" never merges with "Arsenal".
+const SIDE_TOKEN_RE = /^(women|womens|w|ladies|femenino|feminine|ii|iii|b|reserves|youth|academy|u\d{2})$/;
+const TOKEN_ALIASES = { utd: 'united' };
+// Letters NFD doesn't take apart ("Bodø", "Gießen", "Łódź").
+const LETTER_FOLDS = { ø: 'o', æ: 'ae', œ: 'oe', ß: 'ss', ł: 'l', đ: 'd', ı: 'i' };
+// Words too common in club names to say two names are the same club.
+const COMMON_WORDS = new Set(['real', 'united', 'city', 'club', 'town', 'county', 'sporting', 'deportivo', 'union', 'saint', 'sint', 'st', 'de', 'del', 'la', 'le', 'los', 'las', 'and', 'new', 'san', 'santa']);
 
-function normalizeTeamName(name) {
-  return (name || '')
-    .trim()
+function teamTokens(name) {
+  const words = (name || '')
     .toLowerCase()
-    .replace(TEAM_SUFFIX_RE, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .replace(/[øæœßłđı]/g, (c) => LETTER_FOLDS[c])
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .split(/[^a-z0-9]+/)
+    .map((t) => TOKEN_ALIASES[t] || t.replace(/^(u\d{2})s$/, '$1'))
+    .filter((t) => t && !FILLER_TOKENS.has(t));
+  // Spelled-out initials are one word: "D.C. United" = "DC United"
+  const out = [];
+  let initials = '';
+  for (const w of words) {
+    if (/^[a-z]$/.test(w)) {
+      initials += w;
+      continue;
+    }
+    if (initials) out.push(initials);
+    initials = '';
+    out.push(w);
+  }
+  if (initials) out.push(initials);
+  return out;
 }
 
-function teamPairKey(row) {
-  return `${normalizeTeamName(row.homeTeam)}|${normalizeTeamName(row.awayTeam)}`;
+function sameSide(ta, tb) {
+  const side = (t) => t.filter((w) => SIDE_TOKEN_RE.test(w)).sort().join(' ');
+  return side(ta) === side(tb);
+}
+
+/**
+ * Same team under two sources' spellings: after dropping punctuation,
+ * accents and club-form words, every word of the shorter name starts a
+ * word of the longer one ("St. Louis Blues" = "St Louis Blues", "Brighton"
+ * = "Brighton & Hove Albion", "Man City" = "Manchester City"), and both
+ * name the same side (women's, U18, ...). "Manchester United" vs
+ * "Manchester City" fails: "united" starts no word of the other.
+ */
+function sameTeam(a, b) {
+  const ta = teamTokens(a);
+  const tb = teamTokens(b);
+  if (!ta.length || !tb.length || !sameSide(ta, tb)) return false;
+  const [short, long] = ta.length <= tb.length ? [ta, tb] : [tb, ta];
+  const used = new Set();
+  return short.every((w) => {
+    const i = long.findIndex((l, idx) => !used.has(idx) && (l === w || (w.length >= 3 && l.startsWith(w))));
+    if (i === -1) return false;
+    used.add(i);
+    return true;
+  });
+}
+
+/**
+ * Looser: the names share a distinctive word, or two words start with the
+ * same 4 letters — "Bayern München" / "Bayern Munich", "RB Leipzig" / "Red
+ * Bull Leipzig", "Wolves" / "Wolverhampton Wanderers". Only ever used for
+ * one team of a game whose other team and kickoff already match.
+ */
+function likelySameTeam(a, b) {
+  const ta = teamTokens(a);
+  const tb = teamTokens(b);
+  if (!ta.length || !tb.length || !sameSide(ta, tb)) return false;
+  const distinctive = (t) => t.filter((w) => w.length >= 4 && !COMMON_WORDS.has(w) && !SIDE_TOKEN_RE.test(w));
+  const da = distinctive(ta);
+  const db = distinctive(tb);
+  return da.some((x) => db.some((y) => x === y || x.slice(0, 4) === y.slice(0, 4)));
+}
+
+const sportKey = (s) => (/^soccer$/i.test(s || '') ? 'football' : (s || '').toLowerCase());
+
+/**
+ * Same game: same sport (when both say), and both teams the same team — or
+ * one the same team and the other likely the same. Events without an away
+ * side (racing, golf: "Live Racing") match on the home name alone.
+ */
+function sameGame(a, b) {
+  const sa = sportKey(a.sportType);
+  const sb = sportKey(b.sportType);
+  if (sa && sb && sa !== 'other' && sb !== 'other' && sa !== sb) return false;
+  if (!teamTokens(a.awayTeam).length && !teamTokens(b.awayTeam).length) return sameTeam(a.homeTeam, b.homeTeam);
+  const home = sameTeam(a.homeTeam, b.homeTeam);
+  const away = sameTeam(a.awayTeam, b.awayTeam);
+  return (home && away) || (home && likelySameTeam(a.awayTeam, b.awayTeam)) || (away && likelySameTeam(a.homeTeam, b.homeTeam));
 }
 
 // Reuses csv.js's parseMatchDate rather than `new Date(matchDateUTC)`
@@ -75,64 +157,44 @@ function pickPrimaryRow(clusterRows) {
 /**
  * Merge rows across sources that represent the same real game.
  *
- * Groups by normalized (homeTeam, awayTeam) pair — exact order required,
- * not also checked swapped, since two teams can legitimately meet twice
- * in a season in opposite home/away order and wrongly merging those would
- * be worse than occasionally under-merging a genuine duplicate with
- * unusually different team-name spelling (team names are matched exact-
- * after-normalization, not fuzzy/edit-distance).
+ * Rows match when both teams are the same team (sameTeam: tolerant of
+ * punctuation, accents, club-form words and short forms — sources spell
+ * names differently, and exact names left the same game as separate rows,
+ * e.g. "St. Louis Blues" / "St Louis Blues") in the same home/away order —
+ * not also checked swapped, since two teams can legitimately meet twice in
+ * a season in opposite home/away order.
  *
- * Within each team-pair group, sorts by kickoff time and clusters rows
- * using a sliding tolerance window anchored to each cluster's FIRST
- * (earliest) row — not a fixed time-bucket grid, which would incorrectly
- * split same-game rows straddling a bucket boundary (e.g. 19:58 vs 20:02
- * with clock-aligned 15-min buckets), and not a chained previous-item
- * comparison either, which would let a same-game cluster's time drift
- * unboundedly across several close-but-not-identical reports.
+ * Rows are taken in kickoff order and join a cluster whose FIRST (earliest)
+ * row is the same game and at most TIME_TOLERANCE_MS earlier — a sliding
+ * window anchored to that first row, not a fixed time-bucket grid (which
+ * would split same-game rows straddling a bucket boundary, e.g. 19:58 vs
+ * 20:02) and not a chained previous-item comparison (which would let a
+ * cluster's time drift unboundedly across close-but-not-identical reports).
  *
  * A row whose matchDateUTC doesn't parse is never merged with anything —
  * it becomes its own single-row cluster rather than guessing.
  */
 function mergeRows(rows) {
-  const groups = new Map();
-  for (const row of rows) {
-    const key = teamPairKey(row);
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(row);
-  }
+  const withTime = rows
+    .map((row) => ({ row, time: parseTime(row.matchDateUTC) }))
+    .sort((a, b) => (a.time ?? 0) - (b.time ?? 0));
 
-  const merged = [];
-  for (const groupRows of groups.values()) {
-    const withTime = groupRows
-      .map((row) => ({ row, time: parseTime(row.matchDateUTC) }))
-      .sort((a, b) => (a.time ?? 0) - (b.time ?? 0));
-
-    let cluster = [];
-    let clusterStart = null;
-
-    const flush = () => {
-      if (!cluster.length) return;
-      const clusterRows = cluster.map((c) => c.row);
-      const primary = pickPrimaryRow(clusterRows);
-      merged.push({ ...primary, channels: mergeChannels(clusterRows) });
-      cluster = [];
-    };
-
-    for (const item of withTime) {
-      const fitsCluster =
-        cluster.length > 0 && item.time !== null && clusterStart !== null && item.time - clusterStart <= TIME_TOLERANCE_MS;
-      if (fitsCluster) {
-        cluster.push(item);
-      } else {
-        flush();
-        cluster.push(item);
-        clusterStart = item.time;
+  const clusters = []; // { start, rows }, in start order
+  for (const item of withTime) {
+    let target = null;
+    if (item.time !== null) {
+      for (let i = clusters.length - 1; i >= 0 && item.time - clusters[i].start <= TIME_TOLERANCE_MS; i--) {
+        if (clusters[i].start !== null && sameGame(clusters[i].rows[0], item.row)) {
+          target = clusters[i];
+          break;
+        }
       }
     }
-    flush();
+    if (target) target.rows.push(item.row);
+    else clusters.push({ start: item.time, rows: [item.row] });
   }
 
-  return merged;
+  return clusters.map((c) => ({ ...pickPrimaryRow(c.rows), channels: mergeChannels(c.rows) }));
 }
 
-module.exports = { mergeRows, normalizeTeamName };
+module.exports = { mergeRows, sameTeam };

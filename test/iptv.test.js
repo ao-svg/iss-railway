@@ -194,3 +194,51 @@ test('swapStaleUrls: manual-channel URLs are kept, and two old tokens of one str
   assert.deepEqual(rows[0].channels[0].sources, [manual, fresh[1].url]);
   assert.equal(swaps.length, 2);
 });
+
+test('findChannelSources: a longer playlist name is only the same channel when the extra words are generic', () => {
+  const playlist = [
+    ch('DAZN Heldinnen x Pluto TV', 'https://a/dazn-heldinnen.m3u8'),
+    ch('SportsNet New York', 'https://a/sny.m3u8'),
+    ch('Paramount+ Picks', 'https://a/picks.m3u8'),
+    ch('Fubo Sports Network (1080p)', 'https://a/fubo.m3u8'),
+    ch('Altitude Sports', 'https://a/altitude.m3u8'),
+    ch('TSN 1', 'https://a/tsn1.m3u8'),
+  ];
+  assert.deepEqual(findChannelSources('DAZN', playlist), []);
+  assert.deepEqual(findChannelSources('Sportsnet', playlist), []);
+  assert.deepEqual(findChannelSources('Paramount+ (US)', playlist), []);
+  assert.deepEqual(findChannelSources('Fubo Sports', playlist), ['https://a/fubo.m3u8']);
+  assert.deepEqual(findChannelSources('Altitude', playlist), ['https://a/altitude.m3u8']);
+  assert.deepEqual(findChannelSources('TSN', playlist), ['https://a/tsn1.m3u8']);
+});
+
+test("findChannelSources: another country's feed of a channel is not that channel", () => {
+  const playlist = [
+    ch('ESPN (Brazil) (1080p)', 'https://a/espn-br.m3u8'),
+    ch('Fox (Poland) (1080p)', 'https://a/fox-pl.m3u8'),
+    ch('TUDN (Mexico) (1080p)', 'https://a/tudn-mx.m3u8'),
+    ch('TUDN (United States) (1080p)', 'https://a/tudn-us.m3u8'),
+  ];
+  assert.deepEqual(findChannelSources('ESPN', playlist), []);
+  assert.deepEqual(findChannelSources('FOX', playlist), []);
+  assert.deepEqual(findChannelSources('TUDN', playlist), ['https://a/tudn-us.m3u8']);
+});
+
+test('findChannelSources: TV-guide short forms and glued numbers match the playlist names', () => {
+  const playlist = [
+    ch('NBC Sports California', 'https://a/nbcsca.m3u8'),
+    ch('NBC Sports Bay Area', 'https://a/nbcsba.m3u8'),
+    ch('Fox Sports 1', 'https://a/fs1.m3u8'),
+    ch('TSN 5', 'https://a/tsn5.m3u8'),
+  ];
+  assert.deepEqual(findChannelSources('NBCS CA', playlist), ['https://a/nbcsca.m3u8']);
+  assert.deepEqual(findChannelSources('NBCS Bay Area', playlist), ['https://a/nbcsba.m3u8']);
+  assert.deepEqual(findChannelSources('FS1', playlist), ['https://a/fs1.m3u8']);
+  assert.deepEqual(findChannelSources('TSN5', playlist), ['https://a/tsn5.m3u8']);
+});
+
+test('findChannelSources: placeholder broadcaster names match nothing', () => {
+  const playlist = [ch('TBC', 'https://a/tbc.m3u8'), ch('Not Televised', 'https://a/nt.m3u8')];
+  assert.deepEqual(findChannelSources('TBC', playlist), []);
+  assert.deepEqual(findChannelSources('Not Televised', playlist), []);
+});

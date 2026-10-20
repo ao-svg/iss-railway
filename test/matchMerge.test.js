@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { mergeRows, normalizeTeamName } = require('../src/matchMerge');
+const { mergeRows, sameTeam } = require('../src/matchMerge');
 
 function row(overrides = {}) {
   return {
@@ -16,11 +16,24 @@ function row(overrides = {}) {
   };
 }
 
-test('normalizeTeamName: lowercases, trims, strips common suffixes', () => {
-  assert.equal(normalizeTeamName('  Chelsea FC  '), 'chelsea');
-  assert.equal(normalizeTeamName('Sporting CF'), 'sporting');
-  assert.equal(normalizeTeamName('Rangers'), 'rangers');
-  assert.equal(normalizeTeamName(''), '');
+test('sameTeam: tolerant of punctuation, accents, club-form words and short forms', () => {
+  assert.ok(sameTeam('  Chelsea FC  ', 'Chelsea'));
+  assert.ok(sameTeam('Sporting CF', 'Sporting'));
+  assert.ok(sameTeam('St. Louis Blues', 'St Louis Blues'));
+  assert.ok(sameTeam('AFC Bournemouth', 'Bournemouth AFC'));
+  assert.ok(sameTeam('Brighton & Hove Albion', 'Brighton'));
+  assert.ok(sameTeam('Man City', 'Manchester City'));
+  assert.ok(sameTeam('Man Utd', 'Manchester United'));
+  assert.ok(sameTeam('Atlético Madrid', 'Atletico Madrid'));
+  assert.ok(sameTeam('Tottenham Hotspur U18', 'Tottenham Hotspur U18s'));
+});
+
+test('sameTeam: different clubs and different sides of one club stay apart', () => {
+  assert.ok(!sameTeam('Manchester United', 'Manchester City'));
+  assert.ok(!sameTeam('Arsenal Women', 'Arsenal'));
+  assert.ok(!sameTeam('Tottenham Hotspur U18', 'Tottenham Hotspur'));
+  assert.ok(!sameTeam('Real Madrid', 'Real Sociedad'));
+  assert.ok(!sameTeam('', 'Rangers'));
 });
 
 test('same team pair + times within tolerance merges into one row with unioned channels', () => {
@@ -158,4 +171,63 @@ test('three-team-pair groups each merge independently', () => {
   ];
   const merged = mergeRows(rows);
   assert.equal(merged.length, 2);
+});
+
+test('the same game spelled differently by two sources merges into one row', () => {
+  const rows = [
+    row({ eventId: 'w', source: 'wheresthematch', homeTeam: 'St Louis Blues', awayTeam: 'Winnipeg Jets', sportType: 'Ice Hockey',
+      matchDateUTC: '2026-10-21T01:00:00+01:00', channels: [{ name: 'Sky Sports+', sources: [] }] }),
+    row({ eventId: 'l', source: 'livesportsontv', homeTeam: 'St. Louis Blues', awayTeam: 'Winnipeg Jets', sportType: 'Ice Hockey',
+      matchDateUTC: '2026-10-21T00:00:00.000Z', channels: [{ name: 'ESPN', sources: ['https://a/espn.m3u8'] }] }),
+  ];
+  const merged = mergeRows(rows);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].source, 'wheresthematch');
+  assert.deepEqual(merged[0].channels.map((c) => c.name), ['Sky Sports+', 'ESPN']);
+});
+
+test("a women's game at the same time as the men's game stays a separate row", () => {
+  const rows = [
+    row({ eventId: 'm', homeTeam: 'Arsenal', awayTeam: 'Chelsea' }),
+    row({ eventId: 'w', homeTeam: 'Arsenal Women', awayTeam: 'Chelsea Women' }),
+  ];
+  assert.equal(mergeRows(rows).length, 2);
+});
+
+test('the same game merges across spelling variants when kickoff and one team match', () => {
+  const pairs = [
+    [['Napoli', 'Bodo Glimt'], ['Napoli', 'Bodø / Glimt']],
+    [['FC Cincinnati', 'DC United'], ['FC Cincinnati', 'D.C. United']],
+    [['Wolves', 'Portsmouth'], ['Wolverhampton Wanderers', 'Portsmouth']],
+    [['Bayern Munich', 'Arsenal'], ['Bayern München', 'Arsenal FC']],
+    [['Real Madrid', 'Red Bull Leipzig'], ['Real Madrid', 'RB Leipzig']],
+    [['Fenerbahçe', 'Slavia Prague'], ['Fenerbahce', 'Slavia Praha']],
+  ];
+  for (const [[h1, a1], [h2, a2]] of pairs) {
+    const merged = mergeRows([
+      row({ eventId: 'w', source: 'wheresthematch', homeTeam: h1, awayTeam: a1 }),
+      row({ eventId: 'l', source: 'livesportsontv', homeTeam: h2, awayTeam: a2 }),
+    ]);
+    assert.equal(merged.length, 1, `${h1} v ${a1} / ${h2} v ${a2}`);
+  }
+});
+
+test('games at the same kickoff stay apart when only a common word is shared, or the sport differs', () => {
+  assert.equal(mergeRows([
+    row({ eventId: 'a', homeTeam: 'Real Madrid', awayTeam: 'RB Leipzig' }),
+    row({ eventId: 'b', homeTeam: 'Real Betis', awayTeam: 'Feyenoord' }),
+  ]).length, 2);
+  assert.equal(mergeRows([
+    row({ eventId: 'a', homeTeam: 'Atlanta', awayTeam: 'Boston', sportType: 'Basketball' }),
+    row({ eventId: 'b', homeTeam: 'Atlanta', awayTeam: 'Boston', sportType: 'Ice Hockey' }),
+  ]).length, 2);
+});
+
+test('events without an away side merge on the name alone', () => {
+  const merged = mergeRows([
+    row({ eventId: 'a', homeTeam: 'Live Racing', awayTeam: '', sportType: 'Horse Racing', channels: [{ name: 'ITV1', sources: [] }] }),
+    row({ eventId: 'b', homeTeam: 'Live Racing', awayTeam: '', sportType: 'Horse Racing', channels: [{ name: 'RacingTV', sources: [] }] }),
+  ]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].channels.length, 2);
 });

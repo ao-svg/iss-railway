@@ -98,6 +98,10 @@ const MIN_PARTIAL_TARGET_LENGTH = 3;
 // never corrupt a name that already matches (e.g. a real "STV Player" entry).
 const DELIVERY_SUFFIX_RE = /\s+(YouTube|Website|Online|App)$/i;
 
+// What the guides write when there's no broadcaster yet. "TBC" is also a
+// real (Tanzanian) channel's name in iptv-org, which it used to match.
+const PLACEHOLDER_CHANNEL_RE = /^(tbc|tba|tbd|to be confirmed|to be announced|not televised)$/i;
+
 // doms9 lists per-game streams as "[League] Home vs Away | Channel (TAG)".
 // Those are a specific OTHER game's feed unless the teams line up.
 const EVENT_ENTRY_RE = /^\[[^\]]*\]\s*(.+?)\s*\|\s*(.+)$/;
@@ -144,16 +148,63 @@ const SPORT_KEYWORDS = {
   news: [],
 };
 
+// Short forms the TV guides use (livesportsontv: "NBCS CA", "FS1",
+// "MSGSN") for the names the playlists carry. Applied to both sides, on
+// whole words, longest first.
+const CHANNEL_ALIASES = [
+  ['nbcs ca', 'nbc sports california'],
+  ['nbcs', 'nbc sports'],
+  ['nbcsn', 'nbc sports network'],
+  ['fs1', 'fox sports 1'],
+  ['fs2', 'fox sports 2'],
+  ['cbssn', 'cbs sports network'],
+  ['msgsn', 'msg sportsnet'],
+];
+
 /**
  * Lowercased word tokens with quality/geo tags ("(720p)", "[Geo-blocked]",
- * "(TVF90)") removed, so "MUTV (720p)" compares equal to "MUTV".
+ * "(TVF90)") removed, so "MUTV (720p)" compares equal to "MUTV". A number
+ * glued to a name ("TSN1", "ESPN2", "ITV4") is split off, so it equals
+ * "TSN 1"; short forms are expanded (CHANNEL_ALIASES).
  */
 function tokens(name) {
-  return String(name || '')
+  let str = String(name || '')
     .toLowerCase()
     .replace(/\([^)]*\)|\[[^\]]*\]/g, ' ')
     .split(/[^a-z0-9+]+/)
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((t) => t.replace(/^([a-z]{3,})(\d{1,2})$/, '$1 $2'))
+    .join(' ');
+  for (const [from, to] of CHANNEL_ALIASES) str = str.replace(new RegExp(`(^| )${from}(?= |$)`, 'g'), `$1${to}`);
+  return str.split(' ').filter(Boolean);
+}
+
+// iptv-org tags a country-specific feed with the country: "ESPN (Brazil)",
+// "Fox (Poland)", "TUDN (Mexico)". The TV guides (UK and US/Canada) only
+// ever mean their own country's channel, so a feed tagged with another
+// country is a different channel — Portuguese ESPN is not the ESPN airing
+// an NBA game.
+const HOME_REGION_TAGS = new Set(['united states', 'usa', 'us', 'united kingdom', 'uk', 'canada', 'ireland', 'east', 'west', 'pacific']);
+
+function foreignCountryTag(name) {
+  for (const m of String(name || '').matchAll(/\(([^)]*)\)/g)) {
+    const tag = m[1].trim();
+    if (/^[A-Z][a-z]+( [A-Z][a-z]+)*$/.test(tag) && !HOME_REGION_TAGS.has(tag.toLowerCase())) return true;
+  }
+  return false;
+}
+
+// Words a playlist may add to (or drop from) a channel's name without it
+// being another channel: "Fubo Sports Network", "ION TV", "Altitude
+// Sports", "TSN 1". Anything else is another channel — "DAZN" is not "DAZN
+// Heldinnen x Pluto TV", "Sportsnet" is not "SportsNet New York",
+// "Paramount+" is not "Paramount+ Picks".
+const GENERIC_NAME_WORDS = new Set(['hd', 'fhd', 'uhd', 'sd', '4k', 'tv', 'channel', 'network', 'sports', 'sport', 'live']);
+
+function onlyGenericWords(words, sportType) {
+  return words.every(
+    (t) => GENERIC_NAME_WORDS.has(t) || /^\d+$/.test(t) || (SPORT_KEYWORDS[t] && SPORT_KEYWORDS[t].includes(sportType))
+  );
 }
 
 function startsWithTokens(haystack, needle) {
@@ -209,7 +260,10 @@ function findMatches(name, playlist, limit, ctx = {}) {
   for (const item of playlist) {
     let itemTokens = eventEntryChannel(item.name, ctx);
     if (itemTokens === null) continue; // another game's feed
-    if (itemTokens === undefined) itemTokens = tokens(item.name);
+    if (itemTokens === undefined) {
+      if (foreignCountryTag(item.name)) continue;
+      itemTokens = tokens(item.name);
+    }
     if (!itemTokens.length) continue;
     const itemStr = itemTokens.join(' ');
 
@@ -218,8 +272,13 @@ function findMatches(name, playlist, limit, ctx = {}) {
       continue;
     }
     if (!allowPartial || exact.length) continue;
-    const forward = startsWithTokens(itemTokens, target);
-    const reverse = itemStr.length >= MIN_SUBSTRING_MATCH_LENGTH && startsWithTokens(target, itemTokens);
+    // The words one name has beyond the other must not make it another
+    // channel (onlyGenericWords).
+    const forward = startsWithTokens(itemTokens, target) && onlyGenericWords(itemTokens.slice(target.length), ctx.sportType);
+    const reverse =
+      itemStr.length >= MIN_SUBSTRING_MATCH_LENGTH &&
+      startsWithTokens(target, itemTokens) &&
+      onlyGenericWords(target.slice(itemTokens.length), ctx.sportType);
     if ((forward || reverse) && !conflictsWithSport(itemTokens, ctx.sportType)) {
       partial.push({ item, score: itemStr.length });
     }
@@ -244,6 +303,7 @@ function findMatches(name, playlist, limit, ctx = {}) {
  * suffix stripped if the raw name finds nothing.
  */
 function findChannelSources(name, playlist, limit = 10, ctx = {}) {
+  if (PLACEHOLDER_CHANNEL_RE.test(String(name || '').trim())) return [];
   const direct = findMatches(name, playlist, limit, ctx);
   if (direct.length) return direct;
 

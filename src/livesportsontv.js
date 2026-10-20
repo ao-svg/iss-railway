@@ -21,15 +21,38 @@ const NAV_TIMEOUT_MS = 20000;
 const SELECTOR_TIMEOUT_MS = 15000;
 const MAX_RUNTIME_MS = 8 * 60 * 1000;
 
-// Sport name per league slug — the site organizes by league, not by a
-// per-row sport label, so this is supplied rather than scraped.
-const LEAGUE_SPORTS = {
-  nfl: 'American Football',
-  nba: 'Basketball',
-  mlb: 'Baseball',
-  nhl: 'Ice Hockey',
-  mls: 'Football',
+// Sport (and display name) per league slug — the site organizes by league,
+// not by a per-row sport label, so this is supplied rather than scraped.
+// The soccer leagues are here for their US broadcasters (Telemundo, CBS
+// Sports Golazo, TUDN, ESPN Deportes, USA Network, ...): wheresthematch
+// only lists UK ones, which the free playlists mostly don't carry. Names
+// follow wheresthematch's so a league-only row groups with the rest.
+const LEAGUES = {
+  nfl: { sport: 'American Football', name: 'NFL' },
+  nba: { sport: 'Basketball', name: 'NBA' },
+  wnba: { sport: 'Basketball', name: 'WNBA' },
+  mlb: { sport: 'Baseball', name: 'MLB' },
+  nhl: { sport: 'Ice Hockey', name: 'NHL' },
+  mls: { sport: 'Football', name: 'MLS' },
+  nwsl: { sport: 'Football', name: 'NWSL' },
+  'premier-league': { sport: 'Football', name: 'Premier League' },
+  championship: { sport: 'Football', name: 'Championship' },
+  'fa-cup': { sport: 'Football', name: 'FA Cup' },
+  'uefa-champions-league': { sport: 'Football', name: 'Champions League' },
+  'uefa-europa-league': { sport: 'Football', name: 'Europa League' },
+  'uefa-conference-league': { sport: 'Football', name: 'Conference League' },
+  'uefa-nations-league': { sport: 'Football', name: 'Nations League' },
+  'la-liga': { sport: 'Football', name: 'La Liga' },
+  'copa-del-rey': { sport: 'Football', name: 'Copa del Rey' },
+  'serie-a': { sport: 'Football', name: 'Serie A' },
+  'coppa-italia': { sport: 'Football', name: 'Coppa Italia' },
+  'dfb-pokal': { sport: 'Football', name: 'DFB Pokal' },
+  eredivisie: { sport: 'Football', name: 'Eredivisie' },
+  'scottish-premiership': { sport: 'Football', name: 'Scottish Premiership' },
+  'liga-mx': { sport: 'Football', name: 'Liga MX' },
+  'concacaf-champions-cup': { sport: 'Football', name: 'CONCACAF Champions Cup' },
 };
+const DEFAULT_LEAGUES = Object.keys(LEAGUES);
 
 /**
  * Convert a wall-clock date/time in `timeZone` to a UTC Date, without a
@@ -92,21 +115,30 @@ function parseGameDateTime(dateStr, timeStr, now = new Date()) {
   return d.toISOString();
 }
 
+/**
+ * The page lists US sports as "Away @ Home" and soccer as "Home vs. Away".
+ * Reading every row as away-first swapped home and away on every soccer
+ * game, so none of them could merge with the same game from another source.
+ */
+function orderTeams(teams, between) {
+  const [first = '', second = ''] = teams || [];
+  return /@/.test(between || '') ? { homeTeam: second, awayTeam: first } : { homeTeam: first, awayTeam: second };
+}
+
 async function extractGames(page) {
   return page.evaluate(() => {
     const containers = [...document.querySelectorAll('[class*="FixtureItem_container"]')];
     return containers.map((c) => {
       const date = c.querySelector('[class*="FixtureItem_date"]')?.textContent || '';
       const time = c.querySelector('[class*="FixtureItem_time__"]')?.textContent || '';
-      const teamEls = [...c.querySelectorAll('[class*="FixtureItem_teamName"]')];
-      // DOM order is away-team-first (the one immediately followed by "@"), home second.
-      const awayTeam = teamEls[0]?.textContent?.trim() || '';
-      const homeTeam = teamEls[1]?.textContent?.trim() || '';
+      const teams = [...c.querySelectorAll('[class*="FixtureItem_teamName"]')].map((el) => el.textContent?.trim() || '');
+      // The text between the two team names, as shown: "@" or "vs."
+      const between = teams.length === 2 ? (c.innerText.split(teams[0])[1] || '').split(teams[1])[0] : '';
       const channels = [...c.querySelectorAll('[class*="ChannelIcon_image"]')]
         .map((img) => img.alt)
         .filter(Boolean);
       const href = c.querySelector('a')?.getAttribute('href') || '';
-      return { date, time, awayTeam, homeTeam, channels, href };
+      return { date, time, teams, between, channels, href };
     });
   });
 }
@@ -118,22 +150,26 @@ async function extractGames(page) {
  */
 async function fetchLeagueSchedule(page, slug) {
   await page.goto(`${BASE_URL}/league/${slug}`, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
-  await page.waitForSelector('[class*="FixtureItem_container"]', { timeout: SELECTOR_TIMEOUT_MS });
+  // An off-season league shows an empty state ("There are no upcoming
+  // events for FA Cup") instead of fixtures — that's zero games, not a
+  // failure, and needn't wait out the timeout.
+  await page.waitForSelector('[class*="FixtureItem_container"], [class*="emptyState"]', { timeout: SELECTOR_TIMEOUT_MS });
   const raw = await extractGames(page);
 
-  const sportType = LEAGUE_SPORTS[slug] || 'Other';
+  const league = LEAGUES[slug] || { sport: 'Other', name: slug.toUpperCase() };
   const rows = [];
   for (const g of raw) {
-    if (!g.homeTeam || !g.awayTeam) continue;
+    const { homeTeam, awayTeam } = orderTeams(g.teams, g.between);
+    if (!homeTeam || !awayTeam) continue;
     const matchDateUTC = parseGameDateTime(g.date, g.time);
     if (!matchDateUTC) continue;
     rows.push({
-      eventId: `lsotv-${g.href || `${slug}-${g.homeTeam}-${g.awayTeam}-${g.date}-${g.time}`}`,
-      league: slug.toUpperCase(),
-      homeTeam: g.homeTeam,
-      awayTeam: g.awayTeam,
+      eventId: `lsotv-${g.href || `${slug}-${homeTeam}-${awayTeam}-${g.date}-${g.time}`}`,
+      league: league.name,
+      homeTeam,
+      awayTeam,
       matchDateUTC,
-      sportType,
+      sportType: league.sport,
       channels: g.channels,
     });
   }
@@ -194,4 +230,4 @@ async function fetchAllLeagues(leagueSlugs, { onProgress } = {}) {
   return { rows, failures };
 }
 
-module.exports = { fetchAllLeagues, fetchLeagueSchedule, parseGameDateTime, zonedTimeToUtc };
+module.exports = { fetchAllLeagues, fetchLeagueSchedule, parseGameDateTime, zonedTimeToUtc, orderTeams, DEFAULT_LEAGUES };

@@ -10,6 +10,16 @@ const { dataPath } = require('./dataDir');
 
 const CONFIG_PATH = dataPath('config.json');
 
+// Same slugs as livesportsontv.js LEAGUES (not required from there: that
+// module pulls in the headless browser).
+const DEFAULT_LIVESPORTSONTV_LEAGUES = [
+  'nfl', 'nba', 'wnba', 'mlb', 'nhl', 'mls', 'nwsl',
+  'premier-league', 'championship', 'fa-cup',
+  'uefa-champions-league', 'uefa-europa-league', 'uefa-conference-league', 'uefa-nations-league',
+  'la-liga', 'copa-del-rey', 'serie-a', 'coppa-italia', 'dfb-pokal', 'eredivisie',
+  'scottish-premiership', 'liga-mx', 'concacaf-champions-cup',
+].join(',');
+
 function envDefaults() {
   return {
     apiKey: process.env.SPORTSDB_API_KEY || '123',
@@ -48,13 +58,13 @@ function envDefaults() {
     // Blank = no schedule (dashboard button only).
     liveCronExpr: process.env.LIVE_CRON ?? '*/10 * * * *',
     outputLiveCsvPath: process.env.OUTPUT_LIVE_CSV_PATH || dataPath('live.csv'),
-    // "Big 5" US pro leagues by default — the rest of the site's ~16
-    // league pages are mostly NCAA sub-variants, noisier/lower-value by
-    // default, opt-in via Settings same as SPORTSDB_LEAGUE_IDS already works.
     // Admin on/off switch for the Relay proxy (Settings page). Env sets the
     // default; the Settings toggle overrides it and persists in config.json.
     relayEnabled: process.env.RELAY_ENABLED !== 'false',
-    livesportsontvLeagues: (process.env.LIVESPORTSONTV_LEAGUES || 'nfl,nba,mlb,nhl,mls')
+    // US pro leagues plus the soccer leagues the site lists, for their US
+    // broadcasters (see livesportsontv.js LEAGUES). NCAA pages stay opt-in
+    // via Settings — noisier, lower-value.
+    livesportsontvLeagues: (process.env.LIVESPORTSONTV_LEAGUES || DEFAULT_LIVESPORTSONTV_LEAGUES)
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
