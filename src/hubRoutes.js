@@ -72,8 +72,7 @@ function renderSite({ layout, escapeHtml }, host, flash) {
   const canCommand = !isPlayer && hub.compareVersions(x.version, COMMANDS_SINCE) >= 0;
   const pagesHave = new Set(Object.keys(d.pages || {}));
   const statusTag = (s) => ({ done: 'rank-working', failed: 'rank-low', cancelled: 'rank-unverified', sent: 'rank-medium', queued: 'rank-medium' })[s] || 'rank-unverified';
-  const flashHtml =
-    flash && flash.startsWith('error:') ? `<p class="status-err">${escapeHtml(flash.slice(6))}</p>` : flash ? `<p class="status-ok">${escapeHtml(flash)}</p>` : '';
+  const flashHtml = flashBox(escapeHtml, flash);
 
   const cmdRows = cmds
     .map(
@@ -95,7 +94,7 @@ function renderSite({ layout, escapeHtml }, host, flash) {
 
   return layout(
     `${host} · WordPress sites`,
-    `
+    `${HUB_CSS}<div class="hub">
     <p class="muted"><a href="/sites">← WordPress sites</a></p>
     <h1>${escapeHtml(host)}${x.removed ? ' <span class="rank rank-low">removed</span>' : ''}</h1>
     ${flashHtml}
@@ -150,6 +149,7 @@ function renderSite({ layout, escapeHtml }, host, flash) {
     <div class="card">
       ${cmdRows ? `<table><tr><th>When</th><th>Command</th><th>Details</th><th>Status</th><th>Result</th><th></th></tr>${cmdRows}</table>` : '<p class="muted">None yet.</p>'}
     </div>
+    </div>
   `,
     '/sites'
   );
@@ -163,6 +163,59 @@ function describeSetup(a) {
   if (a.sports && a.sports.length) parts.push(`${a.sports.length} sport pages`);
   if (a.brand) parts.push(`brand "${a.brand}"`);
   return parts.join(', ');
+}
+
+// Page-only styles for /sites and its sub-pages (the shared layout leaves links unstyled)
+const HUB_CSS = `<style>
+  .hub a { color: #93c5fd; text-decoration: none; }
+  .hub a:hover { text-decoration: underline; }
+  .hub .lead { color: var(--text-muted); margin: 0 0 1.25rem; max-width: 760px; font-size: 0.9rem; }
+  .hub .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem; }
+  .hub .stat { background: var(--surface); border-radius: var(--radius); padding: 0.8rem 1rem; box-shadow: var(--shadow); }
+  .hub .stat b { display: block; font-size: 1.5rem; line-height: 1.2; }
+  .hub .stat span { color: var(--text-muted); font-size: 0.8rem; }
+  .hub .stat.warn b { color: #fbbf24; }
+  .hub .stat.err b { color: #f87171; }
+  .hub .card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.25rem 1rem; flex-wrap: wrap; }
+  .hub .card-head h2 { font-size: 1.05rem; margin: 0; }
+  .hub .card-head p { margin: 0; }
+  .hub table { margin-top: 0.75rem; }
+  .hub td, .hub th { vertical-align: middle; padding: 0.55rem 0.5rem; }
+  .hub th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  .hub td.c, .hub th.c { text-align: center; }
+  .hub td.r { text-align: right; white-space: nowrap; }
+  .hub .site { font-weight: 600; }
+  .hub .pill { display: inline-block; font-size: 0.7rem; padding: 0.05rem 0.5rem; border-radius: 999px; background: #1e3a8a; color: #bfdbfe; margin-left: 0.45rem; vertical-align: 1px; }
+  .hub button.small { margin: 0; padding: 0.3rem 0.65rem; font-size: 0.78rem; }
+  .hub button.link { background: none; color: var(--text-muted); padding: 0.3rem 0.4rem; margin: 0; font-size: 0.78rem; }
+  .hub button.link:hover { color: #f87171; background: none; }
+  .hub td form { margin: 0; }
+  .hub select.compact { width: auto; max-width: 230px; padding: 0.3rem 0.4rem; font-size: 0.8rem; }
+  .hub .row { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+  .hub .row input[type=text] { flex: 1; min-width: 180px; width: auto; }
+  .hub .row button { margin: 0; }
+  .hub .switch { display: flex; gap: 0.6rem; align-items: flex-start; color: var(--text); margin: 1rem 0 0; font-size: 0.88rem; }
+  .hub .switch input { margin-top: 0.2rem; }
+  .hub .foot { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem 1rem; flex-wrap: wrap; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+  .hub .foot button { margin: 0; }
+  .hub details { margin-top: 0.9rem; }
+  .hub summary { cursor: pointer; color: var(--text-muted); font-size: 0.85rem; }
+  .hub summary:hover { color: var(--text); }
+  .hub details > div { margin-top: 0.75rem; }
+  .hub .release { display: flex; justify-content: space-between; gap: 0.4rem 1rem; flex-wrap: wrap; padding: 0.7rem 0; border-bottom: 1px solid var(--border); align-items: center; }
+  .hub .release .meta { color: var(--text-muted); font-size: 0.8rem; margin-top: 0.1rem; }
+  .hub .flash { padding: 0.7rem 1rem; border-radius: var(--radius-sm); margin-bottom: 1rem; font-size: 0.9rem; }
+  .hub .flash.ok { background: #14532d; color: #bbf7d0; }
+  .hub .flash.err { background: #7f1d1d; color: #fecaca; }
+  .hub .empty { color: var(--text-muted); font-size: 0.88rem; margin: 0.75rem 0 0; }
+  .hub input[type=file] { color: var(--text-muted); font-size: 0.85rem; max-width: 100%; }
+  @media (max-width: 700px) { .hub .hide-sm { display: none; } .hub .card { padding: 1rem; } }
+</style>`;
+
+function flashBox(escapeHtml, flash) {
+  if (!flash) return '';
+  const err = flash.startsWith('error:');
+  return `<div class="flash ${err ? 'err' : 'ok'}">${escapeHtml(err ? flash.slice(6) : flash)}</div>`;
 }
 
 function renderSites({ layout, escapeHtml }, base, flash) {
@@ -180,181 +233,204 @@ function renderSites({ layout, escapeHtml }, base, flash) {
     }))
     .sort((a, b) => a.host.localeCompare(b.host));
   const isOld = (x) => latestOf(x) && hub.compareVersions(x.version, latestOf(x)) < 0;
+  const isSilent = (x) => new Date(x.lastSeen).getTime() < dayAgo;
 
-  const players = sites.filter((x) => x.role === 'player');
   const schedules = sites.filter((x) => x.role !== 'player');
-  const summary = (list) => {
-    const old = list.filter(isOld).length;
-    const silent = list.filter((x) => new Date(x.lastSeen).getTime() < dayAgo).length;
-    return `<p><strong>${list.length}</strong> sites · <strong>${old}</strong> need the update · <strong class="${silent ? 'status-err' : ''}">${silent}</strong> silent for a day+</p>`;
-  };
-  // How many schedule sites send their visitors to each player site
+  // How many schedule sites send their visitors to each destination
   const usedBy = (p) => schedules.filter((x) => !x.removed && (x.target === p.home || hub.cleanHost(x.target) === p.host || (x.rotating && hub.rotationFor(x.host, s, st.overrides).some((u) => hub.cleanHost(u) === p.host)))).length;
+  const version = (x) =>
+    `<span class="rank ${isOld(x) ? 'rank-medium' : 'rank-working'}" title="${isOld(x) ? `v${escapeHtml(latestOf(x))} is published` : 'Up to date'}">v${escapeHtml(x.version || '?')}</span>`;
+  const seen = (x) => `<span class="${isSilent(x) ? 'status-err' : 'muted'}" title="${escapeHtml(x.lastSeen)}">${ago(x.lastSeen)}</span>`;
 
-  const bare = (u) => escapeHtml(String(u).replace(/^https?:\/\//, ''));
-
-  const forgetForm = (x) => `<form class="inline-form" method="POST" action="/api/hub/forget" onsubmit="return confirm('Remove ${escapeHtml(x.host)} from the list? It comes back on its next check-in if it still runs the plugin.');">
-        <input type="hidden" name="host" value="${escapeHtml(x.host)}">
-        <button type="submit" class="secondary">Forget</button>
-      </form>`;
-  // ── Destination sites: one list; main one + optional rotation ──
+  // ── Destination sites ──
   const dests = hub.destinations();
   const multi = dests.length > 1;
+  const rotationOn = Boolean(s.rotationEnabled && multi);
   const destRows = dests
     .map((d) => {
       const p = d.player;
-      const stale = p && new Date(p.lastSeen).getTime() < dayAgo;
       const status = p
-        ? `<span class="${stale ? 'status-err' : 'status-ok'}">● connected</span> <span class="muted">v${escapeHtml(p.version || '?')} · ${ago(p.lastSeen)}</span>`
-        : `<span class="muted">not connected — </span><a href="/sites/add?domain=${encodeURIComponent(d.host)}">connect it</a>`;
+        ? `<span class="dot ${isSilent(p) ? 'dot-dead' : 'dot-ok'}"></span>${isSilent(p) ? `silent · ${ago(p.lastSeen)}` : 'connected'}`
+        : `<span class="dot dot-unchecked"></span><a href="/sites/add?domain=${encodeURIComponent(d.host)}">Connect</a>`;
       const sending = usedBy({ host: d.host, home: d.url });
-      return `<tr>
-    <td><label style="display:flex;gap:0.4rem;align-items:center;margin:0;color:var(--text)"><input type="radio" name="main" value="${escapeHtml(d.url)}" ${d.main ? 'checked' : ''}> ${d.main ? '<strong>Main</strong>' : 'Main'}</label></td>
-    ${multi ? `<td><input type="checkbox" name="rotate" value="${escapeHtml(d.url)}" ${d.inRotation ? 'checked' : ''} aria-label="Rotate to ${escapeHtml(d.host)}"></td>` : ''}
-    <td><a href="${escapeHtml(d.url)}" target="_blank" rel="noopener"><strong>${escapeHtml(d.host)}</strong></a></td>
-    <td>${status}</td>
-    <td class="muted">${sending} schedule site${sending === 1 ? '' : 's'}</td>
-    <td>${
-      d.main
+      const remove = d.main
         ? ''
-        : d.player
-          ? `<button type="submit" class="secondary" form="hub-dest-forget" name="host" value="${escapeHtml(d.host)}" formnovalidate onclick="return confirm('Remove ${escapeHtml(d.host)} from the list? It comes back on its next check-in if it still runs the plugin and is connected.')">Forget</button>`
+        : p
+          ? `<button type="submit" class="link" form="hub-dest-forget" name="host" value="${escapeHtml(d.host)}" formnovalidate onclick="return confirm('Remove ${escapeHtml(d.host)} from the list? It comes back on its next check-in if it still runs the plugin and is connected.')">Remove</button>`
           : d.manual
-            ? `<button type="submit" class="secondary" form="hub-dest-remove" name="url" value="${escapeHtml(d.url)}" formnovalidate onclick="return confirm('Remove ${escapeHtml(d.host)} from the destinations?')">Remove</button>`
-            : ''
-    }</td>
+            ? `<button type="submit" class="link" form="hub-dest-remove" name="url" value="${escapeHtml(d.url)}" formnovalidate onclick="return confirm('Remove ${escapeHtml(d.host)} from the destinations?')">Remove</button>`
+            : '';
+      return `<tr>
+    <td><a class="site" href="${p ? `/sites/${encodeURIComponent(d.host)}` : escapeHtml(d.url)}">${escapeHtml(d.host)}</a>${d.main ? '<span class="pill">main</span>' : ''}</td>
+    <td>${status}</td>
+    <td class="hide-sm">${p ? version(p) : '<span class="muted">—</span>'}</td>
+    <td class="hide-sm muted">${sending ? `${sending} schedule site${sending === 1 ? '' : 's'}` : '—'}</td>
+    <td class="c"><input type="radio" name="main" value="${escapeHtml(d.url)}" ${d.main ? 'checked' : ''} aria-label="Main destination: ${escapeHtml(d.host)}"></td>
+    ${multi ? `<td class="c"><input type="checkbox" name="rotate" value="${escapeHtml(d.url)}" ${d.inRotation ? 'checked' : ''} aria-label="Include ${escapeHtml(d.host)} in the random pick"></td>` : ''}
+    <td class="r">${remove}</td>
   </tr>`;
     })
     .join('');
 
-  // "Opens on": default (main / rotation) or one destination, per schedule site
+  // ── Schedule sites ──
   const opensOn = (x) => {
     const current = x.override ? hub.cleanHost(x.override) : '';
-    const def = s.rotationEnabled && multi ? `Default — rotating × ${hub.rotationFor('', s, {}).length}` : `Default — ${hub.cleanHost(s.defaultTarget)}`;
-    return `<form class="inline-form" method="POST" action="/api/hub/override">
+    const def = rotationOn ? `Default — random of ${hub.rotationFor('', s, {}).length}` : `Default — ${hub.cleanHost(s.defaultTarget)}`;
+    return `<form method="POST" action="/api/hub/override">
         <input type="hidden" name="host" value="${escapeHtml(x.host)}">
-        <select name="target" onchange="this.form.submit()" style="width:auto">
+        <select class="compact" name="target" onchange="this.form.submit()" aria-label="Where ${escapeHtml(x.host)} sends visitors">
           <option value="">${escapeHtml(def)}</option>
-          ${dests.map((d) => `<option value="${escapeHtml(d.url)}" ${current === d.host ? 'selected' : ''}>${escapeHtml(d.host)} only</option>`).join('')}
+          ${dests.map((d) => `<option value="${escapeHtml(d.url)}" ${current === d.host ? 'selected' : ''}>Only ${escapeHtml(d.host)}</option>`).join('')}
         </select>
       </form>`;
   };
-
   const siteRows = schedules
-    .map((x) => {
-      const old = isOld(x);
-      const stale = new Date(x.lastSeen).getTime() < dayAgo;
-      return `<tr>
-    <td><a href="/sites/${encodeURIComponent(x.host)}"><strong>${escapeHtml(x.host)}</strong></a>${x.removed ? ' <span class="rank rank-low">removed</span>' : ''}${pendingCount(x.host) ? ` <span class="rank rank-medium">${pendingCount(x.host)} pending</span>` : ''}</td>
+    .map(
+      (x) => `<tr>
+    <td><a class="site" href="/sites/${encodeURIComponent(x.host)}">${escapeHtml(x.host)}</a>${x.removed ? ' <span class="rank rank-low">removed</span>' : ''}${pendingCount(x.host) ? ` <span class="rank rank-medium">${pendingCount(x.host)} pending</span>` : ''}</td>
     <td>${opensOn(x)}</td>
-    <td><span class="rank ${old ? 'rank-medium' : 'rank-working'}">v${escapeHtml(x.version || '?')}</span></td>
-    <td class="${stale ? 'status-err' : 'muted'}" title="${escapeHtml(x.lastSeen)}">${ago(x.lastSeen)}</td>
-    <td class="muted">${x.theme === 'zhibo-child' ? '✓' : escapeHtml(x.theme || '—')}</td>
-    <td class="muted">${Number(x.pages) || 0}</td>
-    <td>${forgetForm(x)}</td>
-  </tr>`;
+    <td>${version(x)}</td>
+    <td>${seen(x)}</td>
+    <td class="hide-sm muted">${x.theme === 'zhibo-child' ? 'Zhibo' : escapeHtml(x.theme || '—')}</td>
+    <td class="hide-sm muted c">${Number(x.pages) || 0}</td>
+    <td class="r"><form method="POST" action="/api/hub/forget" onsubmit="return confirm('Remove ${escapeHtml(x.host)} from the list? It comes back on its next check-in if it still runs the plugin.');">
+        <input type="hidden" name="host" value="${escapeHtml(x.host)}"><button type="submit" class="link">Remove</button></form></td>
+  </tr>`
+    )
+    .join('');
+
+  // ── Plugin updates ──
+  const releaseRows = Object.entries(hub.PLUGINS)
+    .map(([slug, p]) => {
+      const r = st.releases[slug];
+      const running = sites.filter((x) => hub.knownPlugin(x.plugin) === slug && !x.removed);
+      const current = r ? running.filter((x) => hub.compareVersions(x.version, r.version) >= 0).length : 0;
+      return `<div class="release">
+        <div><strong>${escapeHtml(p.label)}</strong><div class="meta">${
+          r ? `published ${ago(r.uploadedAt)} · ${Math.round(r.size / 1024)} KB${r.notes ? ` · ${escapeHtml(r.notes)}` : ''}` : 'nothing published — sites keep the version they have'
+        }</div></div>
+        ${r ? `<div><span class="rank rank-working">v${escapeHtml(r.version)}</span> <span class="muted">on ${current} of ${running.length} site${running.length === 1 ? '' : 's'}</span> · <a href="/sites/download?plugin=${encodeURIComponent(slug)}">Download zip</a></div>` : ''}
+      </div>`;
     })
     .join('');
 
-  const flashHtml =
-    flash && flash.startsWith('error:')
-      ? `<p class="status-err">${escapeHtml(flash.slice(6))}</p>`
-      : flash
-        ? `<p class="status-ok">${escapeHtml(flash)}</p>`
-        : '';
+  const old = sites.filter((x) => !x.removed && isOld(x)).length;
+  const silent = sites.filter((x) => !x.removed && isSilent(x)).length;
+  const connectedDests = dests.filter((d) => d.player && !isSilent(d.player)).length;
 
   return layout(
     'WordPress sites',
-    `
+    `${HUB_CSS}
+    <div class="hub">
     <h1>WordPress sites</h1>
-    <p class="muted">Destination sites are where visitors watch (zhibo82 plugin). Schedule sites list the matches and send visitors to them (zhibo882 plugin). Both check in here every few minutes and take their plugin updates from here.</p>
-    ${flashHtml}
+    <p class="lead">Destination sites (zhibo82 plugin) are where visitors watch. Schedule sites (zhibo882 plugin) list the matches and send each click to a destination. All of them take their settings and plugin updates from here.</p>
+    ${flashBox(escapeHtml, flash)}
 
-    <div class="card">
-      <strong>Add a site</strong>
-      <p class="muted">Either plugin. The hub checks which one the site runs, then you approve the connection in that site's WordPress — no key to copy.</p>
-      <form class="inline-form" method="GET" action="/sites/add">
-        <input type="text" name="domain" placeholder="example.com" required>
-        <button type="submit">Check site</button>
-      </form>
+    <div class="stats">
+      <div class="stat"><b>${connectedDests}/${dests.length}</b><span>destinations connected</span></div>
+      <div class="stat"><b>${schedules.filter((x) => !x.removed).length}</b><span>schedule sites</span></div>
+      <div class="stat ${old ? 'warn' : ''}"><b>${old}</b><span>need the plugin update</span></div>
+      <div class="stat ${silent ? 'err' : ''}"><b>${silent}</b><span>silent for a day+</span></div>
     </div>
 
-    <h2 class="section-heading">Destination sites</h2>
     <div class="card">
-      <p class="muted">Matches on every schedule site open on the <strong>main</strong> destination${multi ? ' — or, with rotation on, on one of the ticked ones at random for each click' : ''}. Changes reach the sites within ${s.cacheMinutes || 5} minutes.</p>
+      <div class="card-head"><h2>Add a site</h2><p class="muted">Either plugin — no key to copy</p></div>
+      <form class="row" method="GET" action="/sites/add" style="margin-top:0.75rem">
+        <input type="text" name="domain" placeholder="example.com" required aria-label="Domain">
+        <button type="submit">Check site</button>
+      </form>
+      <p class="muted" style="margin:0.6rem 0 0">The hub checks which plugin the site runs; you approve the connection in that site's WordPress and come back connected.</p>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Destination sites</h2><p class="muted">Where visitors watch</p></div>
       <form method="POST" action="/api/hub/destinations">
         <table>
-          <tr><th>Main</th>${multi ? '<th>Rotate</th>' : ''}<th>Site</th><th>Status</th><th>Receives from</th><th></th></tr>
+          <tr><th>Site</th><th>Status</th><th class="hide-sm">Plugin</th><th class="hide-sm">Gets visitors from</th><th class="c">Main</th>${multi ? '<th class="c">In random pick</th>' : ''}<th></th></tr>
           ${destRows}
         </table>
-        ${multi ? `<label style="display:flex;gap:0.5rem;align-items:center"><input type="checkbox" name="rotationEnabled" value="1" ${s.rotationEnabled ? 'checked' : ''}> Rotate between the ticked sites${s.rotationEnabled ? ` — on, ${hub.rotationFor('', s, {}).length} sites` : ''}</label>` : ''}
-        <button type="submit">Save</button>
+        ${
+          multi
+            ? `<label class="switch"><input type="checkbox" name="rotationEnabled" value="1" ${s.rotationEnabled ? 'checked' : ''}>
+          <span><strong>Random destination per click</strong><br><span class="muted">${
+            rotationOn
+              ? `On — each click on a schedule site opens one of the ${hub.rotationFor('', s, {}).length} sites ticked under “In random pick”.`
+              : 'Off — every click opens the main site. To spread visitors, tick the sites under “In random pick”, switch this on and save.'
+          }</span></span></label>`
+            : ''
+        }
+        <div class="foot"><span class="muted">Schedule sites switch within ${s.cacheMinutes || 5} minutes of saving.</span><button type="submit">Save</button></div>
       </form>
       <form id="hub-dest-remove" method="POST" action="/api/hub/destinations/remove"></form>
       <form id="hub-dest-forget" method="POST" action="/api/hub/forget"></form>
-      <form class="inline-form" method="POST" action="/api/hub/destinations/add" style="margin-top:1rem">
-        <input type="text" name="url" placeholder="https://another-destination.com" required>
-        <button type="submit" class="secondary">Add destination</button>
-      </form>
-    </div>
-
-    <h2 class="section-heading">Schedule sites</h2>
-    <div class="card">
-      ${summary(schedules)}
-      ${schedules.length ? `<table><tr><th>Domain</th><th>Opens on</th><th>Plugin</th><th>Last check-in</th><th>Theme</th><th>Sport pages</th><th></th></tr>${siteRows}</table>` : '<p class="muted">No schedule site has checked in yet.</p>'}
+      <details>
+        <summary>Add a destination by address only (not connected)</summary>
+        <div><form class="row" method="POST" action="/api/hub/destinations/add">
+          <input type="text" name="url" placeholder="https://another-destination.com" required aria-label="Destination address">
+          <button type="submit" class="secondary">Add destination</button>
+        </form></div>
+      </details>
     </div>
 
     <div class="card">
-      <strong>Plugin updates</strong>
-      <table>${Object.entries(hub.PLUGINS).map(([slug, p]) => {
-        const r = st.releases[slug];
-        return `<tr><th>${escapeHtml(p.label)}</th><td>${
-          r ? `<strong>v${escapeHtml(r.version)}</strong> · ${ago(r.uploadedAt)} · ${Math.round(r.size / 1024)} KB · <a href="/sites/download?plugin=${encodeURIComponent(slug)}">Download zip</a>${r.notes ? ` — ${escapeHtml(r.notes)}` : ''}` : '<span class="muted">nothing published — sites keep the version they have</span>'
-        }</td></tr>`;
-      }).join('')}</table>
-      <label for="hub-zip">Plugin zip — either plugin; the hub sees which one from its folder (<code>${Object.keys(hub.PLUGINS).join('/</code> or <code>')}/</code>) and only sites running that plugin get it</label>
-      <input type="file" id="hub-zip" accept=".zip,application/zip">
-      <label for="hub-notes">What changed (optional)</label>
-      <input type="text" id="hub-notes">
-      <button type="button" id="hub-publish">Publish to all sites</button>
-      <p class="muted" id="hub-publish-status"></p>
-      <form method="POST" action="/api/hub/settings">
-        <input type="hidden" name="autoUpdate" value="${s.autoUpdate ? '0' : '1'}">
-        <p class="muted">Automatic updates are <strong>${s.autoUpdate ? 'on' : 'off'}</strong>: ${
-          s.autoUpdate ? 'WordPress installs a published version in the background (within about 12 hours, usually much sooner).' : 'each site shows the update; someone has to click Update.'
-        } <button type="submit" class="secondary">Turn ${s.autoUpdate ? 'off' : 'on'}</button></p>
-      </form>
-    </div>
-
-    <div class="card">
-      <strong>Feeds &amp; table</strong>
-      <p class="muted">Must be the feeds the destination site uses, or links won't find their match. Empty = this app's own exports.</p>
-      <form method="POST" action="/api/hub/settings">
-        <label for="hub-fx">Fixtures feed</label>
-        <input type="text" id="hub-fx" name="feedFixtures" value="${escapeHtml(s.feedFixtures)}" placeholder="${escapeHtml(base)}/fixtures.json">
-        <label for="hub-live">Live feed</label>
-        <input type="text" id="hub-live" name="feedLive" value="${escapeHtml(s.feedLive)}" placeholder="${escapeHtml(base)}/live.json">
-        <label for="hub-page">Upcoming matches per page (0 = all)</label>
-        <input type="text" id="hub-page" name="pageSize" value="${s.pageSize}" inputmode="numeric">
-        <label for="hub-cache">Feed cache on each site (minutes)</label>
-        <input type="text" id="hub-cache" name="cacheMinutes" value="${s.cacheMinutes}" inputmode="numeric">
-        <button type="submit">Save</button>
-      </form>
-    </div>
-
-    <div class="card">
-      <strong>Connecting a site by hand</strong>
-      <p class="muted">Usually “Add a site” above does this. By hand — schedule site: in the zhibo882 plugin, 直播设置 → 1 · 连接 → Network; player site: in the zhibo82 plugin, Settings → Zhibo82 → Hub. Both with:</p>
-      <table>
-        <tr><th>Hub URL</th><td><code>${escapeHtml(base)}</code></td></tr>
-        <tr><th>Network key</th><td><code>${escapeHtml(hub.networkKey())}</code></td></tr>
-      </table>
+      <div class="card-head"><h2>Schedule sites</h2><p class="muted">Each sends visitors to the default destination, or only to the one you pick</p></div>
       ${
-        process.env.HUB_NETWORK_KEY
-          ? '<p class="muted">The key comes from the HUB_NETWORK_KEY variable.</p>'
-          : `<form method="POST" action="/api/hub/rotate-key" onsubmit="return confirm('Every site stops getting settings and updates until the new key is entered on it. Change the key?');">
-        <button type="submit" class="secondary">Change key…</button></form>`
+        schedules.length
+          ? `<table><tr><th>Site</th><th>Sends visitors to</th><th>Plugin</th><th>Last check-in</th><th class="hide-sm">Theme</th><th class="hide-sm c">Sport pages</th><th></th></tr>${siteRows}</table>`
+          : '<p class="empty">No schedule site yet — add one above.</p>'
       }
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Plugin updates</h2><p class="muted">Publish once — every connected site running that plugin gets it</p></div>
+      ${releaseRows}
+      <div class="row" style="margin-top:1rem">
+        <input type="file" id="hub-zip" accept=".zip,application/zip" aria-label="Plugin zip">
+        <input type="text" id="hub-notes" placeholder="What changed (optional)" aria-label="What changed">
+        <button type="button" id="hub-publish">Publish</button>
+      </div>
+      <p class="muted" id="hub-publish-status" style="margin:0.5rem 0 0">Either plugin's zip — the hub tells them apart by the folder inside.</p>
+      <form method="POST" action="/api/hub/settings" class="foot">
+        <input type="hidden" name="autoUpdate" value="${s.autoUpdate ? '0' : '1'}">
+        <span class="muted">Automatic updates are <strong>${s.autoUpdate ? 'on' : 'off'}</strong>: ${
+          s.autoUpdate ? 'sites install a published version by themselves in the background.' : 'each site shows the update and someone has to click Update.'
+        }</span>
+        <button type="submit" class="secondary small">Turn ${s.autoUpdate ? 'off' : 'on'}</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <details>
+        <summary><strong style="color:var(--text)">Settings</strong> — feeds, matches per page, cache, network key</summary>
+        <div>
+          <form method="POST" action="/api/hub/settings">
+            <p class="muted">The feeds must be the ones the destination sites use, or links won't find their match. Empty = this app's own exports.</p>
+            <label for="hub-fx">Fixtures feed</label>
+            <input type="text" id="hub-fx" name="feedFixtures" value="${escapeHtml(s.feedFixtures)}" placeholder="${escapeHtml(base)}/fixtures.json">
+            <label for="hub-live">Live feed</label>
+            <input type="text" id="hub-live" name="feedLive" value="${escapeHtml(s.feedLive)}" placeholder="${escapeHtml(base)}/live.json">
+            <label for="hub-page">Upcoming matches per page (0 = all)</label>
+            <input type="text" id="hub-page" name="pageSize" value="${s.pageSize}" inputmode="numeric">
+            <label for="hub-cache">Feed cache on each site (minutes)</label>
+            <input type="text" id="hub-cache" name="cacheMinutes" value="${s.cacheMinutes}" inputmode="numeric">
+            <button type="submit">Save settings</button>
+          </form>
+          <div class="foot" style="display:block">
+            <strong>Connecting a site by hand</strong>
+            <p class="muted">Only needed when “Add a site” can't reach the site. Schedule site: 直播设置 → 1 · 连接 → Network. Destination site: Settings → Zhibo82 → Hub. Both with:</p>
+            <table>
+              <tr><th>Hub URL</th><td><code>${escapeHtml(base)}</code></td></tr>
+              <tr><th>Network key</th><td><code>${escapeHtml(hub.networkKey())}</code></td></tr>
+            </table>
+            ${
+              process.env.HUB_NETWORK_KEY
+                ? '<p class="muted">The key comes from the HUB_NETWORK_KEY variable.</p>'
+                : `<form method="POST" action="/api/hub/rotate-key" onsubmit="return confirm('Every site stops getting settings and updates until the new key is entered on it. Change the key?');">
+              <button type="submit" class="secondary small" style="margin-top:0.75rem">Change key…</button></form>`
+            }
+          </div>
+        </div>
+      </details>
     </div>
 
     <script>
@@ -369,6 +445,7 @@ function renderSites({ layout, escapeHtml }, base, flash) {
         .catch(function (e) { st.textContent = 'Failed: ' + e.message; btn.disabled = false; });
     });
     </script>
+    </div>
   `,
     '/sites'
   );
@@ -393,7 +470,7 @@ function renderAddSite({ layout, escapeHtml }, domain, probe) {
       <input type="text" name="domain" value="${escapeHtml(domain)}" required>
       <button type="submit" class="secondary">Check again</button>
     </form>`;
-  const page = (body) => layout('Add a site · WordPress sites', `${back}<h1>Add a site</h1>${body}`, '/sites');
+  const page = (body) => layout('Add a site · WordPress sites', `${HUB_CSS}<div class="hub">${back}<h1>Add a site</h1>${body}</div>`, '/sites');
 
   if (probe.error) return page(`<div class="card"><p class="status-err">${escapeHtml(probe.error)}</p>${again}</div>`);
 
