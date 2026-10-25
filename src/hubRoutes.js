@@ -11,6 +11,7 @@ const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
 const hub = require('./hub');
+const hubConnect = require('./hubConnect');
 
 function baseUrl(req, getConfig) {
   if (getConfig().publicBaseUrl) return getConfig().publicBaseUrl.replace(/\/+$/, '');
@@ -54,7 +55,8 @@ async function pokeSite(site) {
   const home = hub.cleanUrl(site && site.home);
   if (!home) return { ok: false, error: 'no address on record' };
   try {
-    const res = await axios.post(`${home}/?rest_route=/zhibo/v1/poke`, {}, { timeout: 10000, maxRedirects: 2, validateStatus: () => true });
+    const ns = site.role === 'player' ? 'zhibo82/v1' : 'zhibo/v1';
+    const res = await axios.post(`${home}/?rest_route=/${ns}/poke`, {}, { timeout: 10000, maxRedirects: 2, validateStatus: () => true });
     return res.status === 200 ? { ok: true } : { ok: false, error: `HTTP ${res.status}` };
   } catch (err) {
     return { ok: false, error: err.code || err.message };
@@ -204,7 +206,7 @@ function renderSites({ layout, escapeHtml }, base, flash) {
       const stale = p && new Date(p.lastSeen).getTime() < dayAgo;
       const status = p
         ? `<span class="${stale ? 'status-err' : 'status-ok'}">● connected</span> <span class="muted">v${escapeHtml(p.version || '?')} · ${ago(p.lastSeen)}</span>`
-        : '<span class="muted">not connected — install the zhibo82 plugin there and connect it (Settings → Zhibo82 → Hub)</span>';
+        : `<span class="muted">not connected — </span><a href="/sites/add?domain=${encodeURIComponent(d.host)}">connect it</a>`;
       const sending = usedBy({ host: d.host, home: d.url });
       return `<tr>
     <td><label style="display:flex;gap:0.4rem;align-items:center;margin:0;color:var(--text)"><input type="radio" name="main" value="${escapeHtml(d.url)}" ${d.main ? 'checked' : ''}> ${d.main ? '<strong>Main</strong>' : 'Main'}</label></td>
@@ -267,6 +269,15 @@ function renderSites({ layout, escapeHtml }, base, flash) {
     <h1>WordPress sites</h1>
     <p class="muted">Destination sites are where visitors watch (zhibo82 plugin). Schedule sites list the matches and send visitors to them (zhibo882 plugin). Both check in here every few minutes and take their plugin updates from here.</p>
     ${flashHtml}
+
+    <div class="card">
+      <strong>Add a site</strong>
+      <p class="muted">Either plugin. The hub checks which one the site runs, then you approve the connection in that site's WordPress — no key to copy.</p>
+      <form class="inline-form" method="GET" action="/sites/add">
+        <input type="text" name="domain" placeholder="example.com" required>
+        <button type="submit">Check site</button>
+      </form>
+    </div>
 
     <h2 class="section-heading">Destination sites</h2>
     <div class="card">
@@ -332,8 +343,8 @@ function renderSites({ layout, escapeHtml }, base, flash) {
     </div>
 
     <div class="card">
-      <strong>Connecting a site</strong>
-      <p class="muted">Schedule site: install the zhibo882 plugin, then 直播设置 → 1 · 连接 → Network. Player site: in the zhibo82 plugin, Settings → Zhibo82 → Hub. Both with:</p>
+      <strong>Connecting a site by hand</strong>
+      <p class="muted">Usually “Add a site” above does this. By hand — schedule site: in the zhibo882 plugin, 直播设置 → 1 · 连接 → Network; player site: in the zhibo82 plugin, Settings → Zhibo82 → Hub. Both with:</p>
       <table>
         <tr><th>Hub URL</th><td><code>${escapeHtml(base)}</code></td></tr>
         <tr><th>Network key</th><td><code>${escapeHtml(hub.networkKey())}</code></td></tr>
@@ -361,6 +372,91 @@ function renderSites({ layout, escapeHtml }, base, flash) {
   `,
     '/sites'
   );
+}
+
+// Set-up fields as the forms send them (site page and "Add a site")
+function setupArgsFrom(body) {
+  return {
+    brand: body.brand || '',
+    theme: body.theme === '1',
+    homepage: body.homepage === '1',
+    menu: body.menu === '1',
+    sports: [].concat(body.sports || []),
+  };
+}
+
+// "Add a site": what the hub found on the domain, and the button to approve it in WordPress
+function renderAddSite({ layout, escapeHtml }, domain, probe) {
+  const st = hub.getState();
+  const back = '<p class="muted"><a href="/sites">← WordPress sites</a></p>';
+  const again = `<form class="inline-form" method="GET" action="/sites/add" style="margin-top:0.75rem">
+      <input type="text" name="domain" value="${escapeHtml(domain)}" required>
+      <button type="submit" class="secondary">Check again</button>
+    </form>`;
+  const page = (body) => layout('Add a site · WordPress sites', `${back}<h1>Add a site</h1>${body}`, '/sites');
+
+  if (probe.error) return page(`<div class="card"><p class="status-err">${escapeHtml(probe.error)}</p>${again}</div>`);
+
+  const known = st.sites[probe.host];
+  const title = `<p><a href="${escapeHtml(probe.origin)}" target="_blank" rel="noopener"><strong>${escapeHtml(probe.host)}</strong></a>${probe.name ? ` <span class="muted">— ${escapeHtml(probe.name)}</span>` : ''}</p>`;
+  const download = (slug) =>
+    st.releases[slug]
+      ? `<a href="/sites/download?plugin=${encodeURIComponent(slug)}">${escapeHtml(hub.PLUGINS[slug].label)} v${escapeHtml(st.releases[slug].version)}</a>`
+      : escapeHtml(hub.PLUGINS[slug].label);
+
+  if (!probe.plugins.length) {
+    return page(`<div class="card">${title}
+      <p class="status-warn">WordPress is there, but neither plugin is installed (or it's an old version without the hub connection).</p>
+      <p>Install one in its WordPress: Plugins → Add New → Upload Plugin → choose the zip → Activate.</p>
+      <ul><li>Schedule site: ${download(hub.PLUGIN_SLUG)}</li><li>Destination (player) site: ${download(hub.PLAYER_SLUG)}</li></ul>
+      ${again}</div>`);
+  }
+
+  if (!probe.authUrl) {
+    return page(`<div class="card">${title}
+      <p class="status-warn">${escapeHtml(probe.plugins.map((p) => hub.PLUGINS[p].label).join(' + '))} found, but the site has WordPress Application Passwords turned off, so it can't be connected from here.</p>
+      <p class="muted">WordPress turns them off when the site isn't on HTTPS, and some security plugins disable them. Connect it by hand instead (see “Connecting a site by hand” on the <a href="/sites">sites page</a>).</p>
+      ${again}</div>`);
+  }
+
+  const sportBoxes = SETUP_SPORTS.map(
+    ([type, cn], i) =>
+      `<label style="display:inline-flex;gap:0.35rem;align-items:center;margin:0.25rem 1rem 0.25rem 0;color:var(--text)"><input type="checkbox" name="sports" value="${escapeHtml(type)}" ${i < 6 ? 'checked' : ''}> ${escapeHtml(cn)} <span class="muted">${escapeHtml(type)}</span></label>`
+  ).join('');
+  const check = (name, label, on = true) =>
+    `<label style="display:flex;gap:0.5rem;align-items:center"><input type="checkbox" name="${name}" value="1" ${on ? 'checked' : ''}> ${label}</label>`;
+  const both = probe.plugins.length > 1;
+  const choices = probe.plugins
+    .map((slug, i) => {
+      const player = hub.PLUGINS[slug].role === 'player';
+      const opts = player
+        ? check('destination', 'Add it to the destination sites (where schedule sites can send visitors). It doesn’t become the main one.')
+        : `${check('setup', '<strong>Set the site up right after connecting</strong> — same steps as the plugin’s setup wizard; pages that already exist are kept')}
+          <div style="margin-left:1.6rem">
+            <label for="a-brand">Brand name (empty = the site title)</label>
+            <input type="text" id="a-brand" name="brand">
+            ${check('theme', 'Install GeneratePress + the Zhibo child theme (the zhibo82.com look)')}
+            ${check('homepage', 'Table on the homepage')}
+            ${check('menu', 'Header menu (直播首页 + the first four sports), if the site has none')}
+            <label>Sport pages</label>
+            <div>${sportBoxes}</div>
+          </div>`;
+      return `<div style="margin:0.75rem 0">
+          ${both ? `<label style="display:flex;gap:0.5rem;align-items:center"><input type="radio" name="plugin" value="${escapeHtml(slug)}" ${i === 0 ? 'checked' : ''}> <strong>${escapeHtml(hub.PLUGINS[slug].label)}</strong></label>` : `<input type="hidden" name="plugin" value="${escapeHtml(slug)}"><p>✓ <strong>${escapeHtml(hub.PLUGINS[slug].label)}</strong> is installed.</p>`}
+          ${opts}
+        </div>`;
+    })
+    .join('');
+
+  return page(`<div class="card">${title}
+      ${known ? `<p class="muted">Already checked in here (${ago(known.lastSeen)}, v${escapeHtml(known.version || '?')}). Connecting again is harmless.</p>` : ''}
+      <form method="POST" action="/api/hub/connect/start">
+        <input type="hidden" name="domain" value="${escapeHtml(probe.origin)}">
+        ${choices}
+        <button type="submit">Approve in WordPress →</button>
+      </form>
+      <p class="muted">Opens ${escapeHtml(probe.host)}'s own WordPress page “Authorize Application” (log in as an administrator if asked) and click <strong>Approve</strong>. You come back here connected. WordPress gives the hub a one-time Application Password for this; the hub uses it once and deletes it again.</p>
+    </div>`);
 }
 
 function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
@@ -421,6 +517,70 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
     fs.createReadStream(file).pipe(res);
   });
 
+  // ── Add a site: check the domain → approve in its WordPress → connected ──
+  // Before /sites/:host, which would otherwise take "add" for a domain
+  app.get('/sites/add', requireAuth('admin'), async (req, res) => {
+    const domain = String(req.query.domain || '').trim().slice(0, 300);
+    if (!domain) return res.redirect('/sites');
+    res.send(renderAddSite({ layout, escapeHtml }, domain, await hubConnect.probeSite(domain)));
+  });
+
+  app.post('/api/hub/connect/start', requireAuth('admin'), sameOrigin, async (req, res) => {
+    // Checked again here: the authorize page address must come from the site, not the form
+    const probe = await hubConnect.probeSite(req.body.domain);
+    const plugin = String(req.body.plugin || '');
+    if (probe.error) return back(res, `error:${probe.error}`);
+    if (!probe.plugins.includes(plugin)) return back(res, `error:${probe.host} doesn't run that plugin`);
+    if (!probe.authUrl) return back(res, `error:${probe.host} has Application Passwords turned off — connect it by hand`);
+    const options =
+      hub.PLUGINS[plugin].role === 'player'
+        ? { destination: req.body.destination === '1' }
+        : { setup: req.body.setup === '1' ? setupArgsFrom(req.body) : null };
+    res.redirect(303, hubConnect.start({ origin: probe.origin, authUrl: probe.authUrl, plugin, options, hubBase: baseUrl(req, getConfig) }));
+  });
+
+  // WordPress sends the browser back here: ?site_url&user_login&password, or &rejected=1
+  app.get('/sites/connect/done', requireAuth('admin'), async (req, res) => {
+    const attempt = hubConnect.take(req.query.state);
+    if (!attempt) return back(res, 'error:That approval expired or was already used — start again with “Add a site”.');
+    const host = hub.cleanHost(attempt.origin);
+    if (req.query.rejected || !req.query.password) return back(res, `error:${host} was not connected: the approval was declined in WordPress.`);
+
+    const out = await hubConnect.finish(attempt, {
+      user: req.query.user_login,
+      password: req.query.password,
+      hubBase: baseUrl(req, getConfig),
+      networkKey: hub.networkKey(),
+    });
+    const revokeNote = out.revoked ? '' : ` Couldn't delete the “${hubConnect.APP_NAME}” Application Password on the site — remove it under Users → Profile → Application Passwords.`;
+    if (!out.ok) return back(res, `error:${host} was not connected. ${out.error}${revokeNote}`);
+
+    // The site checked in during /connect, under its own idea of its address
+    const sites = hub.getState().sites;
+    const site = [out.home && hub.cleanHost(out.home), host, host.replace(/^www\./, ''), `www.${host}`].find((h) => h && sites[h]) || host;
+    const notes = [`${site} is connected.`];
+    if (attempt.options.destination) {
+      try {
+        hub.addDestination(out.home || attempt.origin);
+        notes.push('Added to the destination sites.');
+      } catch (err) {
+        notes.push(`Not added as a destination: ${err.message}.`);
+      }
+    }
+    if (attempt.options.setup) {
+      try {
+        if (hub.compareVersions((sites[site] || {}).version, COMMANDS_SINCE) < 0) throw new Error(`the plugin needs v${COMMANDS_SINCE}+`);
+        hub.queueCommand(site, 'setup', attempt.options.setup);
+        const poke = await pokeSite(sites[site]);
+        notes.push(poke.ok ? 'Set-up is running — refresh in a minute for the result.' : 'Set-up is queued; the site picks it up within 5 minutes.');
+      } catch (err) {
+        notes.push(`Set-up not started: ${err.message}.`);
+      }
+    }
+    const flash = notes.join(' ') + revokeNote;
+    return sites[site] ? siteBack(res, site, flash) : back(res, flash);
+  });
+
   app.get('/sites/:host', requireAuth('admin'), (req, res) => {
     const host = hub.cleanHost(req.params.host);
     if (!hub.getState().sites[host]) return res.status(404).send(layout('Not found', '<p>No such site. <a href="/sites">Back</a></p>', '/sites'));
@@ -431,16 +591,7 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
     const host = hub.cleanHost(req.body.host);
     const type = req.body.type;
     try {
-      const args =
-        type === 'setup'
-          ? {
-              brand: req.body.brand || '',
-              theme: req.body.theme === '1',
-              homepage: req.body.homepage === '1',
-              menu: req.body.menu === '1',
-              sports: [].concat(req.body.sports || []),
-            }
-          : {};
+      const args = type === 'setup' ? setupArgsFrom(req.body) : {};
       hub.queueCommand(host, type, args);
     } catch (err) {
       return siteBack(res, host, `error:${err.message}`);
