@@ -95,16 +95,26 @@ function decodeEntities(text) {
 // first should sail through directly.
 async function fetchHtmlViaBrowser(page, url) {
   try {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: REQUEST_TIMEOUT_MS });
+    const res = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: REQUEST_TIMEOUT_MS });
     let html = await page.content();
     if (html.includes('window.location.replace(')) {
       await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: REQUEST_TIMEOUT_MS }).catch(() => {});
       html = await page.content();
     }
+    // A blocked domain is a failed fetch, not "no live games": livetv905.me
+    // answered 403 "Website Access Blocked" from 2026-10-19 and the feed
+    // quietly reported 0 live games for days, with nothing marked down.
+    if ((res && res.status() >= 400) || isBlockPage(html)) return null;
     return html;
   } catch {
     return null;
   }
+}
+
+// Cloudflare's pages for a domain taken down or under review.
+function isBlockPage(html) {
+  const title = (String(html || '').match(/<title>([^<]*)/i) || [])[1] || '';
+  return /website access blocked|unauthorized streaming|attention required|access denied/i.test(title);
 }
 
 /**
@@ -397,4 +407,4 @@ function normalizeLiveRows(rows, deps) {
   return rows.map((r) => normalizeLiveRow(r, deps));
 }
 
-module.exports = { fetchLiveStreams, lookupYouTubeVideo, SPORTS, normalizeLiveRow, normalizeLiveRows };
+module.exports = { fetchLiveStreams, lookupYouTubeVideo, SPORTS, normalizeLiveRow, normalizeLiveRows, isBlockPage };

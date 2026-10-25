@@ -72,3 +72,11 @@ test('homeTeam translation is looked up via injected dep', () => {
   assert.equal(out.homeTeam, 'Team A');
   assert.equal(out.homeTeamZH, '球队A');
 });
+
+test('isBlockPage: Cloudflare takedown/review pages are not a game list', () => {
+  const { isBlockPage } = require('../src/liveTv');
+  assert.equal(isBlockPage('<html><head><title>Website Access Blocked</title>'), true);
+  assert.equal(isBlockPage('<title>Under Review for Unauthorized Streaming | Cloudflare</title>'), true);
+  assert.equal(isBlockPage('<title>Прямые спортивные видео трансляции / LiveTV</title>'), false);
+  assert.equal(isBlockPage(''), false);
+});
