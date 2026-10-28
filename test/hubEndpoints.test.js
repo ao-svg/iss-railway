@@ -271,6 +271,46 @@ test('hub endpoints', async (t) => {
     assert.match(await (await fetch(`${base}/sites`, { headers: { Authorization: basic } })).text(), /Download zip/);
   });
 
+  await t.test('API token: scripts read the state, publish, and ask outdated sites to update now', async () => {
+    const http = require('http');
+    const bearer = (tok) => ({ Authorization: `Bearer ${tok}` });
+    assert.equal((await fetch(`${base}/api/hub/state`, { headers: bearer('nope') })).status, 401);
+
+    const token = hub.createApiToken();
+    const state = await (await fetch(`${base}/api/hub/state`, { headers: bearer(token) })).json();
+    assert.ok(state.sites.some((x) => x.host === SITE));
+
+    // Publish with the token (no login, no same-origin page)
+    const zip = buildZip([{ name: `${hub.PLUGIN_SLUG}/${hub.PLUGIN_SLUG}.php`, data: Buffer.from('<?php\n/*\n * Version: 9.9.10\n */') }]);
+    const up = await fetch(`${base}/api/hub/release`, { method: 'PUT', headers: { ...bearer(token), 'Content-Type': 'application/zip' }, body: zip });
+    assert.equal((await up.json()).version, '9.9.10');
+
+    // A stand-in WordPress site that records the poke
+    const pokes = [];
+    const fake = http.createServer((req, res) => {
+      let b = '';
+      req.on('data', (c) => (b += c)).on('end', () => {
+        pokes.push({ url: req.url, body: b });
+        res.setHeader('Content-Type', 'application/json');
+        res.end('{"ok":true,"updating":"9.9.10"}');
+      });
+    });
+    await new Promise((r) => fake.listen(0, r));
+    t.after(() => fake.close());
+    const fakeHome = `http://localhost:${fake.address().port}/`;
+    await fetch(`${base}/api/hub/config?site=${SITE}&v=1.0.0&home=${encodeURIComponent(fakeHome)}`, { headers: { 'X-Zhibo-Key': key } });
+
+    const upd = await (await fetch(`${base}/api/hub/update`, { method: 'POST', headers: { ...bearer(token), 'Content-Type': 'application/json' }, body: JSON.stringify({ site: SITE }) })).json();
+    assert.equal(upd.results.length, 1);
+    assert.equal(upd.results[0].action, 'asked to update');
+    assert.deepEqual(JSON.parse(pokes[0].body), { update: true });
+    assert.match(pokes[0].url, /rest_route=\/zhibo\/v1\/poke/);
+
+    const missing = await fetch(`${base}/api/hub/update`, { method: 'POST', headers: { ...bearer(token), 'Content-Type': 'application/json' }, body: JSON.stringify({ site: 'nope.example' }) });
+    assert.equal(missing.status, 404);
+    delete hub.getState().apiToken;
+  });
+
   await t.test('a zip that is not the plugin is refused', async () => {
     const res = await fetch(`${base}/api/hub/release`, {
       method: 'PUT',

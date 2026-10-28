@@ -188,6 +188,28 @@ function keyMatches(given) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+// API token for scripts (scripts/hub.js: publish a plugin, list sites, update sites now).
+// HUB_API_TOKEN wins; otherwise one made on the WordPress sites page. Separate from the network
+// key, which every site holds — the token is admin access.
+function apiToken() {
+  return process.env.HUB_API_TOKEN || store.apiToken || '';
+}
+
+function createApiToken() {
+  if (process.env.HUB_API_TOKEN) throw new Error('The token comes from HUB_API_TOKEN — change it in Railway');
+  store.apiToken = `hub_${crypto.randomBytes(24).toString('base64url')}`;
+  save();
+  return store.apiToken;
+}
+
+function tokenMatches(given) {
+  const t = apiToken();
+  if (!t) return false;
+  const a = Buffer.from(String(given || ''));
+  const b = Buffer.from(t);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 function recordCheckin(host, info) {
   const now = new Date().toISOString();
   const prev = store.sites[host] || {};
@@ -516,6 +538,9 @@ module.exports = {
   pluginVersionFromZip,
   networkKey,
   keyMatches,
+  apiToken,
+  createApiToken,
+  tokenMatches,
   recordCheckin,
   cleanSetupArgs,
   queueCommand,

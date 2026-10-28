@@ -51,13 +51,15 @@ const SETUP_SPORTS = [
 ];
 
 // "Ask your hub now" — the site only acts on what its own hub hands out, so this needs no secret
-async function pokeSite(site) {
+// opts.update: also install the hub's newer version of the site's plugin now (plugins that know
+// it: schedule 2.4.0+, player 4.4.0+; older ones just check in)
+async function pokeSite(site, opts = {}) {
   const home = hub.cleanUrl(site && site.home);
   if (!home) return { ok: false, error: 'no address on record' };
   try {
     const ns = site.role === 'player' ? 'zhibo82/v1' : 'zhibo/v1';
-    const res = await axios.post(`${home}/?rest_route=/${ns}/poke`, {}, { timeout: 10000, maxRedirects: 2, validateStatus: () => true });
-    return res.status === 200 ? { ok: true } : { ok: false, error: `HTTP ${res.status}` };
+    const res = await axios.post(`${home}/?rest_route=/${ns}/poke`, opts.update ? { update: true } : {}, { timeout: 10000, maxRedirects: 2, validateStatus: () => true });
+    return res.status === 200 ? { ok: true, answer: res.data } : { ok: false, error: `HTTP ${res.status}` };
   } catch (err) {
     return { ok: false, error: err.code || err.message };
   }
@@ -429,6 +431,21 @@ function renderSites({ layout, escapeHtml }, base, flash) {
               <button type="submit" class="secondary small" style="margin-top:0.75rem">Change key…</button></form>`
             }
           </div>
+          <div class="foot" style="display:block">
+            <strong>API token for scripts</strong>
+            <p class="muted">Lets <code>npm run hub</code> in the iss-railway folder (and Claude) publish plugin zips, list the sites and update them right away — the same as this page, without a login. Put it in iss-railway's <code>.env</code> as <code>HUB_API_TOKEN=…</code>. Keep it private: it is admin access.</p>
+            ${
+              hub.apiToken()
+                ? `<table><tr><th>Token</th><td><code>${escapeHtml(hub.apiToken())}</code></td></tr></table>`
+                : '<p class="muted">No token yet.</p>'
+            }
+            ${
+              process.env.HUB_API_TOKEN
+                ? '<p class="muted">The token comes from the HUB_API_TOKEN variable.</p>'
+                : `<form method="POST" action="/api/hub/api-token"${hub.apiToken() ? ` onsubmit="return confirm('The old token stops working. Make a new one?');"` : ''}>
+              <button type="submit" class="secondary small" style="margin-top:0.75rem">${hub.apiToken() ? 'Make a new token…' : 'Create token'}</button></form>`
+            }
+          </div>
         </div>
       </details>
     </div>
@@ -537,6 +554,71 @@ function renderAddSite({ layout, escapeHtml }, domain, probe) {
 }
 
 function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
+  // Scripts: "Authorization: Bearer <API token>". People: the dashboard login, from this app's pages.
+  const tokenOrAdmin = (req, res, next) => {
+    const m = /^Bearer\s+(\S+)$/i.exec(req.get('authorization') || '');
+    if (m) return hub.tokenMatches(m[1]) ? next() : res.status(401).json({ error: 'bad API token' });
+    return requireAuth('admin')(req, res, () => sameOrigin(req, res, next));
+  };
+
+  // What the sites look like now (scripts/hub.js status)
+  app.get('/api/hub/state', tokenOrAdmin, (req, res) => {
+    const st = hub.getState();
+    const sites = Object.entries(st.sites).map(([host, x]) => {
+      const r = st.releases[hub.knownPlugin(x.plugin)];
+      return {
+        host,
+        role: x.role || 'schedule',
+        plugin: hub.knownPlugin(x.plugin),
+        version: x.version,
+        latest: r ? r.version : null,
+        outdated: Boolean(r && hub.compareVersions(x.version, r.version) < 0),
+        lastSeen: x.lastSeen,
+        removed: Boolean(x.removed),
+        home: x.home,
+      };
+    });
+    res.json({
+      sites,
+      releases: Object.fromEntries(Object.entries(st.releases).map(([k, r]) => [k, { version: r.version, uploadedAt: r.uploadedAt, notes: r.notes }])),
+      destinations: hub.destinations().map((d) => ({ host: d.host, url: d.url, main: d.main, inRotation: d.inRotation, connected: Boolean(d.player) })),
+      rotation: Boolean(st.settings.rotationEnabled),
+    });
+  });
+
+  // "Update now": every matching site whose plugin is older than the published one is asked to
+  // install it right away. body: { site?: host | 'all', plugin?: slug }
+  app.post('/api/hub/update', express.json({ limit: '16kb' }), tokenOrAdmin, async (req, res) => {
+    const st = hub.getState();
+    const want = hub.cleanHost((req.body && req.body.site) || 'all');
+    const plugin = req.body && req.body.plugin ? hub.knownPlugin(req.body.plugin) : null;
+    const targets = Object.entries(st.sites).filter(([host, x]) => {
+      if (x.removed) return false;
+      if (want !== 'all' && host !== want) return false;
+      if (plugin && hub.knownPlugin(x.plugin) !== plugin) return false;
+      return true;
+    });
+    if (want !== 'all' && !targets.length) return res.status(404).json({ error: `Unknown site ${want}` });
+    const results = await Promise.all(
+      targets.map(async ([host, x]) => {
+        const r = st.releases[hub.knownPlugin(x.plugin)];
+        const outdated = Boolean(r && hub.compareVersions(x.version, r.version) < 0);
+        if (!outdated) return { host, version: x.version, latest: r ? r.version : null, action: 'up to date' };
+        const poke = await pokeSite({ ...x, host }, { update: true });
+        return { host, version: x.version, latest: r.version, action: poke.ok ? 'asked to update' : `unreachable: ${poke.error}`, answer: poke.answer };
+      })
+    );
+    res.json({ results });
+  });
+
+  app.post('/api/hub/api-token', requireAuth('admin'), sameOrigin, (req, res) => {
+    try {
+      hub.createApiToken();
+      res.redirect(`/sites?flash=${encodeURIComponent('New API token — copy it from Settings.')}`);
+    } catch (err) {
+      res.redirect(`/sites?flash=${encodeURIComponent('error:' + err.message)}`);
+    }
+  });
   const back = (res, flash) => res.redirect(`/sites?flash=${encodeURIComponent(flash)}`);
   const attempt = (res, fn, ok) => {
     try {
@@ -744,8 +826,7 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
 
   app.put(
     '/api/hub/release',
-    requireAuth('admin'),
-    sameOrigin,
+    tokenOrAdmin,
     express.raw({ type: () => true, limit: hub.MAX_ZIP_BYTES }),
     (req, res) => {
       try {
