@@ -64,6 +64,12 @@ test('looksLikeBinaryMedia: declared text/html content-type is rejected', () => 
   assert.equal(looksLikeBinaryMedia(bytes, 'text/html; charset=utf-8'), false);
 });
 
+test('looksLikeBinaryMedia: real MPEG-TS mislabeled text/plain still counts as media', () => {
+  const bytes = Buffer.from([0x47, 0x40, 0x11, 0x1d, ...Array(184).fill(0)]);
+  assert.equal(looksLikeBinaryMedia(bytes, 'text/plain'), true);
+  assert.equal(looksLikeBinaryMedia(Buffer.from('404 not found'), 'text/plain'), false);
+});
+
 test('looksLikeBinaryMedia: mostly-printable text with no media signature reads as false', () => {
   const bytes = Buffer.from('this is just a plain text error message from the server');
   assert.equal(looksLikeBinaryMedia(bytes, null), false);
@@ -376,6 +382,66 @@ test('checkUrl: probes send an Origin header, so CDNs that only answer CORS to o
       assert.equal(r.status, 'stream');
     }
   );
+});
+
+test('checkUrl: a redirected master resolves its relative variant against the host it was served from', async () => {
+  const { checkUrl } = require('../src/sourceChecks');
+  await withServer(
+    (req, res) => {
+      if (req.url === '/short.m3u8') return res.writeHead(302, { Location: '/stitch/master.m3u8' }).end();
+      if (req.url === '/stitch/master.m3u8') return res.writeHead(200, { 'Content-Type': 'application/x-mpegURL' }).end('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n1042180/playlist.m3u8\n');
+      if (req.url === '/stitch/1042180/playlist.m3u8') return res.writeHead(200, { 'Content-Type': 'application/x-mpegURL' }).end('#EXTM3U\n#EXTINF:6,\nseg.ts\n');
+      if (req.url === '/stitch/1042180/seg.ts') return res.writeHead(200, { 'Content-Type': 'video/mp2t' }).end(Buffer.alloc(376, 0x47));
+      res.writeHead(404).end();
+    },
+    async (base) => {
+      const r = await checkUrl(`${base}/short.m3u8`);
+      assert.equal(r.working, true);
+      assert.equal(r.nestedUrl, `${base}/stitch/1042180/playlist.m3u8`);
+      assert.equal(r.segmentUrl, `${base}/stitch/1042180/seg.ts`);
+    }
+  );
+});
+
+test('checkUrl: a segment that answers 503 once is retried, like a player would, before the stream counts as dead', async () => {
+  const { checkUrl } = require('../src/sourceChecks');
+  const hits = {};
+  await withServer(
+    (req, res) => {
+      hits[req.url] = (hits[req.url] || 0) + 1;
+      if (req.url === '/live.m3u8') return res.writeHead(200, { 'Content-Type': 'application/x-mpegurl' }).end('#EXTM3U\n#EXTINF:10,\n/seg/1\n#EXTINF:10,\n/seg/2\n');
+      if (req.url === '/seg/2' && hits[req.url] === 1) return res.writeHead(503, { 'Content-Type': 'text/html' }).end('<html>503</html>');
+      res.writeHead(200, { 'Content-Type': 'video/mp2t' }).end(Buffer.alloc(376, 0x47));
+    },
+    async (base) => {
+      const r = await checkUrl(`${base}/live.m3u8`);
+      assert.equal(r.working, true);
+      assert.equal(r.status, 'nocors');
+      assert.equal(r.segmentUrl, `${base}/seg/2`, 'the newest segment is tried first');
+    }
+  );
+  assert.equal(hits['/seg/2'], 2);
+  assert.equal(hits['/seg/1'], undefined);
+});
+
+test('checkUrl: segments that keep failing still make the stream dead', async () => {
+  const { checkUrl } = require('../src/sourceChecks');
+  const hits = {};
+  await withServer(
+    (req, res) => {
+      hits[req.url] = (hits[req.url] || 0) + 1;
+      if (req.url === '/live.m3u8') return res.writeHead(200, { 'Content-Type': 'application/x-mpegurl' }).end('#EXTM3U\n#EXTINF:10,\n/seg/1\n#EXTINF:10,\n/seg/2\n');
+      if (req.url === '/seg/1') return res.writeHead(404).end();
+      res.writeHead(503).end();
+    },
+    async (base) => {
+      const r = await checkUrl(`${base}/live.m3u8`);
+      assert.equal(r.working, false);
+      assert.equal(r.status, 'dead');
+    }
+  );
+  assert.equal(hits['/seg/2'], 2, 'a 5xx is retried once');
+  assert.equal(hits['/seg/1'], 1, 'a 404 is not');
 });
 
 test('carryOver: a swapped-in URL starts from the old result, minus the old token facts, never overwriting its own', async () => {

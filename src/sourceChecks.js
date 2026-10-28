@@ -164,6 +164,17 @@ function extractFirstReference(text, baseUrl) {
   return null;
 }
 
+/** The last URL a playlist references (its newest segment), resolved like extractFirstReference. */
+function extractLastReference(text, baseUrl) {
+  const lines = text.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  if (!lines.length) return null;
+  try {
+    return new URL(lines[lines.length - 1], baseUrl).toString();
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Live, click-time resolution for /go — where does this URL point RIGHT
  * NOW, following redirects, no caching involved. Deliberately lighter than
@@ -243,18 +254,51 @@ async function getFirstBytes(url) {
   return res;
 }
 
+// `url` is where the body actually came from after redirects: a playlist's
+// relative references resolve against THAT, not the URL we asked for
+// (jmp2.uk redirects to a Pluto host whose variants are relative paths).
 async function probeOnce(url) {
   try {
     const res = await getFirstBytes(url);
     return {
       reachable: res.status < 400,
+      httpStatus: res.status,
+      url: res.request?.res?.responseUrl || url,
       cors: hasCorsHeader(res.headers),
       contentType: res.headers['content-type'] || null,
       data: res.data,
     };
   } catch {
-    return { reachable: false, cors: false, contentType: null, data: null };
+    return { reachable: false, httpStatus: null, url, cors: false, contentType: null, data: null };
   }
+}
+
+const SEGMENT_RETRY_DELAY_MS = 1000;
+
+/**
+ * Fetch a media playlist's segment the way a player would: the newest one
+ * first (hls.js starts a live stream near its end, and the oldest segment
+ * may already have aged out of the CDN), then the oldest, and one more try
+ * of each after a 5xx — players retry fragment loads, and cdnlivetv.tv
+ * answers 503 to a good share of segment requests that succeed a second
+ * later (measured 2026-10-28). Only when every attempt fails is the chain
+ * not working. Returns the probe plus its media verdict and URL.
+ */
+async function probeSegment(playlistText, playlistUrl) {
+  const candidates = [...new Set([extractLastReference(playlistText, playlistUrl), extractFirstReference(playlistText, playlistUrl)])].filter(Boolean);
+  let failed = null;
+  for (const segmentUrl of candidates) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt) await new Promise((resolve) => setTimeout(resolve, SEGMENT_RETRY_DELAY_MS));
+      const hop = await probeOnce(segmentUrl);
+      const mediaCheck = looksLikeBinaryMedia(hop.data, hop.contentType);
+      const result = { ...hop, segmentUrl, mediaCheck };
+      if (hop.reachable && mediaCheck !== false) return result;
+      failed = failed || result;
+      if (!(hop.httpStatus >= 500)) break;
+    }
+  }
+  return failed;
 }
 
 /**
@@ -374,14 +418,19 @@ function looksLikeDangerousFile(buffer, contentType, contentDisposition, url) {
 // test, so this only returns false for content that's CLEARLY not media
 // (declared as text/HTML, or looks like printable text) — null means
 // inconclusive (e.g. empty body), which callers should NOT penalize.
+//
+// The media signatures are checked BEFORE the declared type: plenty of
+// small IPTV servers label every file text/plain (198.58.104.90:8989 serves
+// real MPEG-TS that way, and players don't care), whereas an HTML/text
+// error page never starts with a TS sync byte or an fMP4 box.
 function looksLikeBinaryMedia(buffer, contentType) {
   if (!buffer || !buffer.length) return null;
-  const ct = (contentType || '').toLowerCase();
-  if (ct.startsWith('text/') || ct.includes('html')) return false;
   const bytes = Buffer.from(buffer);
   if (bytes[0] === 0x47) return true; // MPEG-TS sync byte
   const head = bytes.slice(0, 64).toString('latin1');
   if (head.includes('ftyp') || head.includes('moof') || head.includes('styp')) return true; // fMP4 box signatures
+  const ct = (contentType || '').toLowerCase();
+  if (ct.startsWith('text/') || ct.includes('html')) return false;
   const sample = bytes.slice(0, 256);
   const printable = sample.filter((b) => b >= 32 && b < 127).length;
   return printable / sample.length < 0.85; // mostly non-printable -> treat as binary/media
@@ -461,10 +510,29 @@ async function checkUrl(url) {
       // "does it work" is a separate question from "can a browser fetch
       // it". DASH's XML segment templates are out of scope, so an .mpd
       // only gets the outer check (working stays null).
+      // References resolve against resolvedUrl — where the playlist was
+      // actually served from after redirects — never the URL we asked for.
       if (urlPathname(url).endsWith('.m3u8')) {
         const text = Buffer.from(res.data).toString('utf8');
-        nestedUrl = extractFirstReference(text, url);
-        if (nestedUrl) {
+        if (/#EXTINF/.test(text)) {
+          // Already a media playlist: its references are segments, so
+          // probe them like a player would (see probeSegment).
+          const seg = await probeSegment(text, resolvedUrl);
+          if (seg) {
+            nestedUrl = segmentUrl = seg.segmentUrl;
+            nestedOk = seg.reachable;
+            segmentOk = seg.reachable && seg.mediaCheck !== false;
+            if (!segmentOk) {
+              working = false;
+            } else {
+              working = seg.mediaCheck === true ? true : null;
+              cors = cors && seg.cors;
+            }
+          }
+        } else {
+          nestedUrl = extractFirstReference(text, resolvedUrl);
+        }
+        if (nestedUrl && !segmentUrl) {
           const hop1 = await probeOnce(nestedUrl);
           nestedOk = hop1.reachable;
           if (!hop1.reachable) {
@@ -477,16 +545,14 @@ async function checkUrl(url) {
             // marks a chain as not working.
             const hop1IsManifest = bodyLooksLikeManifest(hop1.data);
             if (hop1IsManifest && urlPathname(nestedUrl).endsWith('.m3u8')) {
-              const hop1Text = Buffer.from(hop1.data).toString('utf8');
-              segmentUrl = extractFirstReference(hop1Text, nestedUrl);
-              if (segmentUrl) {
-                const hop2 = await probeOnce(segmentUrl);
-                const mediaCheck = looksLikeBinaryMedia(hop2.data, hop2.contentType);
-                segmentOk = hop2.reachable && mediaCheck !== false;
-                if (!hop2.reachable || mediaCheck === false) {
+              const hop2 = await probeSegment(Buffer.from(hop1.data).toString('utf8'), hop1.url);
+              if (hop2) {
+                segmentUrl = hop2.segmentUrl;
+                segmentOk = hop2.reachable && hop2.mediaCheck !== false;
+                if (!segmentOk) {
                   working = false;
                 } else {
-                  working = mediaCheck === true ? true : null;
+                  working = hop2.mediaCheck === true ? true : null;
                   cors = cors && hop2.cors;
                 }
               }
