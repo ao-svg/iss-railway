@@ -218,20 +218,26 @@ async function resolveNow(url) {
  * GET the first RANGE_BYTES of a URL. Asks with a Range header first; on a
  * 403, asks once more without it — some hosts refuse ranged requests
  * outright (cdn.stmify.com: 403 to Range from Railway, 200 to a plain GET),
- * and a browser player doesn't send Range for a manifest either. The plain
- * retry is streamed and cut off after RANGE_BYTES, so an endless TS stream
- * behind the URL can't be downloaded whole. Resolves with axios's response,
+ * and a browser player doesn't send Range for a manifest either. Both
+ * requests are streamed and cut off after RANGE_BYTES or REQUEST_TIMEOUT_MS,
+ * whichever comes first: a host that ignores Range and sends an endless TS
+ * stream never goes idle, so axios's `timeout` (an idle timeout) never fires
+ * (154.12.107.98:8000/play/* held one check for 15 minutes, and a pass that
+ * doesn't finish blocks every later one). Resolves with axios's response,
  * `data` always a Buffer; rejects like axios on network errors.
  */
 async function getFirstBytes(url) {
-  const opts = { timeout: REQUEST_TIMEOUT_MS, maxRedirects: 5, validateStatus: () => true };
-  const ranged = await axios.get(url, {
-    ...opts,
-    headers: { ...PROBE_HEADERS, Range: `bytes=0-${RANGE_BYTES - 1}` },
-    responseType: 'arraybuffer',
-  });
-  if (ranged.status !== 403) return ranged;
-  const res = await axios.get(url, { ...opts, headers: PROBE_HEADERS, responseType: 'stream' });
+  const opts = { timeout: REQUEST_TIMEOUT_MS, maxRedirects: 5, validateStatus: () => true, responseType: 'stream' };
+  const ranged = await axios.get(url, { ...opts, headers: { ...PROBE_HEADERS, Range: `bytes=0-${RANGE_BYTES - 1}` } });
+  if (ranged.status !== 403) return readFirstBytes(ranged);
+  ranged.data.destroy();
+  const res = await readFirstBytes(await axios.get(url, { ...opts, headers: PROBE_HEADERS }));
+  res.retriedWithoutRange = true;
+  return res;
+}
+
+/** Replace a streamed response's `data` with its first RANGE_BYTES (at most REQUEST_TIMEOUT_MS of reading). */
+async function readFirstBytes(res) {
   const chunks = [];
   let length = 0;
   await new Promise((resolve) => {
@@ -250,7 +256,6 @@ async function getFirstBytes(url) {
     res.data.on('error', done);
   });
   res.data = Buffer.concat(chunks).subarray(0, RANGE_BYTES);
-  res.retriedWithoutRange = true;
   return res;
 }
 
@@ -580,6 +585,22 @@ async function checkUrl(url) {
         nestedOk,
         segmentUrl,
         segmentOk,
+        checkedAt,
+      };
+    }
+
+    // Raw video with no playlist (an endless MPEG-TS at 154.12.107.98:8000/
+    // play/*): neither a page to frame nor something hls.js can play.
+    if (!/html/i.test(contentType || '') && looksLikeBinaryMedia(res.data, contentType) === true) {
+      return {
+        status: 'dead',
+        working: false,
+        cors: null,
+        resolvedUrl,
+        httpStatus: res.status,
+        contentType,
+        isManifest: false,
+        error: 'raw media stream, not a playlist or page — a browser player cannot play it',
         checkedAt,
       };
     }

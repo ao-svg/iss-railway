@@ -349,8 +349,8 @@ test('checkUrl: the no-Range retry reads only the first 16KB of an endless body'
   await withServer(
     (req, res) => {
       if (req.headers.range) return res.writeHead(403).end();
-      res.writeHead(200, { 'Content-Type': 'video/mp2t' });
-      const chunk = Buffer.alloc(4096, 0x47);
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      const chunk = Buffer.alloc(4096, 0x20);
       const iv = setInterval(() => res.write(chunk), 5);
       res.on('close', () => {
         streamClosed = true;
@@ -363,6 +363,30 @@ test('checkUrl: the no-Range retry reads only the first 16KB of an endless body'
       assert.notEqual(r.status, 'dead');
     }
   );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(streamClosed, 'the endless response was cut off, not drained');
+});
+
+test('checkUrl: a host that ignores Range and streams forever is cut off, not waited on', async () => {
+  const { checkUrl } = require('../src/sourceChecks');
+  let streamClosed = false;
+  const started = Date.now();
+  await withServer(
+    (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+      const iv = setInterval(() => res.write(Buffer.alloc(188, 0x47)), 5);
+      res.on('close', () => {
+        streamClosed = true;
+        clearInterval(iv);
+      });
+    },
+    async (base) => {
+      const r = await checkUrl(`${base}/play/a08s`);
+      assert.equal(r.httpStatus, 200);
+      assert.equal(r.working, false, 'raw TS is not something a browser player can play');
+    }
+  );
+  assert.ok(Date.now() - started < 9000, 'bounded by the request timeout');
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.ok(streamClosed, 'the endless response was cut off, not drained');
 });
