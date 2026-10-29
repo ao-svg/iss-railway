@@ -511,6 +511,32 @@ function importIncoming() {
 importIncoming();
 setInterval(importIncoming, 60_000).unref();
 
+// Plugin zips committed to the repo's plugin-releases/ folder are published when the hub
+// starts, if they're newer than what it already has. So releasing a plugin is a commit and a
+// push — no token, upload or Railway login needed. Older or same versions are left alone, and
+// the files stay (they're part of the deployed code).
+const REPO_RELEASES_DIR = path.join(__dirname, '..', 'plugin-releases');
+function importRepoReleases(dir = REPO_RELEASES_DIR) {
+  let names;
+  try { names = fs.readdirSync(dir).filter((n) => /\.zip$/i.test(n)).sort(); } catch { return []; }
+  const done = [];
+  for (const name of names) {
+    try {
+      const buf = fs.readFileSync(path.join(dir, name));
+      const { slug, version } = pluginFromZip(buf);
+      const current = store.releases[slug];
+      if (current && compareVersions(version, current.version) <= 0) continue;
+      const release = publishRelease(buf, `released from the repo (${name})`);
+      console.log(`[hub] published ${release.slug} v${release.version} from plugin-releases/${name}`);
+      done.push(release);
+    } catch (err) {
+      console.error(`[hub] plugin-releases/${name} skipped: ${err.message}`);
+    }
+  }
+  return done;
+}
+importRepoReleases();
+
 function getState() {
   return store;
 }
@@ -527,6 +553,7 @@ module.exports = {
   addDestination,
   removeDestination,
   importIncoming,
+  importRepoReleases,
   INCOMING_DIR,
   MAX_ZIP_BYTES,
   cleanHost,

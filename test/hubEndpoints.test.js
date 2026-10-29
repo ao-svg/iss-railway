@@ -271,6 +271,27 @@ test('hub endpoints', async (t) => {
     assert.match(await (await fetch(`${base}/sites`, { headers: { Authorization: basic } })).text(), /Download zip/);
   });
 
+  await t.test('zips committed to plugin-releases/ are published when newer, and left alone otherwise', async () => {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plugin-releases-'));
+    const player = (v) => buildZip([{ name: `${hub.PLAYER_SLUG}/zhibo82-streaming-table.php`, data: Buffer.from(`<?php\n/*\n * Version: ${v}\n */`) }]);
+    try {
+      fs.writeFileSync(path.join(dir, 'a-older.zip'), player('4.9.4'));   // the previous test published 4.9.5
+      fs.writeFileSync(path.join(dir, 'b-newer.zip'), player('4.9.6'));
+      fs.writeFileSync(path.join(dir, 'c-bad.zip'), buildZip([{ name: 'other/x.php', data: Buffer.from('x') }]));
+      const published = hub.importRepoReleases(dir);
+      assert.deepEqual(published.map((r) => `${r.slug} ${r.version}`), [`${hub.PLAYER_SLUG} 4.9.6`]);
+      assert.equal(hub.getState().releases[hub.PLAYER_SLUG].version, '4.9.6');
+      assert.equal(fs.existsSync(path.join(dir, 'b-newer.zip')), true);   // part of the deployed code: kept
+      // Same versions again (the next restart): nothing to do
+      assert.deepEqual(hub.importRepoReleases(dir), []);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   await t.test('API token: scripts read the state, publish, and ask outdated sites to update now', async () => {
     const http = require('http');
     const bearer = (tok) => ({ Authorization: `Bearer ${tok}` });
