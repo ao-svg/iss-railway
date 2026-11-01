@@ -271,6 +271,14 @@ test('hub endpoints', async (t) => {
     assert.match(await (await fetch(`${base}/sites`, { headers: { Authorization: basic } })).text(), /Download zip/);
   });
 
+  await t.test('a site reports how its last self-update went; the site page shows it', async () => {
+    const res = await fetch(`${base}/api/hub/config?site=${SITE}&v=1.0.0&upd=${encodeURIComponent('2.5.1 failed: Could not create directory.')}`, { headers: { 'X-Zhibo-Key': key } });
+    assert.equal(res.status, 200);
+    assert.equal(hub.getState().sites[SITE].update, '2.5.1 failed: Could not create directory.');
+    const html = await (await fetch(`${base}/sites/${SITE}`, { headers: { Authorization: basic } })).text();
+    assert.match(html, /Last self-update<\/th><td class="status-err">2\.5\.1 failed: Could not create directory\./);
+  });
+
   await t.test('zips committed to plugin-releases/ are published when newer, and left alone otherwise', async () => {
     const fs = require('fs');
     const os = require('os');

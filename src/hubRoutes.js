@@ -105,6 +105,7 @@ function renderSite({ layout, escapeHtml }, host, flash) {
       <table>
         <tr><th>Site</th><td><a href="${escapeHtml(x.home || `https://${host}`)}" target="_blank" rel="noopener">${escapeHtml(x.home || host)}</a></td></tr>
         <tr><th>Plugin</th><td>v${escapeHtml(x.version || '?')} · WordPress ${escapeHtml(x.wp || '?')} · PHP ${escapeHtml(x.php || '?')}</td></tr>
+        <tr><th>Last self-update</th><td class="${/failed/.test(x.update || '') ? 'status-err' : ''}">${escapeHtml(x.update || '—')}</td></tr>
         <tr><th>Last check-in</th><td>${ago(x.lastSeen)}</td></tr>
         <tr><th>Opens on</th><td><code>${escapeHtml(hub.targetFor(host, st.settings, st.overrides))}</code>${st.overrides[host] ? ' (override)' : ''}</td></tr>
         <tr><th>Theme</th><td>${escapeHtml(d.theme || x.theme || '—')}</td></tr>
@@ -265,7 +266,8 @@ function renderSites({ layout, escapeHtml }, base, flash) {
   // How many schedule sites send their visitors to each destination
   const usedBy = (p) => schedules.filter((x) => !x.removed && (x.target === p.home || hub.cleanHost(x.target) === p.host || (x.rotating && hub.rotationFor(x.host, s, st.overrides).some((u) => hub.cleanHost(u) === p.host)))).length;
   const version = (x) =>
-    `<span class="rank ${isOld(x) ? 'rank-medium' : 'rank-working'}" title="${isOld(x) ? `v${escapeHtml(latestOf(x))} is published` : 'Up to date'}">v${escapeHtml(x.version || '?')}</span>`;
+    `<span class="rank ${isOld(x) ? 'rank-medium' : 'rank-working'}" title="${isOld(x) ? `v${escapeHtml(latestOf(x))} is published` : 'Up to date'}">v${escapeHtml(x.version || '?')}</span>` +
+    (isOld(x) && /failed/.test(x.update || '') ? `<div class="status-err" style="font-size:0.75rem;margin-top:0.2rem">update ${escapeHtml(x.update)}</div>` : '');
   const seen = (x) => `<span class="${isSilent(x) ? 'status-err' : 'muted'}" title="${escapeHtml(x.lastSeen)}">${ago(x.lastSeen)}</span>`;
 
   // ── Destination sites ──
@@ -714,6 +716,7 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
     const plugin = hub.knownPlugin(q('plugin'));
     hub.recordCheckin(host, {
       home: q('home'), version: q('v'), wp: q('wp'), php: q('php'), theme: q('theme'), pages: Number(q('pages')) || 0,
+      update: q('upd'),
       // Sport pages the site has (schedule plugin 2.5.0+): what "Write page content" writes for
       sports: q('sports') ? q('sports').split(',').map((x) => x.trim()).filter((x) => /^[A-Za-z][A-Za-z /-]{1,40}$/.test(x)).slice(0, 40) : undefined,
       plugin, role: hub.PLUGINS[plugin].role,
