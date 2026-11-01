@@ -12,6 +12,7 @@ const { buildZip } = require('./zip');
 const relay = require('./relay');
 const { mountRelayRoutes, relayPreviewHtml, allowAnyOrigin } = require('./relayRoutes');
 const { mountHubRoutes } = require('./hubRoutes');
+const { mountSourceReportRoutes } = require('./sourceReportRoutes');
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({
@@ -161,6 +162,7 @@ function layout(title, body, activePath = '') {
       ${navLink('/browse', 'Browse all', activePath)}
       ${navLink('/live', 'Live now', activePath)}
       ${navLink('/iptv-channels', 'iptv-org channels', activePath)}
+      ${navLink('/source-report', 'Source health', activePath)}
     </div>
     <div class="nav-group">
       <div class="nav-label">Admin</div>
@@ -995,6 +997,8 @@ function createServer({
   getPlaylistStatus,
   // url => true for sources that must never go through the relay.
   isRelayExcluded = () => false,
+  // Daily source health report (sourceReport.js); inert defaults for tests.
+  sourceReport = { getReports: () => [], getSchedule: () => ({}), isRunning: () => false, runReport: async () => {} },
 }) {
   const app = express();
   app.use(express.urlencoded({ extended: false }));
@@ -1048,6 +1052,7 @@ function createServer({
   mountRelayRoutes(app, { requireAuth, isRelayable, isEnabled: isRelayEnabled });
   // WordPress sites running the Zhibo Streaming Table plugin: settings, check-ins, updates
   mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig });
+  mountSourceReportRoutes(app, { requireAuth, layout, escapeHtml, ...sourceReport });
 
   // Live, click-time redirect to wherever a source URL currently points.
   // Exports embed THIS link instead of a raw CDN URL — periodic source

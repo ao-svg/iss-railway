@@ -39,6 +39,10 @@ function envDefaults() {
     // exports stale. Blank disables the schedule (checks then only run
     // after a pipeline run or from the dashboard button).
     sourceCheckCronExpr: process.env.SOURCE_CHECK_CRON ?? '*/3 * * * *',
+    // Daily source health report (sourceReport.js): a forced check of every
+    // source, counted into live / auth error / not responding / ... and kept
+    // per day. 06:00 UTC = 14:00 Beijing. Blank disables the schedule.
+    sourceReportCronExpr: process.env.SOURCE_REPORT_CRON ?? '0 6 * * *',
     outputCsvPath: process.env.OUTPUT_CSV_PATH || dataPath('fixtures.csv'),
     // Prefix for links this app puts into its own exports (screenshot
     // URLs in fixtures.csv/json). Railway injects RAILWAY_PUBLIC_DOMAIN;

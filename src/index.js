@@ -14,6 +14,7 @@ const youtubeChannels = require('./youtubeChannels');
 const iptv = require('./iptv');
 const manualChannels = require('./manualChannels');
 const screenshots = require('./screenshots');
+const sourceReport = require('./sourceReport');
 const { writeCsv } = require('./csv');
 
 const port = process.env.PORT || 3000;
@@ -45,11 +46,13 @@ const state = {
   screenshotProgress: null, // { done, total }
   lastScreenshotAt: null,
   lastScreenshotSummary: null,
+  reportRunning: false,
 };
 
 let cronTask = null;
 let sourceCheckTask = null;
 let liveTask = null;
+let reportTask = null;
 
 async function runOnce() {
   if (state.running) return state;
@@ -279,6 +282,47 @@ async function runSourceCheck(force = false) {
   return state;
 }
 
+// Daily source health report (sourceReport.js): waits out a check already
+// in progress, force-checks every source in the current export (so the
+// day's numbers come from one pass, not a mix of cache ages), then counts
+// and stores the snapshot. /source-report shows it.
+async function runSourceReport() {
+  if (state.reportRunning || !state.lastRows) return state;
+  state.reportRunning = true;
+  try {
+    const deadline = Date.now() + 15 * 60 * 1000;
+    while (state.checkRunning && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5000));
+    await runSourceCheck(true);
+    const report = sourceReport.buildReport(allSourceUrls(), sourceChecks.getStatus, {
+      getGeo: (url, check) => sourceChecks.geoHintFor((check && check.resolvedUrl) || url),
+      meta: { checkSummary: state.lastCheckSummary },
+    });
+    sourceReport.saveReport(report);
+    const c = report.counts;
+    console.log(
+      `[sourceReport] ${report.date}: ${report.total} sources — live ${c.live}, no CORS ${c.liveNoCors}, unverified ${c.responding}, auth error ${c.authError}, not responding ${c.notResponding}, other dead ${c.notFound + c.serverError + c.otherHttpError + c.broken}`
+    );
+  } catch (err) {
+    console.error('[sourceReport] run failed:', err.message);
+  } finally {
+    state.reportRunning = false;
+  }
+  return state;
+}
+
+function sourceReportSchedule() {
+  const c = getConfig();
+  return {
+    pipelineCron: c.cronExpr,
+    lastRunAt: state.lastRunAt,
+    sourceCheckCron: c.sourceCheckCronExpr,
+    lastCheckAt: state.lastCheckAt,
+    doms9RefreshMinutes: DOMS9_REFRESH_MS / 60000,
+    doms9FetchedAt: (c.doms9PlaylistUrl && iptv.getPlaylistStatus(c.doms9PlaylistUrl)?.fetchedAt) || null,
+    reportCron: c.sourceReportCronExpr,
+  };
+}
+
 function allTranslatableNames() {
   const names = new Set();
   for (const row of state.lastRows || []) {
@@ -448,6 +492,16 @@ function scheduleCron() {
     console.log(`[index] source checks scheduled: ${getConfig().sourceCheckCronExpr}`);
   }
 
+  if (reportTask) reportTask.stop();
+  reportTask = null;
+  const { sourceReportCronExpr } = getConfig();
+  if (sourceReportCronExpr && cron.validate(sourceReportCronExpr)) {
+    reportTask = cron.schedule(sourceReportCronExpr, () => runSourceReport().catch((err) => console.error('[sourceReport]', err.message)), { timezone: 'UTC' });
+    console.log(`[index] source health report scheduled: ${sourceReportCronExpr} (UTC)`);
+  } else if (sourceReportCronExpr) {
+    console.error(`[index] invalid SOURCE_REPORT_CRON "${sourceReportCronExpr}", daily source report not scheduled`);
+  }
+
   // Live streams on their own schedule too. runLiveTvFetch() no-ops while a fetch is running.
   if (liveTask) liveTask.stop();
   liveTask = null;
@@ -488,7 +542,14 @@ if (runOnlyFlag) {
     console.error(`[relay] ${relay.redact(err.message)}`);
     process.exit(1);
   }
-  runOnce();
+  // After the boot pipeline run: if the last daily report is over a day old
+  // (or there's none), run one now instead of waiting for the next 06:00.
+  runOnce().then(() => {
+    const latest = sourceReport.latestReport();
+    if (!latest || Date.now() - new Date(latest.at).getTime() > 24 * 60 * 60 * 1000) {
+      runSourceReport().catch((err) => console.error('[sourceReport]', err.message));
+    }
+  });
   scheduleCron();
   // live.json is empty after a restart until the first fetch — don't wait for the first tick
   if (getConfig().liveTvDomain) runLiveTvFetch().catch((err) => console.error('[liveTv]', err.message));
@@ -516,6 +577,12 @@ if (runOnlyFlag) {
     setChannelStatus: setChannelStatusAndRefresh,
     getPlaylistStatus: iptv.getPlaylistStatus,
     isRelayExcluded,
+    sourceReport: {
+      getReports: sourceReport.getReports,
+      getSchedule: sourceReportSchedule,
+      isRunning: () => state.reportRunning,
+      runReport: runSourceReport,
+    },
   });
   app.listen(port, () => {
     console.log(`[index] server listening on :${port}`);
