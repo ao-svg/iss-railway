@@ -71,9 +71,14 @@ function mountRelayRoutes(app, { requireAuth, isRelayable, isEnabled }) {
   // hands out, and every URI inside a rewritten playlist — needs no login.
   // Unsigned requests (raw known-source URLs) still need a viewer login, so
   // the proxy can't be pointed at arbitrary URLs by anyone.
+  // A request that carries a sig is a visitor's playback link, never someone
+  // to log in: a sig that doesn't verify gets a plain 403, not the viewer
+  // login's Basic challenge — that challenge is what showed visitors a
+  // browser login box when a link outlived the old per-process key.
   const signedOrViewer = (req, res, next) => {
     const target = relay.validateTarget(req.query.url);
     if (target && relay.verifySignature(target, req.query.sig)) return next();
+    if (req.query.sig) return res.status(403).type('text/plain').send('This playback link is no longer valid. Open the stream again from the site.');
     return requireAuth('viewer')(req, res, next);
   };
 

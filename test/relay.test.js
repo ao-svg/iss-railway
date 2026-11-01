@@ -334,7 +334,9 @@ test('unsigned proxy requests need login; signed ones and the player are public'
   for (const p of [`/api/relay/stream?url=${enc(KNOWN)}`, `/api/relay/thumb?url=${enc(KNOWN)}`]) {
     assert.equal((await fetch(base + p)).status, 401, `unsigned ${p}`);
   }
-  assert.equal((await fetch(base + `/api/relay/stream?url=${enc(KNOWN)}&sig=forged`)).status, 401, 'forged signature is not a pass');
+  const forged = await fetch(base + `/api/relay/stream?url=${enc(KNOWN)}&sig=forged`);
+  assert.equal(forged.status, 403, 'forged signature is not a pass');
+  assert.equal(forged.headers.get('www-authenticate'), null, 'a bad playback link never pops a browser login box');
   assert.equal((await fetch(base + relay.localStreamPath(KNOWN))).status, 200, 'signed stream link, no login');
 
   const player = await fetch(base + `/player?url=${enc(KNOWN)}`);
@@ -634,4 +636,14 @@ test('nothing under the data dir contains the secret or a relay address', () => 
   for (const needle of [SECRET, encodeURIComponent(SECRET), 'secret=', 'relay-public.example.com']) {
     assert.ok(!dump.includes(needle), `${needle} found under data dir`);
   }
+});
+
+test('signing key comes from RELAY_SECRET, so links signed before a restart still verify after it', () => {
+  const { execFileSync } = require('node:child_process');
+  const script = `process.stdout.write(require(${JSON.stringify(require.resolve('../src/relay'))}).sign('https://cdn.example.com/a.m3u8'))`;
+  const run = (secret) => execFileSync(process.execPath, ['-e', script], { env: { ...process.env, RELAY_SECRET: secret } }).toString();
+  const a = run('restart-test-secret');
+  assert.equal(run('restart-test-secret'), a, 'same secret, new process -> same signature');
+  assert.notEqual(run('another-secret'), a, 'a different secret signs differently');
+  assert.ok(!a.includes('restart-test-secret'));
 });

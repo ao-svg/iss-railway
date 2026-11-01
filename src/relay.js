@@ -95,14 +95,28 @@ const isPlaylist = (target, contentType) => {
   return PLAYLIST_CT_RE.test(contentType || '');
 };
 
-// Per-process key for signing the segment/key/subtitle URLs this app
-// itself writes into rewritten playlists, so /api/relay/stream can accept
-// them without being an open proxy for arbitrary URLs. A restart just
-// invalidates old signatures; live players re-fetch playlists constantly.
-const SIGNING_KEY = crypto.randomBytes(32);
+// Key for signing the links this app hands out (/go's redirect) and the
+// segment/key/subtitle URLs it writes into rewritten playlists, so
+// /api/relay/stream can accept them without being an open proxy for
+// arbitrary URLs. Derived from RELAY_SECRET (required, stable across
+// restarts) rather than random per process: a random key invalidated every
+// outstanding link on each redeploy, and a visitor's player re-fetching its
+// playlist then got the viewer-login Basic prompt instead of video
+// (2026-11-01). An HMAC of a fixed label, so signatures never reveal the
+// secret itself. Random only when no secret is set (tests, misconfig).
+let _signingKey = null;
+function signingKey() {
+  if (!_signingKey) {
+    const secret = relaySecret();
+    _signingKey = secret
+      ? crypto.createHmac('sha256', secret).update('iss-railway relay link signing v1').digest()
+      : crypto.randomBytes(32);
+  }
+  return _signingKey;
+}
 
 function sign(target) {
-  return crypto.createHmac('sha256', SIGNING_KEY).update(target).digest('base64url');
+  return crypto.createHmac('sha256', signingKey()).update(target).digest('base64url');
 }
 
 function verifySignature(target, sig) {
