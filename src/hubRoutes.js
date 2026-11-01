@@ -11,6 +11,7 @@ const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
 const hub = require('./hub');
+const hubAi = require('./hubAi');
 const hubConnect = require('./hubConnect');
 
 function baseUrl(req, getConfig) {
@@ -80,7 +81,7 @@ function renderSite({ layout, escapeHtml }, host, flash) {
     .map(
       (c) => `<tr>
     <td class="muted" title="${escapeHtml(c.createdAt)}">${ago(c.createdAt)}</td>
-    <td>${c.type === 'uninstall' ? 'Remove' : 'Set up'}${c.local ? ' <span class="muted">(from the site’s admin)</span>' : ''}</td>
+    <td>${c.type === 'uninstall' ? 'Remove' : c.type === 'content' ? 'Page content' : 'Set up'}${c.local ? ' <span class="muted">(from the site’s admin)</span>' : ''}</td>
     <td class="muted">${c.type === 'setup' ? escapeHtml(describeSetup(c.args)) : ''}</td>
     <td><span class="rank ${statusTag(c.status)}">${escapeHtml(c.status)}</span></td>
     <td class="muted">${(c.log || []).map((l) => `<div class="${/^ERROR/.test(l) ? 'status-err' : ''}">${escapeHtml(l)}</div>`).join('')}</td>
@@ -146,6 +147,29 @@ function renderSite({ layout, escapeHtml }, host, flash) {
         <button type="submit" class="secondary" ${canCommand && !x.removed ? '' : 'disabled'}>Remove from site</button>
       </form>
     </div>
+
+    ${isPlayer ? '' : (() => {
+      const job = hubAi.jobFor(host);
+      const status = job
+        ? job.status === 'writing'
+          ? `<p class="status-warn">Writing… ${job.done} of ${job.total} pages (refresh to follow).</p>`
+          : job.status === 'sent'
+            ? `<p class="status-ok">Written and sent ${ago(job.at)} — see Commands below.${job.error ? ` Some pages failed: ${escapeHtml(job.error)}` : ''}</p>`
+            : `<p class="status-err">Failed: ${escapeHtml(job.error)}</p>`
+        : '';
+      const sports = x.sports || Object.keys(d.pages || {});
+      const newEnough = hub.compareVersions(x.version, '2.5.0') >= 0;
+      return `<div class="card">
+      <strong>Page content (AI)</strong>
+      <p class="muted">Writes new text under the table on this site's sport pages (${sports.length ? escapeHtml(sports.join(', ')) : 'none reported yet'}) and sends it. Key and instructions: AI content at the bottom of WordPress sites.</p>
+      ${status}
+      <form method="POST" action="/api/hub/ai/write" onsubmit="return confirm('Replace the text below the table on these pages?');">
+        <input type="hidden" name="host" value="${escapeHtml(host)}">
+        <button type="submit" ${hub.maskedAiKey() && sports.length && newEnough ? '' : 'disabled'}>Write page content</button>
+        ${!newEnough ? '<span class="muted"> needs plugin 2.5.0 or later on the site</span>' : !hub.maskedAiKey() ? '<span class="muted"> add the OpenAI key first</span>' : ''}
+      </form>
+    </div>`;
+    })()}
 
     <h2 class="section-heading">Commands</h2>
     <div class="card">
@@ -450,6 +474,24 @@ function renderSites({ layout, escapeHtml }, base, flash) {
       </details>
     </div>
 
+    <div class="card">
+      <strong>AI content</strong>
+      <p class="muted">The hub writes the text under the table on each schedule site's sport pages (OpenAI), different for every site, and sends it to the site. The key stays here; sites only get the text. Replaces the text below the table on those pages.</p>
+      <form method="POST" action="/api/hub/ai">
+        <label for="ai-key">OpenAI API key${hub.maskedAiKey() ? ` <span class="muted">— saved: <code>${escapeHtml(hub.maskedAiKey())}</code> (leave empty to keep it)</span>` : ''}</label>
+        <input type="password" id="ai-key" name="key" autocomplete="off" placeholder="sk-…">
+        <label for="ai-model">Model</label>
+        <input type="text" id="ai-model" name="model" value="${escapeHtml(hub.aiSettings().model)}">
+        <label for="ai-brief">Extra instructions (optional)</label>
+        <input type="text" id="ai-brief" name="brief" value="${escapeHtml(hub.aiSettings().brief)}" placeholder="e.g. 语气轻松，多提世界杯">
+        <button type="submit">Save</button>
+      </form>
+      ${hub.maskedAiKey() ? `<div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.75rem">
+        <form method="POST" action="/api/hub/ai/write-all" onsubmit="return confirm('Write new text for the sport pages of every schedule site? It replaces the text below the table.');"><button type="submit">Write content for all schedule sites</button></form>
+        <form method="POST" action="/api/hub/ai/clear-key" onsubmit="return confirm('Remove the saved OpenAI key?');"><button type="submit" class="secondary">Remove key</button></form>
+      </div>` : ''}
+    </div>
+
     <script>
     document.getElementById('hub-publish').addEventListener('click', function () {
       var f = document.getElementById('hub-zip').files[0], st = document.getElementById('hub-publish-status'), btn = this;
@@ -611,6 +653,38 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
     res.json({ results });
   });
 
+  // ── AI content ──
+  app.post('/api/hub/ai', requireAuth('admin'), sameOrigin, (req, res) =>
+    attempt(res, () => hub.updateAiSettings({ key: req.body.key, model: req.body.model, brief: req.body.brief }), 'AI settings saved.')
+  );
+
+  app.post('/api/hub/ai/clear-key', requireAuth('admin'), sameOrigin, (req, res) =>
+    attempt(res, () => hub.clearAiKey(), 'OpenAI key removed.')
+  );
+
+  app.post('/api/hub/ai/write', requireAuth('admin'), sameOrigin, (req, res) => {
+    const host = hub.cleanHost(req.body.host);
+    try {
+      const job = hubAi.startSite(host, { pokeSite });
+      siteBack(res, host, `Writing ${job.total} pages — this takes a minute or two.`);
+    } catch (err) {
+      siteBack(res, host, `error:${err.message}`);
+    }
+  });
+
+  app.post('/api/hub/ai/write-all', requireAuth('admin'), sameOrigin, (req, res) => {
+    const started = [];
+    const skipped = [];
+    for (const [host, x] of Object.entries(hub.getState().sites)) {
+      if (x.role === 'player' || x.removed) continue;
+      if (hub.compareVersions(x.version, '2.5.0') < 0) { skipped.push(`${host} (plugin ${x.version})`); continue; }
+      try { hubAi.startSite(host, { pokeSite }); started.push(host); } catch (err) { skipped.push(`${host} (${err.message})`); }
+    }
+    back(res, started.length
+      ? `Writing content for ${started.length} site(s): ${started.join(', ')}.${skipped.length ? ` Skipped: ${skipped.join('; ')}` : ''}`
+      : `error:No site to write for. ${skipped.join('; ')}`);
+  });
+
   app.post('/api/hub/api-token', requireAuth('admin'), sameOrigin, (req, res) => {
     try {
       hub.createApiToken();
@@ -640,6 +714,8 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
     const plugin = hub.knownPlugin(q('plugin'));
     hub.recordCheckin(host, {
       home: q('home'), version: q('v'), wp: q('wp'), php: q('php'), theme: q('theme'), pages: Number(q('pages')) || 0,
+      // Sport pages the site has (schedule plugin 2.5.0+): what "Write page content" writes for
+      sports: q('sports') ? q('sports').split(',').map((x) => x.trim()).filter((x) => /^[A-Za-z][A-Za-z /-]{1,40}$/.test(x)).slice(0, 40) : undefined,
       plugin, role: hub.PLUGINS[plugin].role,
     });
     res.json(hub.configFor(host, baseUrl(req, getConfig), plugin));

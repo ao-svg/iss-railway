@@ -221,7 +221,7 @@ function recordCheckin(host, info) {
 // ── Commands to sites ────────────────────────────────────────
 // Queued here, handed out with the site's settings (/api/hub/config) until the site reports a
 // result (/api/hub/report). The plugin skips ids it already ran, so re-sending is safe.
-const COMMAND_TYPES = ['setup', 'uninstall'];
+const COMMAND_TYPES = ['setup', 'uninstall', 'content'];
 const MAX_COMMANDS_PER_SITE = 30;
 
 function cleanSetupArgs(args) {
@@ -236,6 +236,16 @@ function cleanSetupArgs(args) {
   return out;
 }
 
+// content: { pages: { "Football": "<h2>…</h2><p>…</p>", … } } — text for the sport pages, under the table
+function cleanContentArgs(args) {
+  const pages = {};
+  for (const [type, html] of Object.entries((args && args.pages) || {}).slice(0, 40)) {
+    if (!/^[A-Za-z][A-Za-z /-]{1,40}$/.test(type)) continue;
+    pages[type] = String(html || '').slice(0, 20000);
+  }
+  return { pages };
+}
+
 function queueCommand(host, type, args = {}) {
   const h = cleanHost(host);
   if (!store.sites[h]) throw new Error(`Unknown site ${h}`);
@@ -245,7 +255,7 @@ function queueCommand(host, type, args = {}) {
   const cmd = {
     id: crypto.randomBytes(8).toString('hex'),
     type,
-    args: type === 'setup' ? cleanSetupArgs(args) : {},
+    args: type === 'setup' ? cleanSetupArgs(args) : type === 'content' ? cleanContentArgs(args) : {},
     status: 'queued',
     createdAt: new Date().toISOString(),
   };
@@ -537,6 +547,33 @@ function importRepoReleases(dir = REPO_RELEASES_DIR) {
 }
 importRepoReleases();
 
+// ── AI content (OpenAI) ──────────────────────────────────────
+// The key stays on the hub: the hub writes the text and sends sites only the text.
+function aiSettings() {
+  const a = store.ai || {};
+  return { key: a.key || '', model: a.model || 'gpt-4o-mini', brief: a.brief || '' };
+}
+
+function updateAiSettings({ key, model, brief }) {
+  const a = { ...aiSettings() };
+  if (key !== undefined && String(key).trim()) a.key = String(key).trim();   // empty field = keep the saved key
+  if (model !== undefined) a.model = String(model).trim().slice(0, 60) || 'gpt-4o-mini';
+  if (brief !== undefined) a.brief = String(brief).slice(0, 2000);
+  store.ai = a;
+  save();
+}
+
+function clearAiKey() {
+  store.ai = { ...aiSettings(), key: '' };
+  save();
+}
+
+// "sk-…abcd", for showing that a key is saved without showing it
+function maskedAiKey() {
+  const k = aiSettings().key;
+  return k ? `${k.slice(0, 3)}…${k.slice(-4)}` : '';
+}
+
 function getState() {
   return store;
 }
@@ -570,6 +607,11 @@ module.exports = {
   tokenMatches,
   recordCheckin,
   cleanSetupArgs,
+  cleanContentArgs,
+  aiSettings,
+  updateAiSettings,
+  clearAiKey,
+  maskedAiKey,
   queueCommand,
   cancelCommand,
   commandsFor,
