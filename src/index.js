@@ -257,15 +257,14 @@ async function runSourceCheck(force = false) {
   state.checkRunning = true;
   state.checkProgress = { done: 0, total: urls.length };
   try {
-    const relayProbe = (await relayUsable())
-      ? (url, result) =>
-          isRelayExcluded(url)
-            ? null
-            : relay.probeViaRelay(result.resolvedUrl || url, { looksLikeMedia: sourceChecks.looksLikeBinaryMedia })
-      : null;
+    // Each stream is also played the way a visitor's button plays it —
+    // through this app's own /go, relay or direct (sourceChecks
+    // checkVisitorPath). That probe also answers relayPlayable for relayed
+    // sources, so the relay itself isn't probed separately any more.
+    const visitorProbe = (url) => sourceChecks.checkVisitorPath(url, `http://127.0.0.1:${port}`);
     const summary = await sourceChecks.checkAll(urls, {
       force,
-      relayProbe,
+      visitorProbe,
       onProgress: (done, total) => {
         state.checkProgress = { done, total };
       },

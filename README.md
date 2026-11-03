@@ -59,10 +59,19 @@ standalone pipeline you can deploy on Railway and pull CSV/JSON from.
   hosts, e.g. cdn.stmify.com, refuse `Range`).
 - ✅ Flags sources on known US-only CDNs (`GEO_FENCED_HOSTS` in
   `src/config.js` — Turner's `turnerlive.warnermediacdn.com`, amagi's
-  `*.playout.now3.amagi.tv`) as `sourceGeo: "us-only"` in fixtures.json and
-  `Source1Geo`..`Source10Geo` in fixtures.csv (null/blank otherwise). Based
-  on the host the source resolves to; a hint for the WordPress sites, not a
-  rank change.
+  `*.playout.now3.amagi.tv`, `univisionnow.com`) as `sourceGeo: "us-only"`
+  in fixtures.json and `Source1Geo`..`Source10Geo` in fixtures.csv
+  (null/blank otherwise). Based on the host the source resolves to; a hint
+  for the WordPress sites, not a rank change.
+- ✅ `sourceWorking` (what the WordPress plugins hide sources by) is the
+  **visitor** verdict, not just "the stream answered": each stream is also
+  played through this app's own `/go` link, the way a visitor's button
+  plays it — through the relay, or straight to the source for doms9
+  channels (`sourceVisitorPath`: `relay` / `direct`). It's false when the
+  stream is broken, fails along that path (e.g. inside the relay), is DASH
+  (the plugins' player is hls.js only), or `/go` sends visitors straight
+  to a US-only CDN — the check runs in the US, so such a stream looks fine
+  from here but not from China (`src/sourceChecks.js` `visitorPlayable`).
 - ✅ Ranks every source into one word (`sourceChecks.rankFor`) — **working**
   (real still + real gif, AND the latest check agrees a visitor's browser
   can play it: for a manifest, a real segment was fetched and every hop is

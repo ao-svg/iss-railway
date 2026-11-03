@@ -517,8 +517,11 @@ async function checkUrl(url) {
       // only gets the outer check (working stays null).
       // References resolve against resolvedUrl — where the playlist was
       // actually served from after redirects — never the URL we asked for.
-      if (urlPathname(url).endsWith('.m3u8')) {
-        const text = Buffer.from(res.data).toString('utf8');
+      // HLS is recognised by its body, not a .m3u8 in the URL: short
+      // redirect links, this app's own /go and /api/relay/stream (the
+      // visitor-path probe, checkVisitorPath) have no extension at all.
+      const text = Buffer.from(res.data).toString('utf8');
+      if (text.startsWith('#EXTM3U')) {
         if (/#EXTINF/.test(text)) {
           // Already a media playlist: its references are segments, so
           // probe them like a player would (see probeSegment).
@@ -549,8 +552,9 @@ async function checkUrl(url) {
             // Only a confirmed-false media verdict (not null/inconclusive)
             // marks a chain as not working.
             const hop1IsManifest = bodyLooksLikeManifest(hop1.data);
-            if (hop1IsManifest && urlPathname(nestedUrl).endsWith('.m3u8')) {
-              const hop2 = await probeSegment(Buffer.from(hop1.data).toString('utf8'), hop1.url);
+            const hop1Text = Buffer.from(hop1.data || '').toString('utf8');
+            if (hop1IsManifest && hop1Text.startsWith('#EXTM3U')) {
+              const hop2 = await probeSegment(hop1Text, hop1.url);
               if (hop2) {
                 segmentUrl = hop2.segmentUrl;
                 segmentOk = hop2.reachable && hop2.mediaCheck !== false;
@@ -628,6 +632,65 @@ async function checkUrl(url) {
 }
 
 /**
+ * Does the source play the way a visitor's button plays it? The sites link
+ * `${goBase}/go?u=<source>`, and /go either redirects to this app's relay
+ * proxy or straight to the source (doms9 sources, relay down, unsupported
+ * type). checkUrl on that link follows the same redirect and verifies the
+ * playlist -> variant -> segment chain through whichever path /go picked —
+ * so a stream that works when fetched directly but breaks inside the relay
+ * (Amagi segments, 2026-11-03) shows up as not working.
+ * Returns { working: true/false/null, path: 'relay' | 'direct' | null }.
+ */
+//
+// /go is asked for its redirect first, unfollowed: if this app's own server
+// can't be reached (not listening yet), that's no verdict at all — never a
+// false that would hide every source.
+async function checkVisitorPath(url, goBase) {
+  const goUrl = `${goBase}/go?u=${encodeURIComponent(url)}`;
+  let hop;
+  try {
+    hop = await axios.get(goUrl, { timeout: REQUEST_TIMEOUT_MS, maxRedirects: 0, validateStatus: () => true, responseType: 'stream' });
+    hop.data.destroy();
+  } catch {
+    return { working: null, path: null };
+  }
+  // 502: /go couldn't resolve it at click time — a visitor gets the error page
+  if (hop.status === 502) return { working: false, path: null };
+  const location = hop.headers.location;
+  if (hop.status < 300 || hop.status >= 400 || !location) return { working: null, path: null };
+  const next = new URL(location, goUrl);
+  const path = next.origin === new URL(goUrl).origin && next.pathname === '/api/relay/stream' ? 'relay' : 'direct';
+  const r = await checkUrl(next.toString());
+  return { working: r.working === undefined ? null : r.working, path };
+}
+
+/**
+ * The verdict the sites act on (exported as sourceWorking — the plugins
+ * hide a source when it's false): can a visitor outside the US play it?
+ *   - the source check says broken                      -> false
+ *   - DASH (.mpd): the plugins' player is hls.js only   -> false
+ *   - the visitor-path probe (checkVisitorPath) failed  -> false
+ *   - /go sends visitors straight to a US-only CDN      -> false (this check
+ *     runs from a US datacenter, so the stream itself looks fine)
+ *   - otherwise the visitor probe's true, else the check's own working.
+ * Pure, so testable without network.
+ */
+function visitorPlayable(check, url) {
+  if (!check) return null;
+  const working = check.working === undefined ? null : check.working;
+  if (working === false) return false;
+  if (check.isManifest !== false && isDash(check, url)) return false;
+  if (check.visitorWorking === false) return false;
+  if (check.visitorPath === 'direct' && geoHintFor(check.resolvedUrl || url) === 'us-only') return false;
+  return check.visitorWorking === true ? true : working;
+}
+
+function isDash(check, url) {
+  if (/dash\+xml/i.test(check.contentType || '')) return true;
+  return [check.resolvedUrl, url].some((u) => u && urlPathname(u).endsWith('.mpd'));
+}
+
+/**
  * Check every URL in `urls` (deduped), skipping ones already checked within
  * their TTL unless `force` — manifests use a shorter TTL than HTML pages
  * since they're far more likely to rotate/die within hours. Runs with
@@ -642,7 +705,13 @@ async function checkUrl(url) {
 // 'nocors' (browser can't fetch it directly) but relayPlayable is playable
 // via /go, which hands viewers the relay proxy. Without a probe the field
 // is null (relay off / not applicable), never a stale true.
-async function checkAll(urls, { force = false, onProgress, relayProbe = null } = {}) {
+//
+// `visitorProbe(url, result)` (optional, from index.js: checkVisitorPath on
+// this app's own /go) -> { working, path }, stored as visitorWorking /
+// visitorPath for sourceWorking (visitorPlayable). When it went through
+// the relay it also answers relayPlayable, so without a relayProbe the
+// relay isn't asked the same question twice per pass.
+async function checkAll(urls, { force = false, onProgress, relayProbe = null, visitorProbe = null } = {}) {
   const unique = [...new Set(urls)];
   const now = Date.now();
   const toCheck = unique.filter((u) => {
@@ -679,6 +748,18 @@ async function checkAll(urls, { force = false, onProgress, relayProbe = null } =
       // reachable again, whatever state it was in before.
       result.consecutiveFailures = nextConsecutiveFailures(result.status, previous);
       result.relayPlayable = null;
+      result.visitorWorking = null;
+      result.visitorPath = null;
+      if (visitorProbe && result.isManifest && result.status !== 'dangerous' && result.working !== false) {
+        try {
+          const v = await visitorProbe(url, result);
+          result.visitorWorking = v ? v.working : null;
+          result.visitorPath = v ? v.path : null;
+          if (!relayProbe && result.visitorPath === 'relay') result.relayPlayable = result.visitorWorking;
+        } catch {
+          result.visitorWorking = null;
+        }
+      }
       if (relayProbe && result.isManifest && result.status !== 'dangerous') {
         try {
           result.relayPlayable = await relayProbe(url, result);
@@ -710,7 +791,10 @@ async function checkAll(urls, { force = false, onProgress, relayProbe = null } =
  * each channel, each parallel to and the same length as `sources`:
  *   sourceStatuses - status string ('ok'/'stream'/'nocors'/'blocked'/'dead')
  *                    or null (never checked)
- *   sourceWorking  - true / false / null (unverified or never checked)
+ *   sourceWorking  - can a visitor outside the US play it, the way the
+ *                    sites play it (through /go): true / false / null
+ *                    (unverified or never checked) — see visitorPlayable
+ *   sourceVisitorPath - where /go sends visitors: 'relay' / 'direct' / null
  *   sourceCors     - true / false / null (n/a for HTML pages, or never checked)
  *   sourceResolved - the URL the host actually served after redirects (e.g.
  *                    its tokenized per-session URL) when it differs from
@@ -749,7 +833,8 @@ function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus, { getScre
         ...ch,
         sources: playable,
         sourceStatuses: results.map((s) => s?.status || null),
-        sourceWorking: results.map((s) => (s && s.working !== undefined ? s.working : null)),
+        sourceWorking: results.map((s, i) => visitorPlayable(s, sources[i])),
+        sourceVisitorPath: results.map((s) => (s && s.visitorPath) || null),
         sourceCors: results.map((s) => (s && s.cors !== undefined ? s.cors : null)),
         // Plays through the relay proxy (true/false), null = relay off,
         // not HLS, or never checked with the relay on. See checkAll.
@@ -781,6 +866,8 @@ function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus, { getScre
 }
 
 module.exports = {
+  checkVisitorPath,
+  visitorPlayable,
   getStatus,
   carryOver,
   persist,

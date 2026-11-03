@@ -487,3 +487,82 @@ test('carryOver: a swapped-in URL starts from the old result, minus the old toke
     }
   );
 });
+
+test('visitorPlayable: what the sites act on — broken, DASH, failing through /go, or US-only direct are false', () => {
+  const { visitorPlayable } = require('../src/sourceChecks');
+  const ok = { status: 'stream', working: true, isManifest: true, resolvedUrl: 'https://cdn.example/a.m3u8' };
+  assert.equal(visitorPlayable(null, 'x'), null);
+  assert.equal(visitorPlayable(ok, ok.resolvedUrl), true);
+  assert.equal(visitorPlayable({ ...ok, working: false }, ok.resolvedUrl), false);
+  assert.equal(visitorPlayable({ ...ok, working: null, resolvedUrl: 'https://s4c.example/x.mpd' }, 'https://s4c.example/x.mpd'), false, 'DASH: hls.js only');
+  assert.equal(visitorPlayable({ ...ok, working: null, contentType: 'application/dash+xml' }, 'https://a/b'), false);
+  assert.equal(visitorPlayable({ ...ok, visitorWorking: false, visitorPath: 'relay' }, ok.resolvedUrl), false, 'breaks inside the relay');
+  const turner = 'https://turnerlive.warnermediacdn.com/hls/live/1/tnteast/x.m3u8';
+  assert.equal(visitorPlayable({ ...ok, resolvedUrl: turner, visitorWorking: true, visitorPath: 'direct' }, turner), false, 'US-only CDN, sent there directly');
+  assert.equal(visitorPlayable({ ...ok, resolvedUrl: turner, visitorWorking: true, visitorPath: 'relay' }, turner), true, 'US-only CDN through the relay plays');
+  assert.equal(visitorPlayable({ ...ok, working: null, visitorWorking: true }, ok.resolvedUrl), true, 'verified through /go');
+  assert.equal(visitorPlayable({ status: 'ok', working: true, isManifest: false }, 'https://page.example/'), true, 'HTML pages unchanged');
+});
+
+test('enrichRowsWithSourceStatus: sourceWorking is the visitor verdict, sourceVisitorPath says where /go sends them', () => {
+  const rows = [{ channels: [{ name: 'x', sources: ['https://a.example/1.m3u8', 'https://b.example/2.m3u8'] }] }];
+  const checks = {
+    'https://a.example/1.m3u8': { status: 'stream', working: true, isManifest: true, visitorWorking: false, visitorPath: 'relay' },
+    'https://b.example/2.m3u8': { status: 'stream', working: true, isManifest: true, visitorWorking: true, visitorPath: 'direct' },
+  };
+  const ch = enrichRowsWithSourceStatus(rows, (u) => checks[u] || null)[0].channels[0];
+  assert.deepEqual(ch.sourceWorking, [false, true]);
+  assert.deepEqual(ch.sourceVisitorPath, ['relay', 'direct']);
+});
+
+test('checkVisitorPath: follows /go like a player — through the relay or direct — and never guesses when /go is unreachable', async () => {
+  const { checkVisitorPath } = require('../src/sourceChecks');
+  const TS = Buffer.alloc(376, 0x47);
+  await withServer(
+    (req, res) => {
+      const u = new URL(req.url, 'http://x');
+      if (u.pathname === '/go') {
+        const src = u.searchParams.get('u');
+        if (src.includes('gone')) return res.writeHead(502).end('Source is currently unreachable');
+        if (src.includes('direct')) return res.writeHead(302, { Location: '/raw/master.m3u8' }).end();
+        return res.writeHead(302, { Location: `/api/relay/stream?url=${encodeURIComponent(src)}&sig=s` }).end();
+      }
+      if (u.pathname === '/api/relay/stream') {
+        const target = u.searchParams.get('url');
+        if (target.endsWith('.m3u8')) return res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' }).end(`#EXTM3U\n#EXTINF:6,\n/api/relay/stream?url=${encodeURIComponent(target + '-seg')}&sig=s\n`);
+        if (target.includes('broken-in-relay')) return res.writeHead(403, { 'Content-Type': 'text/plain' }).end('This playback link is no longer valid.');
+        return res.writeHead(200, { 'Content-Type': 'video/mp2t' }).end(TS);
+      }
+      if (u.pathname === '/raw/master.m3u8') return res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' }).end('#EXTM3U\n#EXTINF:6,\nseg.ts\n');
+      if (u.pathname === '/raw/seg.ts') return res.writeHead(200, { 'Content-Type': 'video/mp2t' }).end(TS);
+      res.writeHead(404).end();
+    },
+    async (base) => {
+      assert.deepEqual(await checkVisitorPath('https://cdn.example/fine.m3u8', base), { working: true, path: 'relay' });
+      assert.deepEqual(await checkVisitorPath('https://cdn.example/broken-in-relay.m3u8', base), { working: false, path: 'relay' });
+      assert.deepEqual(await checkVisitorPath('https://cdn.example/direct.m3u8', base), { working: true, path: 'direct' });
+      assert.deepEqual(await checkVisitorPath('https://cdn.example/gone.m3u8', base), { working: false, path: null });
+    }
+  );
+  assert.deepEqual(await checkVisitorPath('https://cdn.example/fine.m3u8', 'http://127.0.0.1:9'), { working: null, path: null }, 'own server down: no verdict');
+});
+
+test('checkAll: visitorProbe results are stored, and a relayed probe answers relayPlayable', async () => {
+  const sc = require('../src/sourceChecks');
+  await withServer(
+    (req, res) => {
+      if (req.url === '/v.m3u8') return res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' }).end('#EXTM3U\n#EXTINF:6,\ns.ts\n');
+      res.writeHead(200, { 'Content-Type': 'video/mp2t' }).end(Buffer.alloc(376, 0x47));
+    },
+    async (base) => {
+      const url = `${base}/v.m3u8`;
+      await sc.checkAll([url], { force: true, visitorProbe: async () => ({ working: false, path: 'relay' }) });
+      const s = sc.getStatus(url);
+      assert.equal(s.working, true, 'the direct check still passes');
+      assert.equal(s.visitorWorking, false);
+      assert.equal(s.visitorPath, 'relay');
+      assert.equal(s.relayPlayable, false);
+      assert.equal(sc.visitorPlayable(s, url), false);
+    }
+  );
+});
