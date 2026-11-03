@@ -52,6 +52,11 @@ function fakeRelay() {
       const relayUri = `http://${req.headers.host}/stream?secret=${encodeURIComponent(SECRET)}&url=${encodeURIComponent('https://cdn.example.com/G@garbage')}`;
       return res.type('application/vnd.apple.mpegurl').send(`${relayUri}\n` + 'x'.repeat(6 * 1024 * 1024));
     }
+    // Amagi-style ad-stitched segment: no extension, media bytes (or, mislabeled, binary sent as a playlist)
+    if (/\/1920x1080_\d+$/.test(new URL(target).pathname)) {
+      if (target.includes('labelled-as-playlist')) return res.type('application/vnd.apple.mpegurl').send(SEGMENT);
+      return res.type('video/mp2t').send(SEGMENT);
+    }
     const back = (u) => `http://${req.headers.host}/stream?secret=${encodeURIComponent(SECRET)}&url=${encodeURIComponent(u)}`;
     if (target.endsWith('.m3u8') || target.includes('.m3u8?')) {
       const origin = new URL(target);
@@ -247,6 +252,21 @@ test('AC3: segments, keys, subtitles, init through the rewritten links: 200/206,
   const subs = await get(local('subs/en.m3u8'));
   assert.equal(subs.status, 200);
   assert.ok(!/secret/i.test(await subs.text()));
+});
+
+test('extensionless segments the rewrite signed (Amagi ad-stitching) play with no login; unsigned ones stay refused', async (t) => {
+  const { base } = await setup(t);
+  const seg = 'https://amg.example.com/v1/x/1920x1080_5129264?bcn=1&media_type=C';
+  const signed = await fetch(base + relay.localStreamPath(seg));
+  assert.equal(signed.status, 200);
+  assert.deepEqual(Buffer.from(await signed.arrayBuffer()), SEGMENT);
+
+  assert.equal((await fetch(`${base}/api/relay/stream?url=${enc(seg)}&sig=forged`)).status, 403, 'forged signature');
+  assert.equal((await fetch(`${base}/api/relay/stream?url=${enc(seg)}`)).status, 401, 'unsigned: viewer login, as before');
+
+  const mislabeled = 'https://amg.example.com/v1/x/1920x1080_1?labelled-as-playlist=1';
+  const bad = await fetch(base + relay.localStreamPath(mislabeled));
+  assert.equal(bad.status, 502, 'media sent as a playlist is never rewritten');
 });
 
 test('AC4: thumb returns the JPEG; bad url / relay failure give a placeholder', async (t) => {

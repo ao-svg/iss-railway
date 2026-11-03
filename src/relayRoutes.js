@@ -76,8 +76,7 @@ function mountRelayRoutes(app, { requireAuth, isRelayable, isEnabled }) {
   // login's Basic challenge — that challenge is what showed visitors a
   // browser login box when a link outlived the old per-process key.
   const signedOrViewer = (req, res, next) => {
-    const target = relay.validateTarget(req.query.url);
-    if (target && relay.verifySignature(target, req.query.sig)) return next();
+    if (relay.signedTarget(req.query.url, req.query.sig)) return next();
     if (req.query.sig) return res.status(403).type('text/plain').send('This playback link is no longer valid. Open the stream again from the site.');
     return requireAuth('viewer')(req, res, next);
   };
@@ -99,7 +98,9 @@ function mountRelayRoutes(app, { requireAuth, isRelayable, isEnabled }) {
   // streamCors before signedOrViewer: a 401 must carry the header too.
   app.get('/api/relay/stream', streamCors, signedOrViewer, async (req, res) => {
     if (!isEnabled()) return res.status(503).type('text/plain').send('Relay is turned off');
-    const target = relay.validateTarget(req.query.url);
+    // A link we signed passes whatever its extension (see relay.signedTarget);
+    // anything else must still look like a stream resource.
+    const target = relay.validateTarget(req.query.url) || relay.signedTarget(req.query.url, req.query.sig);
     if (!target) return res.status(400).type('text/plain').send('Invalid url');
     if (!isAllowed(target, req.query.sig)) return res.status(403).type('text/plain').send('Not an allowed source');
 
@@ -129,6 +130,13 @@ function mountRelayRoutes(app, { requireAuth, isRelayable, isEnabled }) {
     if (relay.isPlaylist(target, contentType)) {
       try {
         const body = await readBody(upstream.data, relay.MAX_PLAYLIST_BYTES);
+        // With no extension the content type is all isPlaylist had to go
+        // on, and the relay labels some media segments as playlists (see
+        // below) — only rewrite what really is one.
+        if (!relay.validateTarget(target) && !body.toString('utf8', 0, 64).trimStart().startsWith('#EXTM3U')) {
+          logError('stream upstream', 'relay returned a playlist content type for a media segment');
+          return res.status(502).type('text/plain').send('Stream unavailable');
+        }
         const rewritten = relay.rewritePlaylist(body.toString('utf8'), target);
         res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
         return res.status(200).type('application/vnd.apple.mpegurl').send(rewritten);

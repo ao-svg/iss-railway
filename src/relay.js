@@ -126,6 +126,25 @@ function verifySignature(target, sig) {
   return expected.length === given.length && crypto.timingSafeEqual(expected, given);
 }
 
+/**
+ * A URL this app signed itself (a URI it wrote into a rewritten playlist,
+ * or /go's redirect): http(s) and carrying a valid signature — no
+ * extension rule, since the signature already proves we issued it. Ad-
+ * stitched streams (Amagi) list segments with no extension at all
+ * (`…/1920x1080_5129264?bcn=1&…`); requiring one refused every segment the
+ * rewrite had just handed out (2026-11-03). The URL verbatim, else null.
+ */
+function signedTarget(raw, sig) {
+  if (typeof raw !== 'string' || !raw) return null;
+  try {
+    const { protocol } = new URL(raw);
+    if (protocol !== 'http:' && protocol !== 'https:') return null;
+  } catch {
+    return null;
+  }
+  return verifySignature(raw, sig) ? raw : null;
+}
+
 function localStreamPath(original) {
   return `/api/relay/stream?url=${encodeURIComponent(original)}&sig=${sign(original)}`;
 }
@@ -327,6 +346,7 @@ module.exports = {
   relayThumbRequestUrl,
   relayHealthUrl,
   validateTarget,
+  signedTarget,
   isPlaylist,
   sign,
   verifySignature,
