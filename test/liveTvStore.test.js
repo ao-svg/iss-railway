@@ -102,3 +102,18 @@ test('channels are cloned, never alias the previous store objects', () => {
   first.store['a'].channels[0].approved = true;
   assert.equal(r.channels[0].approved, false);
 });
+
+test('4b. a game unconfirmed for longer than UNCONFIRMED_LIVE_MAX_MS ends, even while its sport keeps failing', () => {
+  const { UNCONFIRMED_LIVE_MAX_MS } = require('../src/liveTvStore');
+  const t1 = new Date('2026-11-02T19:45:00Z');
+  const first = mergeLiveFetch([row('a')], {}, { now: t1, successfulSports: new Set(['Football']) });
+  const justUnder = mergeLiveFetch([], first.store, { now: new Date(t1.getTime() + UNCONFIRMED_LIVE_MAX_MS - 1000), successfulSports: new Set() });
+  assert.equal(justUnder.rows.find((x) => x.eventId === 'a').status, 'live', 'a short outage still carries it forward');
+  const t2 = new Date(t1.getTime() + UNCONFIRMED_LIVE_MAX_MS + 1000);
+  const over = mergeLiveFetch([], justUnder.store, { now: t2, successfulSports: new Set() });
+  const r = over.rows.find((x) => x.eventId === 'a');
+  assert.equal(r.status, 'ended');
+  assert.equal(r.endedAt, t2.toISOString());
+  const later = mergeLiveFetch([], over.store, { now: new Date(t2.getTime() + ENDED_RETENTION_MS + 1000), successfulSports: new Set() });
+  assert.equal(later.rows.length, 0, 'then pruned like any ended game');
+});

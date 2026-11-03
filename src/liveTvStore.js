@@ -11,6 +11,11 @@ const { dataPath } = require('./dataDir');
 
 const STORE_PATH = dataPath('live-store.json');
 const ENDED_RETENTION_MS = 3 * 60 * 60 * 1000; // 3h after ending, tunable
+// How long a game can stay 'live' on carry-forward alone (its sport's
+// fetch keeps failing, so nobody has seen it). Without a cap, a live
+// source that went down kept yesterday's games "live" in live.json
+// indefinitely (2026-11-03: 34 games 12-21h old, all still live).
+const UNCONFIRMED_LIVE_MAX_MS = 4 * 60 * 60 * 1000;
 
 function loadStore() {
   try {
@@ -62,7 +67,8 @@ function mergeLiveFetch(freshRows, prevStore, { now = new Date(), successfulSpor
     if (seenIds.has(eventId)) continue;
 
     if (prev.status === 'live') {
-      if (successfulSports && successfulSports.has(prev.sportType)) {
+      const unseenMs = now.getTime() - new Date(prev.lastSeenAt || 0).getTime();
+      if ((successfulSports && successfulSports.has(prev.sportType)) || unseenMs > UNCONFIRMED_LIVE_MAX_MS) {
         nextStore[eventId] = { ...prev, status: 'ended', endedAt: nowIso };
       } else {
         nextStore[eventId] = prev; // unconfirmed — carry forward as-is
@@ -91,4 +97,4 @@ function applyFetch(freshRows, successfulSports, now = new Date()) {
   return rows;
 }
 
-module.exports = { mergeLiveFetch, applyFetch, ENDED_RETENTION_MS };
+module.exports = { mergeLiveFetch, applyFetch, ENDED_RETENTION_MS, UNCONFIRMED_LIVE_MAX_MS };
