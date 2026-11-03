@@ -134,8 +134,15 @@ function updateConfig(patch) {
 // sourceGeo 'us-only' in the exports — a hint for the WordPress sites, not
 // a rank change. An entry matches that host and any subdomain of it.
 const GEO_FENCED_HOSTS = {
-  // univisionnow.com: 403 from outside the US, 200 from Railway (2026-11-03)
-  'us-only': ['turnerlive.warnermediacdn.com', 'playout.now3.amagi.tv', 'univisionnow.com'],
+  // univisionnow.com, streamer1.nexgen.bz, dai.google.com: segments 4xx
+  // from outside the US, playable from Railway (2026-11-03)
+  'us-only': [
+    'turnerlive.warnermediacdn.com',
+    'playout.now3.amagi.tv',
+    'univisionnow.com',
+    'streamer1.nexgen.bz',
+    'dai.google.com',
+  ],
 };
 
 module.exports = { getConfig, updateConfig, GEO_FENCED_HOSTS };

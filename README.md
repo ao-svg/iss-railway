@@ -59,7 +59,8 @@ standalone pipeline you can deploy on Railway and pull CSV/JSON from.
   hosts, e.g. cdn.stmify.com, refuse `Range`).
 - ✅ Flags sources on known US-only CDNs (`GEO_FENCED_HOSTS` in
   `src/config.js` — Turner's `turnerlive.warnermediacdn.com`, amagi's
-  `*.playout.now3.amagi.tv`, `univisionnow.com`) as `sourceGeo: "us-only"`
+  `*.playout.now3.amagi.tv`, `univisionnow.com`, `streamer1.nexgen.bz`,
+  `dai.google.com`) as `sourceGeo: "us-only"`
   in fixtures.json and `Source1Geo`..`Source10Geo` in fixtures.csv
   (null/blank otherwise). Based on the host the source resolves to; a hint
   for the WordPress sites, not a rank change.
