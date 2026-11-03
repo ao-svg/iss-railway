@@ -57,6 +57,22 @@ standalone pipeline you can deploy on Railway and pull CSV/JSON from.
   asked), and a 403 to the ranged probe is retried once as a plain,
   size-capped GET before the source counts as dead/unauthorized (some
   hosts, e.g. cdn.stmify.com, refuse `Range`).
+- ✅ Speed test: at most every 30 min per source (and on every forced
+  check), one whole media segment is downloaded (capped at 8 MB / 20 s) and
+  timed against its own `#EXTINF` duration. If it takes longer than 0.8x
+  the segment's length it can never play, only buffer, so the source is
+  marked **too slow**: `working: false` (the sites hide it via
+  `sourceWorking`), rank **low**, its own row on `/source-report`. The
+  ratio is exported as `sourceSpeedRatio`. **Caveat:** this runs from
+  Railway's US datacenter. Slow from there is slow for everyone, but fast
+  from there does not prove fast for a visitor in China.
+- ✅ `/go` accepts source URLs handed out in the last 48 h, not only the
+  ones in the current rows, and follows doms9 token swaps to the URL that
+  replaced them (`src/sourceHistory.js`, persisted in
+  `data/source-history.json`). Cached feeds and pages left open no longer
+  get "Unknown source URL" after a token swap; URLs this app never handed
+  out still do (no open redirect). doms9 URLs stay off the relay even
+  after they leave the current playlist.
 - ✅ Flags sources on known US-only CDNs (`GEO_FENCED_HOSTS` in
   `src/config.js` — Turner's `turnerlive.warnermediacdn.com`, amagi's
   `*.playout.now3.amagi.tv`, `univisionnow.com`, `streamer1.nexgen.bz`,

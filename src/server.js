@@ -13,6 +13,7 @@ const relay = require('./relay');
 const { mountRelayRoutes, relayPreviewHtml, allowAnyOrigin } = require('./relayRoutes');
 const { mountHubRoutes } = require('./hubRoutes');
 const { mountSourceReportRoutes } = require('./sourceReportRoutes');
+const sourceHistory = require('./sourceHistory');
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({
@@ -1065,10 +1066,11 @@ function createServer({
   // would be an open redirect to anywhere. CORS-open (allowAnyOrigin) so
   // hls.js on other sites can follow it.
   app.get('/go', allowAnyOrigin, async (req, res) => {
-    const target = req.query.u;
-    if (typeof target !== 'string' || !knownSourceUrls(getState()).has(target)) {
-      return res.status(404).send('Unknown source URL');
-    }
+    // A URL handed out in the current rows, or recently (cached feeds, open
+    // pages) — followed to whatever replaced it (doms9 token swaps). Never
+    // a URL this app didn't hand out itself: no open redirect.
+    const target = sourceHistory.resolve(req.query.u, knownSourceUrls(getState()));
+    if (!target) return res.status(404).send('Unknown source URL');
     const result = await sourceChecks.resolveNow(target);
     if (result.dangerous) return res.status(403).send('Blocked: this source looks like an executable/installer, not a stream or page.');
     if (!result.ok) return res.status(502).send('Source is currently unreachable');

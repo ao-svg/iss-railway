@@ -15,6 +15,7 @@ const iptv = require('./iptv');
 const manualChannels = require('./manualChannels');
 const screenshots = require('./screenshots');
 const sourceReport = require('./sourceReport');
+const sourceHistory = require('./sourceHistory');
 const { writeCsv } = require('./csv');
 
 const port = process.env.PORT || 3000;
@@ -128,6 +129,21 @@ function writeFixturesCsv() {
   if (!state.lastRows) return;
   const { outputCsvPath } = getConfig();
   writeCsv(enrichRows(state.lastRows), outputCsvPath);
+  rememberCurrentSources();
+}
+
+// Every rewrite of the exports also notes the URLs they hand out, so /go
+// still accepts them for a while after they leave the rows (sourceHistory).
+function rememberCurrentSources() {
+  const urls = [];
+  for (const rows of [state.lastRows, state.liveRowsNormalized]) {
+    for (const r of rows || []) for (const ch of r.channels || []) urls.push(...(ch.sources || []));
+  }
+  try {
+    sourceHistory.rememberCurrent(urls, { isExcluded: isRelayExcluded });
+  } catch (err) {
+    console.error('[sourceHistory]', err.message);
+  }
 }
 
 // Full pass = every source (dashboard button, every 3rd scheduled check).
@@ -243,8 +259,9 @@ async function refreshDoms9Sources() {
   }
   sourceChecks.persist();
   screenshots.persist();
-  // /go's allowlist (server.js knownSourceUrls) is read from lastRows on
-  // every request, so it follows this swap with no extra bookkeeping.
+  // /go follows each swap from the old URL (still on cached feeds and open
+  // pages) to its replacement — see sourceHistory.
+  sourceHistory.rememberSwaps(swaps);
   state.lastRows = rows;
   writeFixturesCsv();
   console.log(`[doms9] refreshed playlist, swapped ${swaps.length} expired source URL(s) for fresh tokens`);
@@ -404,6 +421,7 @@ function refreshLiveCsv() {
   // In practice always blank here (YouTube URLs are never source-checked),
   // but keeps live.csv's column layout identical to fixtures.csv's.
   writeCsv(enrichRows(state.liveRowsNormalized), outputLiveCsvPath);
+  rememberCurrentSources();
 }
 
 async function runLiveTvFetch() {
@@ -527,7 +545,9 @@ let _relayExcluded = { list: undefined, urls: new Set() };
 function isRelayExcluded(url) {
   const list = iptv.getCachedPlaylist(getConfig().doms9PlaylistUrl);
   if (list !== _relayExcluded.list) _relayExcluded = { list, urls: new Set((list || []).map((i) => i.url)) };
-  return _relayExcluded.urls.has(url);
+  // An old doms9 URL (swapped out, still on a cached feed) is no longer in
+  // the current playlist — sourceHistory remembers it was one.
+  return _relayExcluded.urls.has(url) || sourceHistory.isExcludedHistorically(url);
 }
 
 const runOnlyFlag = process.argv.includes('--once');

@@ -4,7 +4,7 @@
 
 const { CATEGORIES } = require('./sourceReport');
 
-const DEAD_KEYS = ['notFound', 'serverError', 'otherHttpError', 'broken', 'blocked', 'dangerous'];
+const DEAD_KEYS = ['notFound', 'serverError', 'otherHttpError', 'tooSlow', 'broken', 'blocked', 'dangerous'];
 const sum = (counts, keys) => keys.reduce((n, k) => n + (counts[k] || 0), 0);
 const pct = (n, total) => (total ? `${Math.round((n / total) * 100)}%` : '–');
 
@@ -67,7 +67,7 @@ function renderSourceReport({ reports, schedule, running }, { layout, escapeHtml
   </div>
   <div class="card"><strong>Last 30 days</strong>
     <table><tr><th>Date</th><th>Total</th><th>Live</th><th>No CORS</th><th>Unverified</th><th>Auth error</th><th>Not responding</th><th>Dead</th></tr>${historyRows}</table>
-    <p class="muted">Dead = not found, server error, other 4xx, broken stream, embed-blocked or dangerous. JSON: <a href="/source-report.json">/source-report.json</a></p>
+    <p class="muted">Dead = not found, server error, other 4xx, too slow, broken stream, embed-blocked or dangerous. JSON: <a href="/source-report.json">/source-report.json</a></p>
   </div>
   ${scheduleCard}`;
   return layout('Source health', body, '/source-report');

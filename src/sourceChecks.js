@@ -297,13 +297,136 @@ async function probeSegment(playlistText, playlistUrl) {
       if (attempt) await new Promise((resolve) => setTimeout(resolve, SEGMENT_RETRY_DELAY_MS));
       const hop = await probeOnce(segmentUrl);
       const mediaCheck = looksLikeBinaryMedia(hop.data, hop.contentType);
-      const result = { ...hop, segmentUrl, mediaCheck };
+      const result = { ...hop, segmentUrl, mediaCheck, duration: segmentDurationFor(playlistText, playlistUrl, segmentUrl) };
       if (hop.reachable && mediaCheck !== false) return result;
       failed = failed || result;
       if (!(hop.httpStatus >= 500)) break;
     }
   }
   return failed;
+}
+
+/**
+ * Seconds of video in `segmentUrl` per the media playlist: the #EXTINF
+ * just before its line, else #EXT-X-TARGETDURATION, else null. Pure.
+ */
+function segmentDurationFor(playlistText, playlistUrl, segmentUrl) {
+  let extinf = null;
+  let target = null;
+  for (const raw of String(playlistText || '').split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    const td = line.match(/^#EXT-X-TARGETDURATION:\s*([\d.]+)/);
+    if (td) target = Number(td[1]);
+    const inf = line.match(/^#EXTINF:\s*([\d.]+)/);
+    if (inf) extinf = Number(inf[1]);
+    if (line.startsWith('#')) continue;
+    let resolved = null;
+    try {
+      resolved = new URL(line, playlistUrl).toString();
+    } catch {
+      // not a URL line
+    }
+    if (resolved === segmentUrl && extinf > 0) return extinf;
+    extinf = null;
+  }
+  return target > 0 ? target : null;
+}
+
+// Whole-segment speed test. The first-bytes probe above only proves a
+// segment starts arriving; a 6 s segment that takes 18 s to download can
+// never play, it just buffers (measured 2026-11-03: 23.237.104.106 NBA TV
+// 2.6 MB in 18.7 s, cdnlivetv segments not finishing in 20 s). A source
+// whose segment takes longer than TOO_SLOW_RATIO x its own duration is
+// "too slow". Runs at most every SPEED_TTL_MS per source (checkAll), since
+// it downloads megabytes, not 16 KB. Measured from Railway's US datacenter:
+// slow from there is slow for everyone, fast from there doesn't prove
+// fast in China.
+const SPEED_MAX_BYTES = 8 * 1024 * 1024;
+const SPEED_MAX_MS = 20000;
+const TOO_SLOW_RATIO = 0.8;
+const SPEED_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Speed verdict from one download. Pure.
+ *   seconds  - how long the download ran; bytes - how much arrived
+ *   complete - the whole segment arrived (else it was cut at the time or
+ *              byte cap, or the connection dropped)
+ * `ratio` = seconds / segment duration. When incomplete it's only a lower
+ * bound, so it can prove "too slow" but never "fast enough" (tooSlow null).
+ */
+function speedVerdict({ seconds, bytes, complete }, duration) {
+  if (!(duration > 0)) return { seconds, bytes, complete, duration: null, ratio: null, tooSlow: null };
+  const ratio = Math.round((seconds / duration) * 100) / 100;
+  const tooSlow = ratio > TOO_SLOW_RATIO ? true : complete ? false : null;
+  return { seconds, bytes, complete, duration, ratio, tooSlow };
+}
+
+// What a check result carries from a speed test (also copied forward by
+// checkAll between tests).
+function speedFields(speed, speedCheckedAt) {
+  return {
+    speed,
+    speedCheckedAt,
+    tooSlow: speed.tooSlow === true,
+    ...(speed.tooSlow === true
+      ? { error: `too slow: a ${speed.duration}s segment took ${speed.complete ? '' : 'over '}${speed.seconds}s to download (${speed.ratio}x real time)` }
+      : {}),
+  };
+}
+
+/**
+ * Between speed tests (SPEED_TTL_MS) a fresh check carries the last test
+ * forward, verdict included: a source found too slow stays hidden until
+ * the next test says otherwise, instead of flapping back every 3 minutes.
+ * Mutates and returns `result`.
+ */
+function carrySpeedForward(result, previous) {
+  if (!previous || !previous.speed || !result.isManifest) return result;
+  Object.assign(result, speedFields(previous.speed, previous.speedCheckedAt));
+  if (result.tooSlow && result.working === true) {
+    result.working = false;
+    result.status = manifestStatus(false, result.cors);
+  }
+  return result;
+}
+
+function speedTestDue(previous, now = Date.now()) {
+  return !previous || !previous.speedCheckedAt || now - new Date(previous.speedCheckedAt).getTime() > SPEED_TTL_MS;
+}
+
+async function measureSegmentSpeed(url, duration) {
+  const start = Date.now();
+  const elapsed = () => Math.round((Date.now() - start) / 100) / 10;
+  let res;
+  try {
+    res = await axios.get(url, { timeout: SPEED_MAX_MS, maxRedirects: 5, validateStatus: () => true, responseType: 'stream', headers: PROBE_HEADERS });
+  } catch (err) {
+    // Not even response headers within the cap: nothing would ever play.
+    if (/timeout/i.test(err.message) || err.code === 'ECONNABORTED') return speedVerdict({ seconds: elapsed(), bytes: 0, complete: false }, duration);
+    return null;
+  }
+  if (res.status >= 400) {
+    res.data.destroy();
+    return null;
+  }
+  let bytes = 0;
+  const outcome = await new Promise((resolve) => {
+    const timer = setTimeout(() => finish('timeout'), Math.max(0, SPEED_MAX_MS - (Date.now() - start)));
+    function finish(how) {
+      clearTimeout(timer);
+      res.data.destroy();
+      resolve(how);
+    }
+    res.data.on('data', (chunk) => {
+      bytes += chunk.length;
+      if (bytes >= SPEED_MAX_BYTES) finish('cap');
+    });
+    res.data.on('end', () => finish('complete'));
+    res.data.on('error', () => finish('error'));
+  });
+  if (outcome === 'error' && !bytes) return null;
+  return speedVerdict({ seconds: elapsed(), bytes, complete: outcome === 'complete' }, duration);
 }
 
 /**
@@ -373,6 +496,8 @@ function rankFor(check, shot) {
   if (check && check.status === 'dangerous') return 'dangerous';
   if (shot && shot.ok && shot.gifOk && browserPlayable(check)) return 'working';
   if (check && (check.httpStatus === 401 || check.httpStatus === 403)) return 'unauthorized';
+  // Measured, not a blip: its segments download slower than they play.
+  if (check && check.tooSlow) return 'low';
   if (check && (check.status === 'ok' || check.status === 'stream' || check.status === 'nocors')) return 'medium';
   if (check && check.status === 'dead' && (check.consecutiveFailures || 0) >= FLAG_AFTER_FAILURES) return 'low';
   return 'unverified';
@@ -472,7 +597,7 @@ function looksLikeBinaryMedia(buffer, contentType) {
  *               extension/content-type) — never treated as usable, and
  *               /go refuses to redirect a viewer into downloading it
  */
-async function checkUrl(url) {
+async function checkUrl(url, { measureSpeed = false } = {}) {
   try {
     // A 403 to the ranged request is retried once without Range before
     // this counts as dead/unauthorized — see getFirstBytes.
@@ -510,6 +635,7 @@ async function checkUrl(url) {
       let nestedOk = null;
       let segmentUrl = null;
       let segmentOk = null;
+      let segmentDuration = null;
 
       // Verify the referenced content for HLS (.m3u8) regardless of CORS —
       // "does it work" is a separate question from "can a browser fetch
@@ -528,6 +654,7 @@ async function checkUrl(url) {
           const seg = await probeSegment(text, resolvedUrl);
           if (seg) {
             nestedUrl = segmentUrl = seg.segmentUrl;
+            segmentDuration = seg.duration;
             nestedOk = seg.reachable;
             segmentOk = seg.reachable && seg.mediaCheck !== false;
             if (!segmentOk) {
@@ -557,6 +684,7 @@ async function checkUrl(url) {
               const hop2 = await probeSegment(hop1Text, hop1.url);
               if (hop2) {
                 segmentUrl = hop2.segmentUrl;
+                segmentDuration = hop2.duration;
                 segmentOk = hop2.reachable && hop2.mediaCheck !== false;
                 if (!segmentOk) {
                   working = false;
@@ -577,6 +705,13 @@ async function checkUrl(url) {
         }
       }
 
+      // A segment that arrives, but slower than it plays, never plays.
+      let speed = null;
+      if (measureSpeed && working === true && segmentUrl && segmentDuration) {
+        speed = await measureSegmentSpeed(segmentUrl, segmentDuration);
+        if (speed && speed.tooSlow) working = false;
+      }
+
       return {
         status: manifestStatus(working, cors),
         working,
@@ -589,6 +724,8 @@ async function checkUrl(url) {
         nestedOk,
         segmentUrl,
         segmentOk,
+        segmentDuration,
+        ...(speed ? speedFields(speed, checkedAt) : {}),
         checkedAt,
       };
     }
@@ -741,7 +878,9 @@ async function checkAll(urls, { force = false, onProgress, relayProbe = null, vi
       const i = index++;
       const url = toCheck[i];
       const previous = _cache[url];
-      const result = await checkUrl(url);
+      const speedDue = force || speedTestDue(previous);
+      const result = await checkUrl(url, { measureSpeed: speedDue });
+      if (!speedDue) carrySpeedForward(result, previous);
       // A transient blip (one bad probe) shouldn't demote a source that's
       // otherwise fine — only a RUN of dead results in a row means it's
       // actually broken, not unlucky timing. Reset to 0 the moment it's
@@ -795,6 +934,8 @@ async function checkAll(urls, { force = false, onProgress, relayProbe = null, vi
  *                    sites play it (through /go): true / false / null
  *                    (unverified or never checked) — see visitorPlayable
  *   sourceVisitorPath - where /go sends visitors: 'relay' / 'direct' / null
+ *   sourceSpeedRatio - segment download time / segment duration from the
+ *                    last speed test (> TOO_SLOW_RATIO = too slow), or null
  *   sourceCors     - true / false / null (n/a for HTML pages, or never checked)
  *   sourceResolved - the URL the host actually served after redirects (e.g.
  *                    its tokenized per-session URL) when it differs from
@@ -835,6 +976,9 @@ function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus, { getScre
         sourceStatuses: results.map((s) => s?.status || null),
         sourceWorking: results.map((s, i) => visitorPlayable(s, sources[i])),
         sourceVisitorPath: results.map((s) => (s && s.visitorPath) || null),
+        // Last whole-segment speed test: download time / segment duration
+        // (above TOO_SLOW_RATIO = too slow, hidden). null = not measured.
+        sourceSpeedRatio: results.map((s) => (s && s.speed && typeof s.speed.ratio === 'number' ? s.speed.ratio : null)),
         sourceCors: results.map((s) => (s && s.cors !== undefined ? s.cors : null)),
         // Plays through the relay proxy (true/false), null = relay off,
         // not HLS, or never checked with the relay on. See checkAll.
@@ -866,6 +1010,12 @@ function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus, { getScre
 }
 
 module.exports = {
+  segmentDurationFor,
+  speedVerdict,
+  measureSegmentSpeed,
+  carrySpeedForward,
+  speedTestDue,
+  TOO_SLOW_RATIO,
   checkVisitorPath,
   visitorPlayable,
   getStatus,

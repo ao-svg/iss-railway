@@ -24,6 +24,7 @@ const CATEGORIES = [
   { key: 'serverError', label: 'Server error (5xx)', tone: 'err' },
   { key: 'otherHttpError', label: 'Other HTTP error (4xx)', tone: 'err' },
   { key: 'notResponding', label: 'Not responding (timeout, DNS, refused)', tone: 'err' },
+  { key: 'tooSlow', label: 'Too slow — segments download slower than they play', tone: 'err' },
   { key: 'broken', label: 'Responds, but the stream is broken (playlist or segment dead)', tone: 'err' },
   { key: 'blocked', label: 'Page blocks embedding (X-Frame-Options/CSP)', tone: 'err' },
   { key: 'dangerous', label: 'Dangerous (looks like an executable)', tone: 'err' },
@@ -47,6 +48,7 @@ function categorize(check) {
   if (http === 404 || http === 410) return 'notFound';
   if (http >= 500) return 'serverError';
   if (http >= 400) return 'otherHttpError';
+  if (check.tooSlow) return 'tooSlow';
   if (check.status === 'dead') return http ? 'broken' : 'notResponding';
   if (check.status === 'blocked') return 'blocked';
   if (check.working === true) return check.status === 'nocors' ? 'liveNoCors' : 'live';
