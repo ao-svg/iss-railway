@@ -106,3 +106,24 @@ test('pluginFromZip tells the two plugins apart by folder', () => {
   ]);
   assert.throws(() => pluginFromZip(mixed), /one plugin folder/);
 });
+
+test('activeTargets: first group with a site up, random within it, later groups take over', () => {
+  const { activeTargets } = require('../src/hub');
+  const groups = { 'https://a.test': 1, 'https://b.test': 1, 'https://c.test': 2, 'https://d.test': 2, 'https://e.test': 3 };
+  const settings = { defaultTarget: 'https://a.test', groups };
+  assert.deepEqual(activeTargets(settings, {}), ['https://a.test', 'https://b.test']);
+  assert.deepEqual(activeTargets(settings, { 'a.test': { down: true } }), ['https://b.test']);
+  const g1down = { 'a.test': { down: true }, 'b.test': { down: true } };
+  assert.deepEqual(activeTargets(settings, g1down), ['https://c.test', 'https://d.test']);
+  assert.deepEqual(activeTargets(settings, { ...g1down, 'c.test': { down: true }, 'd.test': { down: true } }), ['https://e.test']);
+  // Everything down: group 1 anyway
+  const all = Object.fromEntries(['a', 'b', 'c', 'd', 'e'].map((x) => [`${x}.test`, { down: true }]));
+  assert.deepEqual(activeTargets(settings, all), ['https://a.test', 'https://b.test']);
+  // One miss (fails: 1, down: false) is not down
+  assert.deepEqual(activeTargets(settings, { 'a.test': { down: false, fails: 1 } }), ['https://a.test', 'https://b.test']);
+  // targetFor / rotationFor follow it; overrides still win
+  assert.equal(targetFor('x.com', settings, {}, g1down), 'https://c.test');
+  assert.deepEqual(rotationFor('x.com', settings, {}, g1down), ['https://c.test', 'https://d.test']);
+  assert.deepEqual(rotationFor('x.com', settings, { 'x.com': 'https://e.test' }, g1down), []);
+  assert.deepEqual(rotationFor('x.com', settings, {}, { ...g1down, 'c.test': { down: true } }), []);
+});

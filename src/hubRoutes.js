@@ -250,13 +250,14 @@ function renderSites({ layout, escapeHtml }, base, flash) {
   const s = st.settings;
   const latestOf = (x) => { const r = st.releases[hub.knownPlugin(x.plugin)]; return r && r.version; };
   const dayAgo = Date.now() - 86400000;
+  const health = hub.destinationHealth();
   const sites = Object.entries(st.sites)
     .map(([host, x]) => ({
       host,
       ...x,
-      target: hub.targetFor(host, s, st.overrides),
+      target: hub.targetFor(host, s, st.overrides, health),
       override: st.overrides[host] || null,
-      rotating: hub.rotationFor(host, s, st.overrides).length,
+      rotating: hub.rotationFor(host, s, st.overrides, health).length,
     }))
     .sort((a, b) => a.host.localeCompare(b.host));
   const isOld = (x) => latestOf(x) && hub.compareVersions(x.version, latestOf(x)) < 0;
@@ -264,7 +265,7 @@ function renderSites({ layout, escapeHtml }, base, flash) {
 
   const schedules = sites.filter((x) => x.role !== 'player');
   // How many schedule sites send their visitors to each destination
-  const usedBy = (p) => schedules.filter((x) => !x.removed && (x.target === p.home || hub.cleanHost(x.target) === p.host || (x.rotating && hub.rotationFor(x.host, s, st.overrides).some((u) => hub.cleanHost(u) === p.host)))).length;
+  const usedBy = (p) => schedules.filter((x) => !x.removed && (x.target === p.home || hub.cleanHost(x.target) === p.host || (x.rotating && hub.rotationFor(x.host, s, st.overrides, health).some((u) => hub.cleanHost(u) === p.host)))).length;
   const version = (x) =>
     `<span class="rank ${isOld(x) ? 'rank-medium' : 'rank-working'}" title="${isOld(x) ? `v${escapeHtml(latestOf(x))} is published` : 'Up to date'}">v${escapeHtml(x.version || '?')}</span>` +
     (isOld(x) && /failed/.test(x.update || '') ? `<div class="status-err" style="font-size:0.75rem;margin-top:0.2rem">update ${escapeHtml(x.update)}</div>` : '');
@@ -273,7 +274,8 @@ function renderSites({ layout, escapeHtml }, base, flash) {
   // ── Destination sites ──
   const dests = hub.destinations();
   const multi = dests.length > 1;
-  const rotationOn = Boolean(s.rotationEnabled && multi);
+  const active = hub.activeTargets(s, health);
+  const groupCount = Math.max(3, ...dests.map((d) => d.group + 1));
   const destRows = dests
     .map((d) => {
       const p = d.player;
@@ -281,6 +283,18 @@ function renderSites({ layout, escapeHtml }, base, flash) {
         ? `<span class="dot ${isSilent(p) ? 'dot-dead' : 'dot-ok'}"></span>${isSilent(p) ? `silent · ${ago(p.lastSeen)}` : 'connected'}`
         : `<span class="dot dot-unchecked"></span><a href="/sites/add?domain=${encodeURIComponent(d.host)}">Connect</a>`;
       const sending = usedBy({ host: d.host, home: d.url });
+      const h = d.health;
+      const up = !d.group
+        ? '<span class="muted">—</span>'
+        : !h
+          ? '<span class="muted">not checked yet</span>'
+          : h.down
+            ? `<span class="status-err" title="${escapeHtml(h.why || '')}">down · ${ago(h.since)}</span>`
+            : `<span title="checked ${escapeHtml(h.at)}">up${h.fails ? ` <span class="muted">(1 miss: ${escapeHtml(h.why || '')})</span>` : ''}</span>`;
+      const groupSelect = `<select class="compact" name="group_${escapeHtml(d.host)}" aria-label="Group of ${escapeHtml(d.host)}">
+          ${Array.from({ length: groupCount }, (_, i) => i + 1).map((n) => `<option value="${n}" ${d.group === n ? 'selected' : ''}>Group ${n}</option>`).join('')}
+          <option value="0" ${d.group ? '' : 'selected'}>Not used</option>
+        </select>`;
       const remove = d.main
         ? ''
         : p
@@ -293,8 +307,8 @@ function renderSites({ layout, escapeHtml }, base, flash) {
     <td>${status}</td>
     <td class="hide-sm">${p ? version(p) : '<span class="muted">—</span>'}</td>
     <td class="hide-sm muted">${sending ? `${sending} schedule site${sending === 1 ? '' : 's'}` : '—'}</td>
-    <td class="c"><input type="radio" name="main" value="${escapeHtml(d.url)}" ${d.main ? 'checked' : ''} aria-label="Main destination: ${escapeHtml(d.host)}"></td>
-    ${multi ? `<td class="c"><input type="checkbox" name="rotate" value="${escapeHtml(d.url)}" ${d.inRotation ? 'checked' : ''} aria-label="Include ${escapeHtml(d.host)} in the random pick"></td>` : ''}
+    <td>${groupSelect}</td>
+    <td>${up}${d.active ? ' <span class="pill">getting visitors</span>' : ''}</td>
     <td class="r">${remove}</td>
   </tr>`;
     })
@@ -303,7 +317,7 @@ function renderSites({ layout, escapeHtml }, base, flash) {
   // ── Schedule sites ──
   const opensOn = (x) => {
     const current = x.override ? hub.cleanHost(x.override) : '';
-    const def = rotationOn ? `Default — random of ${hub.rotationFor('', s, {}).length}` : `Default — ${hub.cleanHost(s.defaultTarget)}`;
+    const def = active.length > 1 ? `Default — random of ${active.length} (${active.map(hub.cleanHost).join(', ')})` : `Default — ${hub.cleanHost(active[0] || s.defaultTarget)}`;
     return `<form method="POST" action="/api/hub/override">
         <input type="hidden" name="host" value="${escapeHtml(x.host)}">
         <select class="compact" name="target" onchange="this.form.submit()" aria-label="Where ${escapeHtml(x.host)} sends visitors">
@@ -374,19 +388,10 @@ function renderSites({ layout, escapeHtml }, base, flash) {
       <div class="card-head"><h2>Destination sites</h2><p class="muted">Where visitors watch</p></div>
       <form method="POST" action="/api/hub/destinations">
         <table>
-          <tr><th>Site</th><th>Status</th><th class="hide-sm">Plugin</th><th class="hide-sm">Gets visitors from</th><th class="c">Main</th>${multi ? '<th class="c">In random pick</th>' : ''}<th></th></tr>
+          <tr><th>Site</th><th>Status</th><th class="hide-sm">Plugin</th><th class="hide-sm">Gets visitors from</th><th>Group</th><th>Up?</th><th></th></tr>
           ${destRows}
         </table>
-        ${
-          multi
-            ? `<label class="switch"><input type="checkbox" name="rotationEnabled" value="1" ${s.rotationEnabled ? 'checked' : ''}>
-          <span><strong>Random destination per click</strong><br><span class="muted">${
-            rotationOn
-              ? `On — each click on a schedule site opens one of the ${hub.rotationFor('', s, {}).length} sites ticked under “In random pick”.`
-              : 'Off — every click opens the main site. To spread visitors, tick the sites under “In random pick”, switch this on and save.'
-          }</span></span></label>`
-            : ''
-        }
+        <p class="muted" style="margin:0.75rem 0 0">Visitors go to <strong>group 1</strong>; several sites in a group share the clicks at random. If every site in group 1 is down, group 2 takes over, then group 3, and so on, and group 1 gets the visitors back once a site in it is up again. The hub checks every 2 minutes from its own server (down = no answer or a server error twice in a row). ${multi ? '' : 'Add more destinations to use groups.'}</p>
         <div class="foot"><span class="muted">Schedule sites switch within ${s.cacheMinutes || 5} minutes of saving.</span><button type="submit">Save</button></div>
       </form>
       <form id="hub-dest-remove" method="POST" action="/api/hub/destinations/remove"></form>
@@ -598,6 +603,15 @@ function renderAddSite({ layout, escapeHtml }, domain, probe) {
 }
 
 function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
+  if (process.env.NODE_ENV !== 'test') {
+    hub.startHealthChecks({
+      onChange: () => {
+        const st = hub.getState();
+        console.log('[hub] destinations now:', hub.activeTargets(st.settings, hub.destinationHealth()).join(', '));
+        for (const [host, x] of Object.entries(st.sites)) if (x.role !== 'player' && !x.removed) pokeSite({ ...x, host }).catch(() => {});
+      },
+    });
+  }
   // Scripts: "Authorization: Bearer <API token>". People: the dashboard login, from this app's pages.
   const tokenOrAdmin = (req, res, next) => {
     const m = /^Bearer\s+(\S+)$/i.exec(req.get('authorization') || '');
@@ -625,7 +639,7 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
     res.json({
       sites,
       releases: Object.fromEntries(Object.entries(st.releases).map(([k, r]) => [k, { version: r.version, uploadedAt: r.uploadedAt, notes: r.notes }])),
-      destinations: hub.destinations().map((d) => ({ host: d.host, url: d.url, main: d.main, inRotation: d.inRotation, connected: Boolean(d.player) })),
+      destinations: hub.destinations().map((d) => ({ host: d.host, url: d.url, main: d.main, group: d.group, up: d.health ? !d.health.down : null, active: d.active, connected: Boolean(d.player) })),
       rotation: Boolean(st.settings.rotationEnabled),
     });
   });
@@ -874,7 +888,11 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
   app.post('/api/hub/destinations', requireAuth('admin'), sameOrigin, (req, res) =>
     attempt(
       res,
-      () => hub.setDestinations({ main: req.body.main, rotate: [].concat(req.body.rotate || []), rotationEnabled: req.body.rotationEnabled === '1' }),
+      () => {
+        const groups = Object.fromEntries(Object.entries(req.body).filter(([k]) => k.startsWith('group_')).map(([k, v]) => [k.slice(6), v]));
+        if (Object.keys(groups).length) return hub.setGroups(groups);
+        return hub.setDestinations({ main: req.body.main, rotate: [].concat(req.body.rotate || []), rotationEnabled: req.body.rotationEnabled === '1' });
+      },
       'Saved — schedule sites switch within a few minutes.'
     )
   );

@@ -39,6 +39,10 @@ const DEFAULT_SETTINGS = {
   // Off by default; domains with an override always use their override.
   rotationEnabled: false,
   rotation: [],
+  // Destination groups: { url: 1 | 2 | … }. Visitors go to the first group with a site that is up
+  // (random per click when it has several); a group takes over when every site before it is down.
+  // Empty = the older main + rotation settings above.
+  groups: {},
   // Destination sites added by hand (player sites that check in are listed automatically)
   destinations: [],
 };
@@ -59,17 +63,44 @@ function cleanUrl(value) {
   }
 }
 
-// A site's destination: its own override, else its www/non-www twin's, else the default
-function targetFor(host, settings, overrides) {
-  const twin = host.startsWith('www.') ? host.slice(4) : `www.${host}`;
-  return overrides[host] || overrides[twin] || settings.defaultTarget;
+// Group numbers in use, lowest first, each with its destination URLs (in the order saved)
+function groupList(settings) {
+  const byN = new Map();
+  for (const [url, n] of Object.entries(settings.groups || {})) {
+    const g = parseInt(n, 10);
+    if (!(g > 0)) continue;
+    if (!byN.has(g)) byN.set(g, []);
+    byN.get(g).push(url);
+  }
+  return [...byN.entries()].sort((a, b) => a[0] - b[0]).map(([n, urls]) => ({ n, urls }));
 }
 
-// Destinations a site's clicks are spread over: [] unless rotation is on and the site has no override
-function rotationFor(host, settings, overrides) {
+// Where clicks go right now: the up sites of the first group that has any (health: { host: { down } }).
+// Every site down → the first group anyway (a check from here can be wrong; never send nowhere).
+// No groups saved → the main destination, plus the rotation ones while rotation is on.
+function activeTargets(settings, health = {}) {
+  const groups = groupList(settings);
+  if (!groups.length) {
+    return [...new Set([settings.defaultTarget, ...(settings.rotationEnabled ? settings.rotation || [] : [])])];
+  }
+  for (const g of groups) {
+    const up = g.urls.filter((u) => !(health[cleanHost(u)] && health[cleanHost(u)].down));
+    if (up.length) return up;
+  }
+  return groups[0].urls;
+}
+
+// A site's destination: its own override, else its www/non-www twin's, else the first active one
+function targetFor(host, settings, overrides, health = {}) {
   const twin = host.startsWith('www.') ? host.slice(4) : `www.${host}`;
-  if (!settings.rotationEnabled || overrides[host] || overrides[twin]) return [];
-  const all = [...new Set([settings.defaultTarget, ...(settings.rotation || [])])];
+  return overrides[host] || overrides[twin] || activeTargets(settings, health)[0] || settings.defaultTarget;
+}
+
+// Destinations a site's clicks are spread over at random: [] for a single one or an overridden domain
+function rotationFor(host, settings, overrides, health = {}) {
+  const twin = host.startsWith('www.') ? host.slice(4) : `www.${host}`;
+  if (overrides[host] || overrides[twin]) return [];
+  const all = activeTargets(settings, health);
   return all.length > 1 ? all : [];
 }
 
@@ -344,8 +375,8 @@ function configFor(host, baseUrl, slug = PLUGIN_SLUG) {
   if (PLUGINS[slug].role === 'player') return common;
   return {
     ...common,
-    player_site: targetFor(host, s, store.overrides),
-    rotation: rotationFor(host, s, store.overrides),
+    player_site: targetFor(host, s, store.overrides, health),
+    rotation: rotationFor(host, s, store.overrides, health),
     page_size: s.pageSize,
     commands: pendingFor(host),
   };
@@ -375,9 +406,48 @@ function destinations() {
   playerSites().forEach((p) => add(p.home, { player: p }));
   const mainHost = cleanHost(s.defaultTarget);
   const rotHosts = new Set((s.rotation || []).map(cleanHost));
+  const groupOf = groupNumbers(s);
+  const active = new Set(activeTargets(s, health).map(cleanHost));
   return [...byHost.values()]
-    .map((d) => ({ ...d, main: d.host === mainHost, inRotation: d.host === mainHost || rotHosts.has(d.host) }))
-    .sort((a, b) => (b.main - a.main) || a.host.localeCompare(b.host));
+    .map((d) => ({
+      ...d,
+      main: d.host === mainHost,
+      inRotation: d.host === mainHost || rotHosts.has(d.host),
+      group: groupOf.get(d.host) || 0,
+      health: health[d.host] || null,
+      active: active.has(d.host),
+    }))
+    .sort((a, b) => ((a.group || 99) - (b.group || 99)) || (b.main - a.main) || a.host.localeCompare(b.host));
+}
+
+// host → group number, from the saved groups or (none saved) from main + rotation
+function groupNumbers(s) {
+  const m = new Map();
+  const groups = groupList(s);
+  if (groups.length) groups.forEach((g) => g.urls.forEach((u) => m.set(cleanHost(u), g.n)));
+  else {
+    m.set(cleanHost(s.defaultTarget), 1);
+    (s.rotation || []).forEach((u) => { if (!m.has(cleanHost(u))) m.set(cleanHost(u), s.rotationEnabled ? 1 : 0); });
+  }
+  return m;
+}
+
+// The Destination sites form: a group per site ({ host: n }, 0 = not used). The main destination
+// (older settings, single-site views) becomes the first site of the lowest group.
+function setGroups(groupsByHost) {
+  const known = new Map(destinations().map((d) => [d.host, d.url]));
+  const groups = {};
+  for (const [h, n] of Object.entries(groupsByHost || {})) {
+    const url = known.get(cleanHost(h));
+    const g = parseInt(n, 10);
+    if (url && g > 0 && g <= 20) groups[url] = g;
+  }
+  const list = groupList({ groups });
+  if (!list.length) throw new Error('Put at least one destination in a group');
+  const first = list[0].urls;
+  store.settings = { ...store.settings, groups, defaultTarget: first[0], rotation: first.slice(1), rotationEnabled: first.length > 1 };
+  save();
+  if (onTargetsChange) onTargetsChange();
 }
 
 // The Destination sites form in one go: main site, which ones rotate, rotation on/off
@@ -386,7 +456,10 @@ function setDestinations({ main, rotate = [], rotationEnabled }) {
   const mainUrl = known.get(cleanHost(main));
   if (!mainUrl) throw new Error('Pick the main destination from the list');
   const others = [...new Set([].concat(rotate).map((r) => known.get(cleanHost(r))).filter((u) => u && cleanHost(u) !== cleanHost(mainUrl)))];
-  store.settings = { ...store.settings, defaultTarget: mainUrl, rotation: others, rotationEnabled: Boolean(rotationEnabled) && others.length > 0 };
+  const on = Boolean(rotationEnabled) && others.length > 0;
+  const groups = { [mainUrl]: 1 };
+  if (on) others.forEach((u) => { groups[u] = 1; });
+  store.settings = { ...store.settings, defaultTarget: mainUrl, rotation: others, rotationEnabled: on, groups };
   save();
 }
 
@@ -407,7 +480,9 @@ function removeDestination(url) {
     ...store.settings,
     destinations: (store.settings.destinations || []).filter((x) => cleanHost(x) !== host),
     rotation: (store.settings.rotation || []).filter((x) => cleanHost(x) !== host),
+    groups: Object.fromEntries(Object.entries(store.settings.groups || {}).filter(([u]) => cleanHost(u) !== host)),
   };
+  delete health[host];
   for (const [h, t] of Object.entries(store.overrides)) if (cleanHost(t) === host) delete store.overrides[h];
   save();
 }
@@ -580,7 +655,68 @@ function getState() {
   return store;
 }
 
+// ── Destination health ──
+// Every 2 minutes each grouped destination is fetched from here. Down = two misses in a row
+// (no answer in 15 s, or HTTP 5xx); one good answer brings it back. Kept in memory only: after a
+// restart every site counts as up until checked. onTargetsChange: called when where clicks go changes.
+const health = {};
+let onTargetsChange = null;
+let healthTimer = null;
+const HEALTH_EVERY_MS = 2 * 60 * 1000;
+
+function destinationHealth() {
+  return health;
+}
+
+async function probe(url, fetchImpl) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 15000);
+  try {
+    const res = await fetchImpl(url, { redirect: 'follow', signal: ctl.signal, headers: { 'User-Agent': 'zhibo-hub health check' } });
+    return res.status < 500 ? { ok: true, code: res.status } : { ok: false, why: `HTTP ${res.status}` };
+  } catch (err) {
+    return { ok: false, why: err.name === 'AbortError' ? 'no answer in 15 s' : (err.cause && err.cause.code) || err.message };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function checkDestinations(fetchImpl = fetch) {
+  const before = activeTargets(store.settings, health).join(' ');
+  const hosts = new Map();
+  for (const g of groupList(store.settings)) g.urls.forEach((u) => hosts.set(cleanHost(u), u));
+  if (!hosts.size) [store.settings.defaultTarget, ...(store.settings.rotation || [])].forEach((u) => u && hosts.set(cleanHost(u), u));
+  await Promise.all([...hosts.entries()].map(async ([host, url]) => {
+    const r = await probe(url, fetchImpl);
+    const h = health[host] || { down: false, fails: 0 };
+    const at = new Date().toISOString();
+    if (r.ok) health[host] = { down: false, fails: 0, at, since: h.down ? at : h.since || at, why: '' };
+    else {
+      const fails = (h.fails || 0) + 1;
+      const down = fails >= 2;
+      health[host] = { down, fails, at, since: down && !h.down ? at : h.since || at, why: r.why };
+    }
+  }));
+  const changed = activeTargets(store.settings, health).join(' ') !== before;
+  if (changed && onTargetsChange) onTargetsChange();
+  return changed;
+}
+
+function startHealthChecks({ onChange } = {}) {
+  onTargetsChange = onChange || null;
+  if (healthTimer) return;
+  const run = () => checkDestinations().catch((err) => console.error('[hub] destination check failed:', err.message));
+  setTimeout(run, 10000).unref();
+  healthTimer = setInterval(run, HEALTH_EVERY_MS);
+  healthTimer.unref();
+}
+
 module.exports = {
+  activeTargets,
+  setGroups,
+  checkDestinations,
+  startHealthChecks,
+  destinationHealth,
   PLUGIN_SLUG,
   PLAYER_SLUG,
   PLUGINS,

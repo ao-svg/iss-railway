@@ -242,6 +242,46 @@ test('hub endpoints', async (t) => {
     assert.deepEqual(cfg.rotation, []);
   });
 
+  await t.test('destination groups: group 1 shared at random, group 2 takes over when group 1 is down', async () => {
+    for (const u of ['https://g1b.example', 'https://g2a.example', 'https://g2b.example']) await adminPost('/api/hub/destinations/add', { url: u });
+    let res = await adminPost('/api/hub/destinations', {
+      [`group_${PLAYER}`]: '1', 'group_g1b.example': '1', 'group_g2a.example': '2', 'group_g2b.example': '2',
+    });
+    assert.equal(res.status, 302);
+    let cfg = await (await config()).json();
+    assert.equal(cfg.player_site, `https://${PLAYER}`);
+    assert.deepEqual(cfg.rotation, [`https://${PLAYER}`, 'https://g1b.example']);
+
+    // Group 1 answers 503 twice → group 2
+    const down = new Set([PLAYER, 'g1b.example']);
+    const fakeFetch = async (url) => ({ status: down.has(hub.cleanHost(url)) ? 503 : 200 });
+    await hub.checkDestinations(fakeFetch);
+    cfg = await (await config()).json();
+    assert.equal(cfg.player_site, `https://${PLAYER}`, 'one miss is not down');
+    await hub.checkDestinations(fakeFetch);
+    cfg = await (await config()).json();
+    assert.equal(cfg.player_site, 'https://g2a.example');
+    assert.deepEqual(cfg.rotation, ['https://g2a.example', 'https://g2b.example']);
+    const page = await (await fetch(`${base}/sites`, { headers: { Authorization: basic } })).text();
+    assert.match(page, /down · /);
+
+    // One site of group 1 back → it gets every click again
+    down.delete('g1b.example');
+    await hub.checkDestinations(fakeFetch);
+    cfg = await (await config()).json();
+    assert.equal(cfg.player_site, 'https://g1b.example');
+    assert.deepEqual(cfg.rotation, []);
+
+    // Not used + nothing in a group is refused
+    res = await adminPost('/api/hub/destinations', { [`group_${PLAYER}`]: '0', 'group_g1b.example': '0' });
+    assert.match(decodeURIComponent(res.headers.get('location')), /error:Put at least one destination/);
+
+    down.clear();
+    await hub.checkDestinations(fakeFetch);
+    for (const u of ['https://g1b.example', 'https://g2a.example', 'https://g2b.example']) await adminPost('/api/hub/destinations/remove', { url: u });
+    await adminPost('/api/hub/destinations', { main: `https://${PLAYER}` });
+  });
+
   await t.test('zips dropped into hub-incoming/ are published; the page offers them for download', async () => {
     const fs = require('fs');
     const path = require('path');
