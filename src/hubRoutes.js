@@ -111,7 +111,7 @@ function renderSite({ layout, escapeHtml }, host, flash) {
         <tr><th>Theme</th><td>${escapeHtml(d.theme || x.theme || '—')}</td></tr>
         <tr><th>Homepage table</th><td>${d.at ? (d.homepage ? 'yes' : 'no') : '—'}</td></tr>
         <tr><th>Sport pages</th><td>${pagesHave.size ? Object.entries(d.pages).map(([t, p]) => `${escapeHtml(t)} <code>${escapeHtml(p)}</code>`).join(' · ') : `${Number(x.pages) || 0}`}</td></tr>
-        <tr><th>ABS3 bridge</th><td>${d.at ? (d.bridge ? 'installed (removal adds 301s through it)' : 'not installed') : '—'}</td></tr>
+        <tr><th>ABS3 bridge</th><td>${d.at ? (d.bridge ? (d.bridgeVersion ? `v${escapeHtml(d.bridgeVersion)}` : 'installed, version not reported') + ' (removal adds 301s through it)' : 'not installed') : '—'}</td></tr>
       </table>
       <form class="inline-form" method="POST" action="/api/hub/poke" style="margin-top:0.75rem">
         <input type="hidden" name="host" value="${escapeHtml(host)}">

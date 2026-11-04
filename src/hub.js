@@ -308,6 +308,8 @@ function recordReport(host, { results, status }) {
       theme: String(status.theme || '').slice(0, 80),
       homepage: Boolean(status.homepage),
       bridge: Boolean(status.bridge),
+      // zhibo882 2.6.0+ sends the bridge's version ('1' for bridges before 2.7.0)
+      bridgeVersion: /^\d+\.\d+/.test(String(status.bridge)) ? String(status.bridge).slice(0, 20) : '',
       brand: String(status.brand || '').slice(0, 80),
       mode: String(status.mode || '').slice(0, 20),
       pages: Object.fromEntries(Object.entries(status.pages || {}).slice(0, 60).map(([k, v]) => [String(k).slice(0, 40), String(v || '').slice(0, 200)])),
