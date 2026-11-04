@@ -970,7 +970,7 @@ function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus, { getScre
       // instead of exporting either the stale original match or a
       // snapshot that's already a few minutes old by the time it's used.
       const playable = sources.map((url) => `${publicBaseUrl}/go?u=${encodeURIComponent(url)}`);
-      return {
+      return orderForVisitors({
         ...ch,
         sources: playable,
         sourceStatuses: results.map((s) => s?.status || null),
@@ -1004,9 +1004,34 @@ function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus, { getScre
         // 'us-only' when the host the source resolves to is a known
         // geo-fenced CDN (config.js GEO_FENCED_HOSTS), else null.
         sourceGeo: sources.map((url, i) => geoHintFor(results[i]?.resolvedUrl || url)),
-      };
+      });
     }),
   }));
+}
+
+// Every per-source array of an enriched channel, parallel to `sources`.
+const PARALLEL_SOURCE_FIELDS = [
+  'sources', 'sourceStatuses', 'sourceWorking', 'sourceVisitorPath', 'sourceSpeedRatio', 'sourceCors',
+  'sourceRelayPlayable', 'sourceResolved', 'sourceScreenshot', 'sourceGif', 'sourceRank', 'sourceGeo',
+];
+
+// Relayed sources start in 3-7 s for a visitor abroad; direct hosts often
+// take 9-23 s or never start, which the US-based check can't see. So the
+// export lists relayed first, then direct, then never-probed, and sources a
+// visitor can't play (sourceWorking false) last. Stable within each group,
+// and every parallel array moves together.
+function orderForVisitors(ch) {
+  const n = ch.sources.length;
+  const group = (i) => {
+    if (ch.sourceWorking[i] === false) return 3;
+    if (ch.sourceVisitorPath[i] === 'relay') return 0;
+    return ch.sourceVisitorPath[i] === 'direct' ? 1 : 2;
+  };
+  const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => group(a) - group(b) || a - b);
+  if (order.every((v, i) => v === i)) return ch;
+  const out = { ...ch };
+  for (const key of PARALLEL_SOURCE_FIELDS) out[key] = order.map((i) => ch[key][i]);
+  return out;
 }
 
 module.exports = {

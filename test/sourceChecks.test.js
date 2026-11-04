@@ -511,8 +511,30 @@ test('enrichRowsWithSourceStatus: sourceWorking is the visitor verdict, sourceVi
     'https://b.example/2.m3u8': { status: 'stream', working: true, isManifest: true, visitorWorking: true, visitorPath: 'direct' },
   };
   const ch = enrichRowsWithSourceStatus(rows, (u) => checks[u] || null)[0].channels[0];
-  assert.deepEqual(ch.sourceWorking, [false, true]);
-  assert.deepEqual(ch.sourceVisitorPath, ['relay', 'direct']);
+  // b first: a source a visitor can't play goes last, even when relayed
+  assert.deepEqual(ch.sourceWorking, [true, false]);
+  assert.deepEqual(ch.sourceVisitorPath, ['direct', 'relay']);
+});
+
+test('enrichRowsWithSourceStatus: relayed sources first, then direct, then unprobed, unplayable last; arrays stay parallel', () => {
+  const u = (s) => `https://${s}.example/x.m3u8`;
+  const rows = [{ channels: [{ name: 'x', sources: [u('dead'), u('direct1'), u('unprobed'), u('relay1'), u('direct2'), u('relay2')] }] }];
+  const ok = { status: 'stream', working: true, isManifest: true, visitorWorking: true };
+  const checks = {
+    [u('dead')]: { ...ok, visitorWorking: false, visitorPath: 'relay' },
+    [u('direct1')]: { ...ok, visitorPath: 'direct' },
+    [u('unprobed')]: { status: 'ok', working: true, isManifest: false },
+    [u('relay1')]: { ...ok, visitorPath: 'relay' },
+    [u('direct2')]: { ...ok, visitorPath: 'direct' },
+    [u('relay2')]: { ...ok, visitorPath: 'relay' },
+  };
+  const ch = enrichRowsWithSourceStatus(rows, (url) => checks[url] || null)[0].channels[0];
+  const names = ch.sources.map((s) => new URL(decodeURIComponent(s.split('u=')[1])).hostname.split('.')[0]);
+  assert.deepEqual(names, ['relay1', 'relay2', 'direct1', 'direct2', 'unprobed', 'dead']);
+  assert.deepEqual(ch.sourceVisitorPath, ['relay', 'relay', 'direct', 'direct', null, 'relay']);
+  assert.deepEqual(ch.sourceWorking, [true, true, true, true, true, false]);
+  assert.equal(ch.sourceRank.length, 6);
+  assert.deepEqual(rows[0].channels[0].sources[0], u('dead'), 'input not mutated');
 });
 
 test('checkVisitorPath: follows /go like a player — through the relay or direct — and never guesses when /go is unreachable', async () => {
