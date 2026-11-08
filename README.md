@@ -216,6 +216,24 @@ only). Manage accounts on `/users`.
 | `GET /live.json`    | Same data as JSON                              |
 | `GET /go?u=<url>`   | Live redirect to a source URL's current destination — what `Source1`..`Source10` actually link to; `u` must be a source this app currently knows about |
 
+### Hub API for scripts and ABS3
+
+`/sites` (the WordPress-sites hub) also has a token API: `Authorization: Bearer <API token>`
+(WordPress sites → Settings → API token). `npm run hub` uses it to publish plugins and update
+sites; ABS3 uses it to make a WordPress site a schedule or player site of the network without
+anyone copying keys around (ABS3 then writes the site's pages and posts under the plugin's table
+and never removes the table; such a site shows an **ABS3** pill on `/sites`).
+
+| Route | Description |
+|---|---|
+| `GET /api/hub/state` | Every site (role, plugin version, latest published version, last check-in, `managedBy`), the releases and the destinations |
+| `GET /api/hub/site/<host>` | One site with its details (theme, sport pages, bridge version), where its matches open, and its last 10 commands with their status and log |
+| `POST /api/hub/package-link` `{ plugin }` | A download link for the published zip of that plugin that carries no network key and works for 15 minutes — for the site's ABS3 bridge to install from (`/api/hub/package?ticket=…`) |
+| `POST /api/hub/connect` `{ site, plugin?, user, password, source?, destination?, setup? }` | Connects a site that already runs the plugin, like "Add a site": the given WordPress Application Password (an administrator's, made for this and deleted here afterwards) is used once to hand the plugin the hub URL and network key; `source: "abs3"` marks the site; `destination: true` adds a player site to the destinations; `setup: { brand, theme, homepage, menu, sports }` queues the schedule plugin's set-up and pokes the site |
+| `POST /api/hub/setup` `{ site, setup }` | Queues the set-up on a connected schedule site and pokes it; answers with the command id to follow on `/api/hub/site/<host>` |
+| `POST /api/hub/update` `{ site?, plugin? }` | Asks outdated sites to install the published plugin now |
+| `PUT /api/hub/release?notes=` (zip body) | Publishes a plugin zip (`npm run hub -- publish`) |
+
 ## Pulling into your Google Sheet
 
 Sheets can import the CSV directly:

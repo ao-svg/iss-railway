@@ -249,6 +249,51 @@ function recordCheckin(host, info) {
   saveSoon();
 }
 
+// Which other system set the site up and writes its content (ABS3 connects sites through
+// /api/hub/connect and says so). Shown on the sites pages; nothing else changes.
+function markSource(host, source) {
+  const h = cleanHost(host);
+  if (!store.sites[h]) return false;
+  const s = String(source || '').trim().toLowerCase().slice(0, 20);
+  if (s) store.sites[h].managedBy = s; else delete store.sites[h].managedBy;
+  save();
+  return true;
+}
+
+// ── Package tickets ──────────────────────────────────────────
+// A short-lived link to a published plugin zip that carries no network key: ABS3 hands it to the
+// site's bridge plugin, which downloads and installs the zip from it. Signed with the network key,
+// good for TICKET_TTL_MS; plugin and expiry are inside the ticket so it can't be reused for another.
+const TICKET_TTL_MS = 15 * 60 * 1000;
+
+function ticketSign(payload) {
+  return crypto.createHmac('sha256', networkKey()).update(payload).digest('base64url');
+}
+
+function packageTicket(slug) {
+  if (!PLUGINS[slug]) throw new Error(`Unknown plugin ${slug}`);
+  if (!store.releases[slug]) throw new Error(`Nothing published for ${PLUGINS[slug].label} yet`);
+  const expires = Date.now() + TICKET_TTL_MS;
+  const payload = `${slug}.${expires}`;
+  return { ticket: `${Buffer.from(payload).toString('base64url')}.${ticketSign(payload)}`, expiresAt: new Date(expires).toISOString(), version: store.releases[slug].version };
+}
+
+// The plugin slug a ticket is good for, or null (bad, expired, or for another plugin)
+function ticketPlugin(ticket) {
+  const m = /^([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/.exec(String(ticket || ''));
+  if (!m) return null;
+  let payload;
+  try { payload = Buffer.from(m[1], 'base64url').toString('utf8'); } catch { return null; }
+  const want = Buffer.from(ticketSign(payload));
+  const got = Buffer.from(m[2]);
+  if (want.length !== got.length || !crypto.timingSafeEqual(want, got)) return null;
+  const dot = payload.lastIndexOf('.');
+  const slug = payload.slice(0, dot);
+  const expires = parseInt(payload.slice(dot + 1), 10);
+  if (!PLUGINS[slug] || !(expires > Date.now())) return null;
+  return slug;
+}
+
 // ── Commands to sites ────────────────────────────────────────
 // Queued here, handed out with the site's settings (/api/hub/config) until the site reports a
 // result (/api/hub/report). The plugin skips ids it already ran, so re-sending is safe.
@@ -744,6 +789,10 @@ module.exports = {
   createApiToken,
   tokenMatches,
   recordCheckin,
+  markSource,
+  packageTicket,
+  ticketPlugin,
+  TICKET_TTL_MS,
   cleanSetupArgs,
   cleanContentArgs,
   aiSettings,

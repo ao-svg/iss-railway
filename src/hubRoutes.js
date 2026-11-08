@@ -99,7 +99,7 @@ function renderSite({ layout, escapeHtml }, host, flash) {
     `${host} · WordPress sites`,
     `${HUB_CSS}<div class="hub">
     <p class="muted"><a href="/sites">← WordPress sites</a></p>
-    <h1>${escapeHtml(host)}${x.removed ? ' <span class="rank rank-low">removed</span>' : ''}</h1>
+    <h1>${escapeHtml(host)}${x.removed ? ' <span class="rank rank-low">removed</span>' : ''}${x.managedBy ? ` <span class="pill" title="Connected by ${escapeHtml(x.managedBy)}, which also writes the site's pages and posts (the table stays at the top of each page)">${escapeHtml(x.managedBy.toUpperCase())}</span>` : ''}</h1>
     ${flashHtml}
     <div class="card">
       <table>
@@ -329,7 +329,7 @@ function renderSites({ layout, escapeHtml }, base, flash) {
   const siteRows = schedules
     .map(
       (x) => `<tr>
-    <td><a class="site" href="/sites/${encodeURIComponent(x.host)}">${escapeHtml(x.host)}</a>${x.removed ? ' <span class="rank rank-low">removed</span>' : ''}${pendingCount(x.host) ? ` <span class="rank rank-medium">${pendingCount(x.host)} pending</span>` : ''}</td>
+    <td><a class="site" href="/sites/${encodeURIComponent(x.host)}">${escapeHtml(x.host)}</a>${x.managedBy ? `<span class="pill" title="Connected by ${escapeHtml(x.managedBy)}, which writes its content">${escapeHtml(x.managedBy.toUpperCase())}</span>` : ''}${x.removed ? ' <span class="rank rank-low">removed</span>' : ''}${pendingCount(x.host) ? ` <span class="rank rank-medium">${pendingCount(x.host)} pending</span>` : ''}</td>
     <td>${opensOn(x)}</td>
     <td>${version(x)}</td>
     <td>${seen(x)}</td>
@@ -634,6 +634,7 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
         lastSeen: x.lastSeen,
         removed: Boolean(x.removed),
         home: x.home,
+        managedBy: x.managedBy || null,
       };
     });
     res.json({
@@ -642,6 +643,109 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
       destinations: hub.destinations().map((d) => ({ host: d.host, url: d.url, main: d.main, group: d.group, up: d.health ? !d.health.down : null, active: d.active, connected: Boolean(d.player) })),
       rotation: Boolean(st.settings.rotationEnabled),
     });
+  });
+
+  // ── ABS3 (or any script with the API token) ──
+  // One site as the hub sees it, with its recent commands - what ABS3 shows as the site's ISS status
+  // and polls while a set-up it queued runs.
+  const siteJson = (host) => {
+    const st = hub.getState();
+    const x = st.sites[host];
+    if (!x) return null;
+    const r = st.releases[hub.knownPlugin(x.plugin)];
+    return {
+      host,
+      role: x.role || 'schedule',
+      plugin: hub.knownPlugin(x.plugin),
+      version: x.version || null,
+      latest: r ? r.version : null,
+      outdated: Boolean(r && hub.compareVersions(x.version, r.version) < 0),
+      lastSeen: x.lastSeen,
+      removed: Boolean(x.removed),
+      home: x.home || null,
+      managedBy: x.managedBy || null,
+      target: x.role === 'player' ? null : hub.targetFor(host, st.settings, st.overrides, hub.destinationHealth()),
+      sports: x.sports || Object.keys((x.details && x.details.pages) || {}),
+      details: x.details || null,
+      commands: hub.commandsFor(host).slice(-10).map((c) => ({ id: c.id, type: c.type, status: c.status, args: c.args, createdAt: c.createdAt, finishedAt: c.finishedAt || null, log: c.log || [] })),
+    };
+  };
+  // The site record under whichever spelling it checked in with (www or not, or the address it gave)
+  const findSiteHost = (...candidates) => {
+    const sites = hub.getState().sites;
+    return candidates.map((c) => c && hub.cleanHost(c)).find((h) => h && sites[h]) || null;
+  };
+
+  app.get('/api/hub/site/:host', tokenOrAdmin, (req, res) => {
+    const host = findSiteHost(req.params.host, String(req.params.host).replace(/^www\./, ''), `www.${hub.cleanHost(req.params.host)}`);
+    if (!host) return res.status(404).json({ error: `Unknown site ${hub.cleanHost(req.params.host)}` });
+    res.json(siteJson(host));
+  });
+
+  // A link to a published plugin zip that needs no key, good for 15 minutes: ABS3 gives it to the
+  // site's bridge plugin to install from. body: { plugin: slug }
+  app.post('/api/hub/package-link', express.json({ limit: '16kb' }), tokenOrAdmin, (req, res) => {
+    const slug = String((req.body && req.body.plugin) || '');
+    if (!hub.PLUGINS[slug]) return res.status(400).json({ error: `Unknown plugin "${slug}" - one of ${Object.keys(hub.PLUGINS).join(', ')}` });
+    try {
+      const t = hub.packageTicket(slug);
+      res.json({ ok: true, plugin: slug, version: t.version, expiresAt: t.expiresAt, url: `${baseUrl(req, getConfig)}/api/hub/package?plugin=${encodeURIComponent(slug)}&ticket=${encodeURIComponent(t.ticket)}` });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // Connect a site that already runs one of the plugins, the way "Add a site" does, but with an
+  // Application Password the caller made for it (ABS3 makes a one-off one; it is deleted here
+  // afterwards, so the hub keeps no WordPress credentials). The site checks in during the call.
+  // body: { site, plugin?, user, password, source?: 'abs3', destination?: bool, setup?: {...} }
+  app.post('/api/hub/connect', express.json({ limit: '32kb' }), tokenOrAdmin, async (req, res) => {
+    const b = req.body || {};
+    const probe = await hubConnect.probeSite(b.site);
+    if (probe.error) return res.status(400).json({ error: probe.error });
+    const plugin = b.plugin ? String(b.plugin) : probe.plugins[0];
+    if (!plugin || !hub.PLUGINS[plugin]) return res.status(400).json({ error: `Unknown plugin "${plugin || ''}" - one of ${Object.keys(hub.PLUGINS).join(', ')}` });
+    if (!probe.plugins.includes(plugin)) {
+      return res.status(400).json({ error: `${probe.host} doesn't run ${hub.PLUGINS[plugin].label} (its REST namespace isn't there - is the plugin installed and active?)`, plugins: probe.plugins });
+    }
+    if (!b.user || !b.password) return res.status(400).json({ error: 'user and password (a WordPress Application Password of an administrator) are required' });
+    const out = await hubConnect.finish({ origin: probe.origin, plugin }, { user: b.user, password: b.password, hubBase: baseUrl(req, getConfig), networkKey: hub.networkKey() });
+    if (!out.ok) return res.status(502).json({ error: `${probe.host} was not connected. ${out.error}`, revoked: out.revoked });
+    const host = findSiteHost(out.home, probe.host, probe.host.replace(/^www\./, ''), `www.${probe.host}`) || probe.host;
+    const sites = hub.getState().sites;
+    if (sites[host] && b.source) hub.markSource(host, b.source);
+    const result = { ok: true, host, home: out.home || probe.origin, role: hub.PLUGINS[plugin].role, plugin, version: (sites[host] || {}).version || null, revoked: out.revoked, destination: false, setup: null };
+    if (b.destination && hub.PLUGINS[plugin].role === 'player') {
+      try { hub.addDestination(out.home || probe.origin); result.destination = true; } catch (err) { result.destinationError = err.message; }
+    }
+    if (b.setup && typeof b.setup === 'object' && hub.PLUGINS[plugin].role === 'schedule' && sites[host]) {
+      try {
+        if (hub.compareVersions(sites[host].version, COMMANDS_SINCE) < 0) throw new Error(`the plugin needs v${COMMANDS_SINCE}+ (the site runs v${sites[host].version || '?'})`);
+        const cmd = hub.queueCommand(host, 'setup', b.setup);
+        const poke = await pokeSite({ ...sites[host], host });
+        result.setup = { id: cmd.id, status: poke.ok ? 'running' : 'queued', args: cmd.args };
+      } catch (err) {
+        result.setupError = err.message;
+      }
+    }
+    res.json(result);
+  });
+
+  // Queue the plugin's set-up on a connected schedule site (the Set up form, for scripts).
+  // body: { site, setup: { brand?, theme?, homepage?, menu?, sports? } }
+  app.post('/api/hub/setup', express.json({ limit: '32kb' }), tokenOrAdmin, async (req, res) => {
+    const b = req.body || {};
+    const host = findSiteHost(b.site, String(b.site || '').replace(/^www\./, ''), `www.${hub.cleanHost(b.site)}`);
+    if (!host) return res.status(404).json({ error: `Unknown site ${hub.cleanHost(b.site)} - connect it first` });
+    const site = hub.getState().sites[host];
+    try {
+      if (hub.compareVersions(site.version, COMMANDS_SINCE) < 0) throw new Error(`the plugin needs v${COMMANDS_SINCE}+ (the site runs v${site.version || '?'})`);
+      const cmd = hub.queueCommand(host, 'setup', (b.setup && typeof b.setup === 'object') ? b.setup : {});
+      const poke = await pokeSite({ ...site, host });
+      res.json({ ok: true, host, command: { id: cmd.id, status: poke.ok ? 'running' : 'queued', args: cmd.args }, poke: poke.ok ? 'answered' : `unreachable: ${poke.error}` });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
   });
 
   // "Update now": every matching site whose plugin is older than the published one is asked to
@@ -739,8 +843,10 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
   });
 
   app.get('/api/hub/package', (req, res) => {
-    if (!hub.keyMatches(req.query.key)) return res.status(401).type('text/plain').send('bad key');
-    const plugin = hub.knownPlugin(String(req.query.plugin || ''));
+    // Sites come with the network key; a ticket (/api/hub/package-link) is for one plugin, briefly
+    const ticketFor = req.query.ticket ? hub.ticketPlugin(req.query.ticket) : null;
+    if (!ticketFor && !hub.keyMatches(req.query.key)) return res.status(401).type('text/plain').send(req.query.ticket ? 'bad or expired ticket' : 'bad key');
+    const plugin = ticketFor || hub.knownPlugin(String(req.query.plugin || ''));
     const file = hub.releasePath(plugin);
     if (!file) return res.status(404).type('text/plain').send('no release');
     res.set('Cache-Control', 'no-store');
