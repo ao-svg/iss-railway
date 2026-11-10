@@ -216,6 +216,32 @@ only). Manage accounts on `/users`.
 | `GET /live.json`    | Same data as JSON                              |
 | `GET /go?u=<url>`   | Live redirect to a source URL's current destination — what `Source1`..`Source10` actually link to; `u` must be a source this app currently knows about |
 
+### Claude connector
+
+The hub can be run from a Claude chat (claude.ai, the desktop and mobile apps): "which sites are
+outdated?", "set up example.com with football and basketball".
+
+- In Claude: Settings → Connectors → Add custom connector, and paste `https://<this app>/mcp` (the
+  address is on `/sites` → Settings → Claude connector). The browser asks for the dashboard's
+  admin login, then shows an approval page: click Approve.
+- Tools: `list_sites` and `site_status` (read), `add_site` (checks a WordPress site and answers
+  with the link where an admin connects it - the connection itself is still approved in the
+  site's WordPress), `update_plugins` (asks outdated sites to update now) and `set_up_site` (the
+  schedule plugin's set-up: look, homepage table, sport pages, menu).
+- Not offered on purpose: removing a site, uninstalling the plugin, destinations and rotation,
+  keys and tokens - those stay on the `/sites` page.
+- It acts as the admin who approved; `/sites` → Settings lists the connections and disconnects
+  them, and an account that stops being an admin loses its connection at once. State is
+  `claude-connector.json` in the data dir (tokens as SHA-256 only), so it needs the Railway
+  volume to survive a redeploy; without one, connect again after each deploy.
+- Claude Code can use the API token instead of the sign-in:
+  `claude mcp add --transport http iss-hub https://<this app>/mcp --header "Authorization: Bearer <API token>"`
+
+`src/mcpConnector.js` is the server (MCP over Streamable HTTP with OAuth sign-in; only Claude's
+callback addresses can register; the same file as ABS3's `lib/mcpConnector.js`) and
+`src/hubMcp.js` the tools. Sites are usually added from ABS3's own connector instead
+(`add site … zhibo882`), which installs the plugin, connects the site here and writes its content.
+
 ### Hub API for scripts and ABS3
 
 `/sites` (the WordPress-sites hub) also has a token API: `Authorization: Bearer <API token>`

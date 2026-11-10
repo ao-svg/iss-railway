@@ -13,6 +13,7 @@ const fs = require('fs');
 const hub = require('./hub');
 const hubAi = require('./hubAi');
 const hubConnect = require('./hubConnect');
+const { mountHubMcp } = require('./hubMcp');
 
 function baseUrl(req, getConfig) {
   if (getConfig().publicBaseUrl) return getConfig().publicBaseUrl.replace(/\/+$/, '');
@@ -245,7 +246,7 @@ function flashBox(escapeHtml, flash) {
   return `<div class="flash ${err ? 'err' : 'ok'}">${escapeHtml(err ? flash.slice(6) : flash)}</div>`;
 }
 
-function renderSites({ layout, escapeHtml }, base, flash) {
+function renderSites({ layout, escapeHtml }, base, flash, claudeConnections = []) {
   const st = hub.getState();
   const s = st.settings;
   const latestOf = (x) => { const r = st.releases[hub.knownPlugin(x.plugin)]; return r && r.version; };
@@ -477,6 +478,15 @@ function renderSites({ layout, escapeHtml }, base, flash) {
               <button type="submit" class="secondary small" style="margin-top:0.75rem">${hub.apiToken() ? 'Make a new token…' : 'Create token'}</button></form>`
             }
           </div>
+          <div class="foot" style="display:block" id="claude-connector">
+            <strong>Claude connector</strong>
+            <p class="muted">Lets you run the hub from a Claude chat (“which sites are outdated?”, “set up example.com with football and basketball”). In Claude: Settings → Connectors → Add custom connector, paste this address, then sign in here as an admin and approve.</p>
+            <table><tr><th>Address</th><td><code>${escapeHtml(base)}/mcp</code></td></tr>
+            ${claudeConnections.map((c) => `<tr><th>Connected</th><td>${escapeHtml(c.client)} as ${escapeHtml(c.user)}, since ${escapeHtml(String(c.createdAt).slice(0, 10))}${c.usedAt ? `, last used ${escapeHtml(ago(c.usedAt))}` : ''}
+              <form method="POST" action="/api/hub/claude/disconnect" style="display:inline"><input type="hidden" name="id" value="${escapeHtml(c.id)}"><button type="submit" class="secondary small">Disconnect</button></form></td></tr>`).join('')}
+            </table>
+            ${claudeConnections.length ? '' : '<p class="muted">Not connected yet.</p>'}
+          </div>
         </div>
       </details>
     </div>
@@ -620,7 +630,7 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
   };
 
   // What the sites look like now (scripts/hub.js status)
-  app.get('/api/hub/state', tokenOrAdmin, (req, res) => {
+  const stateJson = () => {
     const st = hub.getState();
     const sites = Object.entries(st.sites).map(([host, x]) => {
       const r = st.releases[hub.knownPlugin(x.plugin)];
@@ -637,13 +647,14 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
         managedBy: x.managedBy || null,
       };
     });
-    res.json({
+    return {
       sites,
       releases: Object.fromEntries(Object.entries(st.releases).map(([k, r]) => [k, { version: r.version, uploadedAt: r.uploadedAt, notes: r.notes }])),
       destinations: hub.destinations().map((d) => ({ host: d.host, url: d.url, main: d.main, group: d.group, up: d.health ? !d.health.down : null, active: d.active, connected: Boolean(d.player) })),
       rotation: Boolean(st.settings.rotationEnabled),
-    });
-  });
+    };
+  };
+  app.get('/api/hub/state', tokenOrAdmin, (req, res) => res.json(stateJson()));
 
   // ── ABS3 (or any script with the API token) ──
   // One site as the hub sees it, with its recent commands - what ABS3 shows as the site's ISS status
@@ -733,34 +744,40 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
 
   // Queue the plugin's set-up on a connected schedule site (the Set up form, for scripts).
   // body: { site, setup: { brand?, theme?, homepage?, menu?, sports? } }
-  app.post('/api/hub/setup', express.json({ limit: '32kb' }), tokenOrAdmin, async (req, res) => {
-    const b = req.body || {};
-    const host = findSiteHost(b.site, String(b.site || '').replace(/^www\./, ''), `www.${hub.cleanHost(b.site)}`);
-    if (!host) return res.status(404).json({ error: `Unknown site ${hub.cleanHost(b.site)} - connect it first` });
+  // { ok, host, command, poke } or { status, error } - shared with the Claude connector (hubMcp.js)
+  const queueSetup = async (siteName, setup) => {
+    const host = findSiteHost(siteName, String(siteName || '').replace(/^www\./, ''), `www.${hub.cleanHost(siteName)}`);
+    if (!host) return { status: 404, error: `Unknown site ${hub.cleanHost(siteName)} - connect it first` };
     const site = hub.getState().sites[host];
     try {
       if (hub.compareVersions(site.version, COMMANDS_SINCE) < 0) throw new Error(`the plugin needs v${COMMANDS_SINCE}+ (the site runs v${site.version || '?'})`);
-      const cmd = hub.queueCommand(host, 'setup', (b.setup && typeof b.setup === 'object') ? b.setup : {});
+      const cmd = hub.queueCommand(host, 'setup', (setup && typeof setup === 'object') ? setup : {});
       const poke = await pokeSite({ ...site, host });
-      res.json({ ok: true, host, command: { id: cmd.id, status: poke.ok ? 'running' : 'queued', args: cmd.args }, poke: poke.ok ? 'answered' : `unreachable: ${poke.error}` });
+      return { ok: true, host, command: { id: cmd.id, status: poke.ok ? 'running' : 'queued', args: cmd.args }, poke: poke.ok ? 'answered' : `unreachable: ${poke.error}` };
     } catch (err) {
-      res.status(400).json({ error: err.message });
+      return { status: 400, error: err.message };
     }
+  };
+  app.post('/api/hub/setup', express.json({ limit: '32kb' }), tokenOrAdmin, async (req, res) => {
+    const out = await queueSetup((req.body || {}).site, (req.body || {}).setup);
+    if (out.error) return res.status(out.status).json({ error: out.error });
+    res.json(out);
   });
 
   // "Update now": every matching site whose plugin is older than the published one is asked to
   // install it right away. body: { site?: host | 'all', plugin?: slug }
-  app.post('/api/hub/update', express.json({ limit: '16kb' }), tokenOrAdmin, async (req, res) => {
+  // { results } or { status, error } - shared with the Claude connector (hubMcp.js)
+  const updateSites = async (siteName, pluginSlug) => {
     const st = hub.getState();
-    const want = hub.cleanHost((req.body && req.body.site) || 'all');
-    const plugin = req.body && req.body.plugin ? hub.knownPlugin(req.body.plugin) : null;
+    const want = hub.cleanHost(siteName || 'all');
+    const plugin = pluginSlug ? hub.knownPlugin(pluginSlug) : null;
     const targets = Object.entries(st.sites).filter(([host, x]) => {
       if (x.removed) return false;
       if (want !== 'all' && host !== want) return false;
       if (plugin && hub.knownPlugin(x.plugin) !== plugin) return false;
       return true;
     });
-    if (want !== 'all' && !targets.length) return res.status(404).json({ error: `Unknown site ${want}` });
+    if (want !== 'all' && !targets.length) return { status: 404, error: `Unknown site ${want}` };
     const results = await Promise.all(
       targets.map(async ([host, x]) => {
         const r = st.releases[hub.knownPlugin(x.plugin)];
@@ -770,7 +787,20 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
         return { host, version: x.version, latest: r.version, action: poke.ok ? 'asked to update' : `unreachable: ${poke.error}`, answer: poke.answer };
       })
     );
-    res.json({ results });
+    return { results };
+  };
+  app.post('/api/hub/update', express.json({ limit: '16kb' }), tokenOrAdmin, async (req, res) => {
+    const out = await updateSites(req.body && req.body.site, req.body && req.body.plugin);
+    if (out.error) return res.status(out.status).json({ error: out.error });
+    res.json(out);
+  });
+
+  // ── Claude connector (hubMcp.js): the same reads and actions as tools on /mcp, behind the
+  // dashboard login. The Settings card on /sites shows its address and who is connected. ──
+  const claude = mountHubMcp(app, { requireAuth, baseUrl: (req) => baseUrl(req, getConfig), api: { stateJson, siteJson, findSiteHost, queueSetup, updateSites } });
+  app.post('/api/hub/claude/disconnect', requireAuth('admin'), sameOrigin, async (req, res) => {
+    await claude.disconnect(req.body.id ? String(req.body.id) : null);
+    back(res, 'Claude was disconnected.');
   });
 
   // ── AI content ──
@@ -970,8 +1000,8 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
     siteBack(res, host, poke.ok ? 'The site checked in.' : `error:Couldn't reach the site: ${poke.error}`);
   });
 
-  app.get('/sites', requireAuth('admin'), (req, res) => {
-    res.send(renderSites({ layout, escapeHtml }, baseUrl(req, getConfig), req.query.flash));
+  app.get('/sites', requireAuth('admin'), async (req, res) => {
+    res.send(renderSites({ layout, escapeHtml }, baseUrl(req, getConfig), req.query.flash, await claude.connections()));
   });
 
   app.post('/api/hub/destination', requireAuth('admin'), sameOrigin, (req, res) =>
