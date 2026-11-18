@@ -196,6 +196,9 @@ test('ABS3 token API: package link, connect, set-up, site status', async (t) => 
     const stale = (await site()).feed;
     assert.equal(stale.stale, true);
     assert.equal(stale.error, 'HTTP 403');
+    // The site's own account of its plugin update travels the same way
+    await checkin('&feed=' + (now - 8 * 86400) + '&feederr=HTTP%20403&upd=' + encodeURIComponent('2.6.1 failed: Download failed.'));
+    assert.equal((await site()).update, '2.6.1 failed: Download failed.');
     assert.ok(Date.now() - new Date(stale.at).getTime() > 7 * 86400 * 1000);
     const state = await (await fetch(`${base}/api/hub/state`, { headers: bearer })).json();
     assert.equal(state.sites.find((s) => s.host === 'localhost').feed.stale, true);

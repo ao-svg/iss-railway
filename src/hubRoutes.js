@@ -655,6 +655,8 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
         home: x.home,
         managedBy: x.managedBy || null,
         feed: hub.feedState(x),
+        // "2.6.1 ok" / "2.6.1 failed: <reason>" as the site reports its own plugin update ('' = none tried)
+        update: x.update || '',
       };
     });
     return {
@@ -686,6 +688,7 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
       home: x.home || null,
       managedBy: x.managedBy || null,
       feed: hub.feedState(x),
+      update: x.update || '',
       target: x.role === 'player' ? null : hub.targetFor(host, st.settings, st.overrides, hub.destinationHealth()),
       sports: x.sports || Object.keys((x.details && x.details.pages) || {}),
       details: x.details || null,
