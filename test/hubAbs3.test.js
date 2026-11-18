@@ -199,6 +199,28 @@ test('ABS3 token API: package link, connect, set-up, site status', async (t) => 
     // The site's own account of its plugin update travels the same way
     await checkin('&feed=' + (now - 8 * 86400) + '&feederr=HTTP%20403&upd=' + encodeURIComponent('2.6.1 failed: Download failed.'));
     assert.equal((await site()).update, '2.6.1 failed: Download failed.');
+    // Refused on the public address (HTTP 403): from the next check-in on, the feeds and the plugin
+    // download come from the service's direct address; links for browsers are not touched
+    process.env.HUB_DIRECT_URL = 'https://hub-direct.example';
+    const before = await (await checkin('&feed=' + (now - 60))).json();
+    assert.match(before.feeds.fixtures, new RegExp('^' + base.replace(/[.]/g, '[.]') + '/fixtures'));
+    assert.equal((await site()).direct, null);
+    const refused = await (await checkin('&feed=' + (now - 8 * 86400) + '&feederr=' + encodeURIComponent('HTTP 403'))).json();
+    assert.equal(refused.feeds.fixtures, 'https://hub-direct.example/fixtures.json?lite=1');
+    assert.equal(refused.feeds.live, 'https://hub-direct.example/live.json?lite=1');
+    assert.ok(refused.latest.package.startsWith('https://hub-direct.example/api/hub/package?key='));
+    assert.ok((await site()).direct);
+    // It stays there once the downloads work again (no flapping), until put back by hand
+    const after = await (await checkin('&feed=' + now)).json();
+    assert.equal(after.feeds.fixtures, 'https://hub-direct.example/fixtures.json?lite=1');
+    hub.setDirect('localhost', false);
+    assert.match((await (await checkin('&feed=' + now)).json()).feeds.fixtures, new RegExp('^' + base.replace(/[.]/g, '[.]') + '/fixtures'));
+    // A failed plugin download says so in other words
+    await checkin('&feed=' + now + '&upd=' + encodeURIComponent('2.6.1 failed: Download failed. Forbidden'));
+    assert.ok((await (await checkin('&feed=' + now)).json()).feeds.fixtures.startsWith('https://hub-direct.example/'));
+    hub.setDirect('localhost', false);
+    delete process.env.HUB_DIRECT_URL;
+    await checkin('&feed=' + (now - 8 * 86400) + '&feederr=' + encodeURIComponent('cURL error 28: timed out'));
     assert.ok(Date.now() - new Date(stale.at).getTime() > 7 * 86400 * 1000);
     const state = await (await fetch(`${base}/api/hub/state`, { headers: bearer })).json();
     assert.equal(state.sites.find((s) => s.host === 'localhost').feed.stale, true);

@@ -408,11 +408,58 @@ function feedState(site, now = Date.now()) {
   return { at: site.feedAt || null, error, stale: Boolean(error) || !(at > 0) || now - at > FEED_STALE_MS };
 }
 
+// ── The direct address ───────────────────────────────────────
+// The public address (PUBLIC_BASE_URL, e.g. a Cloudflare-fronted domain) is what visitors'
+// browsers use. A firewall in front of it can refuse a site's own server - seen on
+// wlmqrzzt1.com: HTTP 403 on the feed and on the plugin download, while its short check-in
+// got through, so it ran on an 8-day-old copy of the matches and could not update the plugin.
+// Such a site is handed the feeds and the plugin download on this service's own address
+// instead (HUB_DIRECT_URL, else Railway's domain, else the *.up.railway.app host a request came
+// in on). Only server-to-server downloads move; links for browsers stay on the public address.
+function directBase() {
+  const fromEnv = process.env.HUB_DIRECT_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
+  return cleanUrl(fromEnv) || cleanUrl(store.directBase) || '';
+}
+
+// Called with every request's host: remembers this service's own Railway address
+function noteRequestHost(host) {
+  const h = cleanHost(host);
+  if (!/\.up\.railway\.app$/.test(h) || cleanHost(store.directBase) === h) return;
+  store.directBase = `https://${h}`;
+  saveSoon();
+}
+
+const REFUSED = /forbidden|\b403\b/i;
+
+// The address a site's server downloads from: the public one, or the direct one once the site
+// has reported being refused there (it stays on it; "Use the public address again" on its page
+// puts it back). baseUrl = the public address.
+function machineBaseFor(host, baseUrl) {
+  const site = store.sites[host];
+  const direct = directBase();
+  if (!site || !direct || cleanHost(direct) === cleanHost(baseUrl)) return baseUrl;
+  if (!site.direct && REFUSED.test(`${site.update || ''} ${site.feedError || ''}`)) {
+    site.direct = new Date().toISOString();
+    console.log(`[hub] ${host} is refused on ${cleanHost(baseUrl)} (${site.feedError || site.update}); serving it from ${cleanHost(direct)}`);
+    saveSoon();
+  }
+  return site.direct ? direct : baseUrl;
+}
+
+function setDirect(host, on) {
+  const h = cleanHost(host);
+  if (!store.sites[h]) throw new Error(`Unknown site ${h}`);
+  if (on) store.sites[h].direct = new Date().toISOString();
+  else { delete store.sites[h].direct; store.sites[h].update = ''; store.sites[h].feedError = ''; }
+  save();
+}
+
 // What a site gets from /api/hub/config. baseUrl = this app's public address; slug = its plugin.
-function configFor(host, baseUrl, slug = PLUGIN_SLUG) {
+function configFor(host, publicBase, slug = PLUGIN_SLUG) {
   slug = knownPlugin(slug);
   const s = store.settings;
   const r = store.releases[slug];
+  const baseUrl = machineBaseFor(host, publicBase);
   const common = {
     role: PLUGINS[slug].role,
     feeds: {
@@ -808,6 +855,10 @@ module.exports = {
   tokenMatches,
   recordCheckin,
   feedState,
+  directBase,
+  noteRequestHost,
+  machineBaseFor,
+  setDirect,
   markSource,
   packageTicket,
   ticketPlugin,

@@ -117,6 +117,8 @@ function renderSite({ layout, escapeHtml }, host, flash) {
         <tr><th>Last self-update</th><td class="${/failed/.test(x.update || '') ? 'status-err' : ''}">${escapeHtml(x.update || '—')}</td></tr>
         <tr><th>Last check-in</th><td>${ago(x.lastSeen)}</td></tr>
         ${isPlayer ? '' : `<tr><th>Match feed</th><td>${feedCell(escapeHtml, x)}</td></tr>`}
+        ${x.direct ? `<tr><th>Downloads</th><td>From this service's direct address (<code>${escapeHtml(hub.cleanHost(hub.directBase()) || '—')}</code>) since ${escapeHtml(String(x.direct).slice(0, 10))}: the public address refused this site's server (HTTP 403). Allow server requests to <code>/fixtures.json</code>, <code>/live.json</code> and <code>/api/hub/*</code> in the firewall in front of the public address, then
+          <form class="inline-form" method="POST" action="/api/hub/direct" style="display:inline"><input type="hidden" name="host" value="${escapeHtml(host)}"><input type="hidden" name="on" value="0"><button type="submit" class="secondary small">Use the public address again</button></form></td></tr>` : ''}
         <tr><th>Opens on</th><td><code>${escapeHtml(hub.targetFor(host, st.settings, st.overrides))}</code>${st.overrides[host] ? ' (override)' : ''}</td></tr>
         <tr><th>Theme</th><td>${escapeHtml(d.theme || x.theme || '—')}</td></tr>
         <tr><th>Homepage table</th><td>${d.at ? (d.homepage ? 'yes' : 'no') : '—'}</td></tr>
@@ -631,6 +633,9 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
       },
     });
   }
+  // This service's own address, learned from requests that come in on it (hub.js directBase)
+  app.use((req, res, next) => { hub.noteRequestHost(req.get('host')); next(); });
+
   // Scripts: "Authorization: Bearer <API token>". People: the dashboard login, from this app's pages.
   const tokenOrAdmin = (req, res, next) => {
     const m = /^Bearer\s+(\S+)$/i.exec(req.get('authorization') || '');
@@ -689,6 +694,8 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
       managedBy: x.managedBy || null,
       feed: hub.feedState(x),
       update: x.update || '',
+      // Since when the site's server downloads from the direct address (the public one refused it), or null
+      direct: x.direct || null,
       target: x.role === 'player' ? null : hub.targetFor(host, st.settings, st.overrides, hub.destinationHealth()),
       sports: x.sports || Object.keys((x.details && x.details.pages) || {}),
       details: x.details || null,
@@ -1005,6 +1012,17 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
     }
     const poke = await pokeSite(hub.getState().sites[host]);
     siteBack(res, host, poke.ok ? 'Queued — the site is on it; refresh in a minute for the result.' : `Queued — the site picks it up within 5 minutes (couldn't reach it now: ${poke.error}).`);
+  });
+
+  // A site's downloads back on the public address (or on the direct one: on=1)
+  app.post('/api/hub/direct', requireAuth('admin'), sameOrigin, (req, res) => {
+    const host = hub.cleanHost(req.body.host);
+    try {
+      hub.setDirect(host, req.body.on === '1');
+      siteBack(res, host, req.body.on === '1' ? 'Downloads now come from the direct address.' : 'Downloads are back on the public address. If the site is refused there again, it moves to the direct address by itself.');
+    } catch (err) {
+      siteBack(res, host, `error:${err.message}`);
+    }
   });
 
   app.post('/api/hub/cancel', requireAuth('admin'), sameOrigin, (req, res) => {
