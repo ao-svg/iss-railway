@@ -396,6 +396,18 @@ function recordReport(host, { results, status }) {
   return true;
 }
 
+// How a schedule site's copy of the match feed is doing, from what it reports when it checks in
+// (plugin 2.6.1+: when it last downloaded the feed, and the error if its latest try failed).
+// null for sites that don't report it. stale = the latest try failed, or nothing for 30 minutes -
+// the site then shows old matches, which no visitor should see for long.
+const FEED_STALE_MS = 30 * 60 * 1000;
+function feedState(site, now = Date.now()) {
+  if (!site || site.feedAt === undefined) return null;
+  const at = site.feedAt ? new Date(site.feedAt).getTime() : 0;
+  const error = String(site.feedError || '');
+  return { at: site.feedAt || null, error, stale: Boolean(error) || !(at > 0) || now - at > FEED_STALE_MS };
+}
+
 // What a site gets from /api/hub/config. baseUrl = this app's public address; slug = its plugin.
 function configFor(host, baseUrl, slug = PLUGIN_SLUG) {
   slug = knownPlugin(slug);
@@ -420,6 +432,12 @@ function configFor(host, baseUrl, slug = PLUGIN_SLUG) {
   if (PLUGINS[slug].role === 'player') return common;
   return {
     ...common,
+    // Schedule sites only list the matches: the hub's own feeds go out in their lite form (same
+    // matches, without screenshots and check details - under half the download)
+    feeds: {
+      fixtures: s.feedFixtures || `${baseUrl}/fixtures.json?lite=1`,
+      live: s.feedLive || `${baseUrl}/live.json?lite=1`,
+    },
     player_site: targetFor(host, s, store.overrides, health),
     rotation: rotationFor(host, s, store.overrides, health),
     page_size: s.pageSize,
@@ -789,6 +807,7 @@ module.exports = {
   createApiToken,
   tokenMatches,
   recordCheckin,
+  feedState,
   markSource,
   packageTicket,
   ticketPlugin,

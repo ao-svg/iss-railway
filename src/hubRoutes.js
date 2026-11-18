@@ -40,6 +40,14 @@ function ago(iso) {
 
 const pendingCount = (host) => hub.commandsFor(host).filter((c) => c.status === 'queued' || c.status === 'sent').length;
 
+// "Match feed" on a site's page: whether its table shows current matches
+function feedCell(escapeHtml, site) {
+  const f = hub.feedState(site);
+  if (!f) return '<span class="muted">not reported (needs plugin 2.6.1 or later)</span>';
+  if (!f.stale) return `read ${ago(f.at)}`;
+  return `<span class="status-err">The site shows old matches: its last download of the feed was ${f.at ? ago(f.at) : 'never'}${f.error ? ` — ${escapeHtml(f.error)}` : ''}</span>`;
+}
+
 // Version that understands hub commands (setup / uninstall)
 const COMMANDS_SINCE = '2.2.0';
 
@@ -108,6 +116,7 @@ function renderSite({ layout, escapeHtml }, host, flash) {
         <tr><th>Plugin</th><td>v${escapeHtml(x.version || '?')} · WordPress ${escapeHtml(x.wp || '?')} · PHP ${escapeHtml(x.php || '?')}</td></tr>
         <tr><th>Last self-update</th><td class="${/failed/.test(x.update || '') ? 'status-err' : ''}">${escapeHtml(x.update || '—')}</td></tr>
         <tr><th>Last check-in</th><td>${ago(x.lastSeen)}</td></tr>
+        ${isPlayer ? '' : `<tr><th>Match feed</th><td>${feedCell(escapeHtml, x)}</td></tr>`}
         <tr><th>Opens on</th><td><code>${escapeHtml(hub.targetFor(host, st.settings, st.overrides))}</code>${st.overrides[host] ? ' (override)' : ''}</td></tr>
         <tr><th>Theme</th><td>${escapeHtml(d.theme || x.theme || '—')}</td></tr>
         <tr><th>Homepage table</th><td>${d.at ? (d.homepage ? 'yes' : 'no') : '—'}</td></tr>
@@ -333,7 +342,7 @@ function renderSites({ layout, escapeHtml }, base, flash, claudeConnections = []
     <td><a class="site" href="/sites/${encodeURIComponent(x.host)}">${escapeHtml(x.host)}</a>${x.managedBy ? `<span class="pill" title="Connected by ${escapeHtml(x.managedBy)}, which writes its content">${escapeHtml(x.managedBy.toUpperCase())}</span>` : ''}${x.removed ? ' <span class="rank rank-low">removed</span>' : ''}${pendingCount(x.host) ? ` <span class="rank rank-medium">${pendingCount(x.host)} pending</span>` : ''}</td>
     <td>${opensOn(x)}</td>
     <td>${version(x)}</td>
-    <td>${seen(x)}</td>
+    <td>${seen(x)}${(hub.feedState(x) || {}).stale && !x.removed ? `<div class="status-err" style="font-size:0.75rem;margin-top:0.2rem" title="${escapeHtml((hub.feedState(x).error || 'no download for over 30 minutes'))}">old matches: feed ${hub.feedState(x).at ? `last read ${ago(hub.feedState(x).at)}` : 'never read'}</div>` : ''}</td>
     <td class="hide-sm muted">${x.theme === 'zhibo-child' ? 'Zhibo' : escapeHtml(x.theme || '—')}</td>
     <td class="hide-sm muted c">${Number(x.pages) || 0}</td>
     <td class="r"><form method="POST" action="/api/hub/forget" onsubmit="return confirm('Remove ${escapeHtml(x.host)} from the list? It comes back on its next check-in if it still runs the plugin.');">
@@ -645,6 +654,7 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
         removed: Boolean(x.removed),
         home: x.home,
         managedBy: x.managedBy || null,
+        feed: hub.feedState(x),
       };
     });
     return {
@@ -675,6 +685,7 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
       removed: Boolean(x.removed),
       home: x.home || null,
       managedBy: x.managedBy || null,
+      feed: hub.feedState(x),
       target: x.role === 'player' ? null : hub.targetFor(host, st.settings, st.overrides, hub.destinationHealth()),
       sports: x.sports || Object.keys((x.details && x.details.pages) || {}),
       details: x.details || null,
@@ -867,6 +878,11 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
       update: q('upd'),
       // Sport pages the site has (schedule plugin 2.5.0+): what "Write page content" writes for
       sports: q('sports') ? q('sports').split(',').map((x) => x.trim()).filter((x) => /^[A-Za-z][A-Za-z /-]{1,40}$/.test(x)).slice(0, 40) : undefined,
+      // The site's copy of the match feed (schedule plugin 2.6.1+): when it last downloaded it
+      // (unix seconds, 0 = never) and why its latest try failed, if it did
+      ...(req.query.feed !== undefined
+        ? { feedAt: Number(q('feed')) > 0 ? new Date(Number(q('feed')) * 1000).toISOString() : null, feedError: q('feederr') }
+        : {}),
       plugin, role: hub.PLUGINS[plugin].role,
     });
     res.json(hub.configFor(host, baseUrl(req, getConfig), plugin));

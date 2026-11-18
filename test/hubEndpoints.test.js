@@ -72,7 +72,8 @@ test('hub endpoints', async (t) => {
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.player_site, 'https://zhibo82.com');
-    assert.equal(body.feeds.fixtures, `${base}/fixtures.json`);
+    assert.equal(body.feeds.fixtures, `${base}/fixtures.json?lite=1`);
+    assert.equal(body.feeds.live, `${base}/live.json?lite=1`);
     assert.equal(hub.getState().sites[SITE].version, '1.0.0');
     assert.equal(hub.getState().sites[SITE].pages, 3);
   });

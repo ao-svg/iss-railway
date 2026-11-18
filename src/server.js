@@ -1023,11 +1023,24 @@ function createServer({
 
   // Screenshot links are always absolute — configured public URL, else
   // the address this request came in on — so they're pullable as-is.
-  const enrichExport = (rows, req) =>
-    sourceChecks.enrichRowsWithSourceStatus(rows, getSourceStatus, {
+  const enrichExport = (rows, req) => {
+    const full = sourceChecks.enrichRowsWithSourceStatus(rows, getSourceStatus, {
       getScreenshot,
       publicBaseUrl: getConfig().publicBaseUrl || `${req.protocol}://${req.get('host')}`,
     });
+    return req.query.lite ? liteRows(full) : full;
+  };
+
+  // ?lite=1: what a schedule site's table needs and nothing else - each channel keeps its name,
+  // its links and which of them work; screenshots, GIFs and the per-source check details (over half
+  // of the feed) are left out. Schedule sites are handed this address by the hub, so the download
+  // from a slow or far-away server is less than half the size.
+  function liteRows(rows) {
+    return rows.map((r) => ({
+      ...r,
+      channels: (r.channels || []).map((c) => ({ name: c.name, sources: c.sources, sourceWorking: c.sourceWorking })),
+    }));
+  }
 
   // Relay: { ok, ffmpeg } only — never its URL or secret.
   app.get('/health', async (req, res) =>

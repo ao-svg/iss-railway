@@ -65,6 +65,9 @@ test('ABS3 token API: package link, connect, set-up, site status', async (t) => 
   const saved = { settings: { ...st.settings }, releases: { ...st.releases }, apiToken: st.apiToken };
   const token = hub.createApiToken();
   const bearer = { Authorization: `Bearer ${token}` };
+  // A run that was cut short leaves its site and commands in the local store
+  hub.forgetSite('localhost');
+  delete st.commands.localhost;
 
   const wp = { namespaces: ['zhibo/v1'], connects: [], deleted: [], pokes: 0 };
   const wpServer = await new Promise((resolve) => { const s = fakeWordPress(wp).listen(0, () => resolve(s)); });
@@ -176,5 +179,30 @@ test('ABS3 token API: package link, connect, set-up, site status', async (t) => 
     assert.deepEqual(site.details.pages, { Tennis: '/tennis/' });
     assert.equal(site.details.bridgeVersion, '2.8.0');
     assert.equal((await postJson('/api/hub/setup', { site: 'nowhere.example', setup: {} })).status, 404);
+  });
+
+  await t.test('feed health: what the site reports about its copy of the match feed', async () => {
+    const checkin = (extra) => fetch(`${base}/api/hub/config?site=localhost&v=2.6.1${extra}`, { headers: { 'X-Zhibo-Key': hub.networkKey() } });
+    const site = async () => (await fetch(`${base}/api/hub/site/localhost`, { headers: bearer })).json();
+    // Older plugins say nothing: unknown, not "stale"
+    assert.equal((await site()).feed, null);
+    // Read a minute ago: fine. Schedule sites get the lite feeds.
+    const now = Math.floor(Date.now() / 1000);
+    const cfg = await (await checkin(`&feed=${now - 60}`)).json();
+    assert.match(cfg.feeds.fixtures, /\/fixtures\.json\?lite=1$/);
+    assert.deepEqual((await site()).feed.stale, false);
+    // Last read 8 days ago, latest try failed: stale, with the reason
+    await checkin(`&feed=${now - 8 * 86400}&feederr=${encodeURIComponent('HTTP 403')}`);
+    const stale = (await site()).feed;
+    assert.equal(stale.stale, true);
+    assert.equal(stale.error, 'HTTP 403');
+    assert.ok(Date.now() - new Date(stale.at).getTime() > 7 * 86400 * 1000);
+    const state = await (await fetch(`${base}/api/hub/state`, { headers: bearer })).json();
+    assert.equal(state.sites.find((s) => s.host === 'localhost').feed.stale, true);
+    // Never read at all
+    await checkin('&feed=0');
+    assert.deepEqual((await site()).feed, { at: null, error: '', stale: true });
+    assert.equal(hub.feedState({}), null);
+    assert.equal(hub.feedState({ feedAt: new Date(Date.now() - 31 * 60 * 1000).toISOString(), feedError: '' }).stale, true);
   });
 });
