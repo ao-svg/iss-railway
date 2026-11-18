@@ -220,6 +220,14 @@ test('ABS3 token API: package link, connect, set-up, site status', async (t) => 
     assert.ok((await (await checkin('&feed=' + now)).json()).feeds.fixtures.startsWith('https://hub-direct.example/'));
     hub.setDirect('localhost', false);
     delete process.env.HUB_DIRECT_URL;
+    // Railway reports the custom (public) domain as its own once one is attached: not a direct address
+    assert.equal(hub.directBase('https://pub.example'), hub.getState().directBase || '');
+    process.env.RAILWAY_PUBLIC_DOMAIN = 'pub.example';
+    hub.getState().directBase = 'https://svc.up.railway.app';
+    assert.equal(hub.directBase('https://pub.example'), 'https://svc.up.railway.app');
+    assert.equal(hub.directBase('https://other.example'), 'https://pub.example');
+    delete process.env.RAILWAY_PUBLIC_DOMAIN;
+    delete hub.getState().directBase;
     await checkin('&feed=' + (now - 8 * 86400) + '&feederr=' + encodeURIComponent('cURL error 28: timed out'));
     assert.ok(Date.now() - new Date(stale.at).getTime() > 7 * 86400 * 1000);
     const state = await (await fetch(`${base}/api/hub/state`, { headers: bearer })).json();

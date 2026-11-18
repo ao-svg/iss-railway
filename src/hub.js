@@ -416,9 +416,16 @@ function feedState(site, now = Date.now()) {
 // Such a site is handed the feeds and the plugin download on this service's own address
 // instead (HUB_DIRECT_URL, else Railway's domain, else the *.up.railway.app host a request came
 // in on). Only server-to-server downloads move; links for browsers stay on the public address.
-function directBase() {
-  const fromEnv = process.env.HUB_DIRECT_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
-  return cleanUrl(fromEnv) || cleanUrl(store.directBase) || '';
+// publicBase: the address to stay away from - Railway reports the custom domain as its public
+// domain once one is attached, so the first candidate that is a different host is the direct one.
+let lastPublicBase = '';   // the public address as the last check-in saw it
+function directBase(publicBase = lastPublicBase) {
+  const candidates = [process.env.HUB_DIRECT_URL, process.env.RAILWAY_PUBLIC_DOMAIN && `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`, store.directBase];
+  for (const c of candidates) {
+    const u = cleanUrl(c);
+    if (u && cleanHost(u) !== cleanHost(publicBase)) return u;
+  }
+  return '';
 }
 
 // Called with every request's host: remembers this service's own Railway address
@@ -436,8 +443,9 @@ const REFUSED = /forbidden|\b403\b/i;
 // puts it back). baseUrl = the public address.
 function machineBaseFor(host, baseUrl) {
   const site = store.sites[host];
-  const direct = directBase();
-  if (!site || !direct || cleanHost(direct) === cleanHost(baseUrl)) return baseUrl;
+  lastPublicBase = baseUrl;
+  const direct = directBase(baseUrl);
+  if (!site || !direct) return baseUrl;
   if (!site.direct && REFUSED.test(`${site.update || ''} ${site.feedError || ''}`)) {
     site.direct = new Date().toISOString();
     console.log(`[hub] ${host} is refused on ${cleanHost(baseUrl)} (${site.feedError || site.update}); serving it from ${cleanHost(direct)}`);
