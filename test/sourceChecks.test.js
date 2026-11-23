@@ -516,6 +516,13 @@ test('enrichRowsWithSourceStatus: sourceWorking is the visitor verdict, sourceVi
   assert.deepEqual(ch.sourceVisitorPath, ['direct', 'relay']);
 });
 
+test('enrichRowsWithSourceStatus: YouTube links are exported as they are, everything else as a /go link', () => {
+  const yt = 'https://www.youtube.com/watch?v=abc123';
+  const rows = [{ channels: [{ name: 'x', sources: [yt, 'https://youtu.be/xyz', 'https://notyoutube.com.example/a.m3u8'] }] }];
+  const ch = enrichRowsWithSourceStatus(rows, () => null, { publicBaseUrl: 'https://feed.example' })[0].channels[0];
+  assert.deepEqual(ch.sources, [yt, 'https://youtu.be/xyz', 'https://feed.example/go?u=' + encodeURIComponent('https://notyoutube.com.example/a.m3u8')]);
+});
+
 test('enrichRowsWithSourceStatus: relayed sources first, then direct, then unprobed, unplayable last; arrays stay parallel', () => {
   const u = (s) => `https://${s}.example/x.m3u8`;
   const rows = [{ channels: [{ name: 'x', sources: [u('dead'), u('direct1'), u('unprobed'), u('relay1'), u('direct2'), u('relay2')] }] }];

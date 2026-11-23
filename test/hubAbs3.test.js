@@ -186,6 +186,12 @@ test('ABS3 token API: package link, connect, set-up, site status', async (t) => 
     const site = async () => (await fetch(`${base}/api/hub/site/localhost`, { headers: bearer })).json();
     // Older plugins say nothing: unknown, not "stale"
     assert.equal((await site()).feed, null);
+    // ...and as such a site can't report being refused, its downloads come from the direct address
+    process.env.HUB_DIRECT_URL = 'https://hub-direct.example';
+    const silent = await (await checkin('')).json();
+    assert.equal(silent.feeds.fixtures, 'https://hub-direct.example/fixtures.json?lite=1');
+    assert.ok(silent.latest.package.startsWith('https://hub-direct.example/'));
+    delete process.env.HUB_DIRECT_URL;
     // Read a minute ago: fine. Schedule sites get the lite feeds.
     const now = Math.floor(Date.now() / 1000);
     const cfg = await (await checkin(`&feed=${now - 60}`)).json();

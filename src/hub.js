@@ -440,7 +440,7 @@ const REFUSED = /forbidden|\b403\b/i;
 
 // The address a site's server downloads from: the public one, or the direct one once the site
 // has reported being refused there (it stays on it; "Use the public address again" on its page
-// puts it back). baseUrl = the public address.
+// puts it back) or when it never reports on its feed at all. baseUrl = the public address.
 function machineBaseFor(host, baseUrl) {
   const site = store.sites[host];
   lastPublicBase = baseUrl;
@@ -451,7 +451,11 @@ function machineBaseFor(host, baseUrl) {
     console.log(`[hub] ${host} is refused on ${cleanHost(baseUrl)} (${site.feedError || site.update}); serving it from ${cleanHost(direct)}`);
     saveSoon();
   }
-  return site.direct ? direct : baseUrl;
+  if (site.direct) return direct;
+  // A site that never reports how its feed downloads go (the zhibo82 player plugin) can't tell us
+  // it is refused - zhibo82.com ran on a 10 November copy for two weeks that way. It always
+  // downloads from the direct address.
+  return site.feedAt === undefined ? direct : baseUrl;
 }
 
 function setDirect(host, on) {

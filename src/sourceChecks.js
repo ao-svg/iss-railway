@@ -969,7 +969,10 @@ function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus, { getScre
       // re-resolves live at click time and closes that gap entirely,
       // instead of exporting either the stale original match or a
       // snapshot that's already a few minutes old by the time it's used.
-      const playable = sources.map((url) => `${publicBaseUrl}/go?u=${encodeURIComponent(url)}`);
+      // YouTube links stay as they are: no token, never relayed, and the
+      // sites embed them - wrapped, a site that reads the feed on another
+      // address than its /go links can't tell they're YouTube.
+      const playable = sources.map((url) => (isYouTubeUrl(url) ? url : `${publicBaseUrl}/go?u=${encodeURIComponent(url)}`));
       return orderForVisitors({
         ...ch,
         sources: playable,
@@ -1007,6 +1010,14 @@ function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus, { getScre
       });
     }),
   }));
+}
+
+function isYouTubeUrl(url) {
+  try {
+    return /(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com)$/i.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
 }
 
 // Every per-source array of an enriched channel, parallel to `sources`.
