@@ -14,6 +14,7 @@ const hub = require('./hub');
 const hubAi = require('./hubAi');
 const hubConnect = require('./hubConnect');
 const { mountHubMcp } = require('./hubMcp');
+const { mountBridgeMirror } = require('./bridgeMirror');
 
 function baseUrl(req, getConfig) {
   if (getConfig().publicBaseUrl) return getConfig().publicBaseUrl.replace(/\/+$/, '');
@@ -897,6 +898,9 @@ function mountHubRoutes(app, { requireAuth, layout, escapeHtml, getConfig }) {
     });
     res.json(hub.configFor(host, baseUrl(req, getConfig), plugin));
   });
+
+  // A second source of updates for the ABS3 Theme Bridge plugin (see bridgeMirror.js)
+  mountBridgeMirror(app, (req) => baseUrl(req, getConfig));
 
   app.get('/api/hub/package', (req, res) => {
     // Sites come with the network key; a ticket (/api/hub/package-link) is for one plugin, briefly
