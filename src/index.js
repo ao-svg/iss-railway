@@ -219,8 +219,16 @@ async function runScreenshots({ retryOnly = false } = {}) {
 function applyManualChannelsAndRefresh() {
   if (!state.lastRows) return;
   // Remote playlists added on /manual-channels: whatever was downloaded last (kept when a refresh fails)
-  const playlists = manualChannels.getPlaylists().map((p) => iptv.getCachedPlaylist(p.url)).filter(Boolean);
-  state.lastRows = manualChannels.applyManualChannels(state.lastRows, manualChannels.getAll(), { playlists });
+  const playlistsByRef = new Map();
+  for (const p of manualChannels.getPlaylists()) {
+    const list = iptv.getCachedPlaylist(p.url);
+    if (list) playlistsByRef.set(p.url, list);
+  }
+  state.lastRows = manualChannels.applyManualChannels(state.lastRows, manualChannels.getAll(), {
+    playlists: [...playlistsByRef.values()],
+    rules: manualChannels.getRules(),
+    playlistsByRef,
+  });
   writeFixturesCsv();
 }
 
@@ -239,7 +247,7 @@ const PLAYLIST_REFRESH_MS = 30 * 60 * 1000;
 async function refreshUserPlaylists({ force = false, only = null } = {}) {
   let changed = false;
   for (const p of manualChannels.getPlaylists()) {
-    if (only && p.url !== only) continue;
+    if (p.file || (only && p.url !== only)) continue;   // a pasted/uploaded file has nothing to download
     const last = playlistStatus.get(p.url);
     const fresh = last && !last.error && Date.now() - Date.parse(last.at) < PLAYLIST_REFRESH_MS;
     if (!force && fresh) continue;
@@ -267,6 +275,33 @@ function removePlaylistAndRefresh(url) {
   playlistStatus.delete(url);
   if (removed) applyManualChannelsAndRefresh();
   return removed;
+}
+
+function addPlaylistFileAndRefresh(label, content) {
+  const result = manualChannels.addPlaylistFile(label, content);
+  if (result.ok) applyManualChannelsAndRefresh();
+  return result;
+}
+
+function addRuleAndRefresh(input) {
+  const result = manualChannels.addRule(input);
+  if (result.ok) applyManualChannelsAndRefresh();
+  return result;
+}
+
+function removeRuleAndRefresh(id) {
+  const removed = manualChannels.removeRule(id);
+  if (removed) applyManualChannelsAndRefresh();
+  return removed;
+}
+
+// What a playlist shows on the page: the last download of a link, or the size of a file
+function userPlaylistStatus(url) {
+  const downloaded = playlistStatus.get(url);
+  if (downloaded) return downloaded;
+  const p = manualChannels.getPlaylists().find((x) => x.url === url);
+  const cached = p && p.file ? iptv.getCachedPlaylist(url) : null;
+  return cached ? { at: p.addedAt, count: cached.length, error: '' } : null;
 }
 
 async function importManualChannelsAndRefresh(input, opts) {
@@ -644,7 +679,11 @@ if (runOnlyFlag) {
     importManualChannels: importManualChannelsAndRefresh,
     exportManualChannels: manualChannels.exportManualChannels,
     getPlaylists: manualChannels.getPlaylists,
-    getUserPlaylistStatus: (url) => playlistStatus.get(url) || null,
+    getUserPlaylistStatus: userPlaylistStatus,
+    addPlaylistFile: addPlaylistFileAndRefresh,
+    getRules: manualChannels.getRules,
+    addRule: addRuleAndRefresh,
+    removeRule: removeRuleAndRefresh,
     addPlaylist: addPlaylistAndRefresh,
     removePlaylist: removePlaylistAndRefresh,
     refreshPlaylists: () => refreshUserPlaylists({ force: true }),

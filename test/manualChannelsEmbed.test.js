@@ -128,11 +128,14 @@ test('playlists: private addresses and odd links are refused, duplicates ignored
 });
 
 test('fetchPlaylist: parses an M3U, refuses an empty or private one, and a redirect to a private address', async () => {
-  const body = '#EXTM3U\n#EXTINF:-1 tvg-id="x",FIFA Plus\nhttps://s.example/fifa.m3u8\n#EXTINF:-1,Fed TV, HD\nhttps://s.example/fed.m3u8\n';
+  const body = '#EXTM3U\n#EXTINF:-1 tvg-id="x" group-title="Sports",FIFA Plus\nhttps://s.example/fifa.m3u8\n#EXTINF:-1,Fed TV, HD\nhttps://s.example/fed.m3u8\n';
   const seen = [];
   const http = { get: async (url, opts) => { seen.push({ url, opts }); return { data: body }; } };
   const parsed = await mc.fetchPlaylist('https://pl.example/list.m3u8', http);
-  assert.deepEqual(parsed, [{ name: 'FIFA Plus', url: 'https://s.example/fifa.m3u8' }, { name: 'HD', url: 'https://s.example/fed.m3u8' }]);
+  assert.deepEqual(parsed, [
+    { name: 'FIFA Plus', url: 'https://s.example/fifa.m3u8', group: 'Sports', id: 'x' },
+    { name: 'Fed TV, HD', url: 'https://s.example/fed.m3u8' },   // the title is everything after the first comma outside quotes
+  ]);
   assert.equal(seen[0].opts.maxRedirects, 3);
   assert.equal(seen[0].opts.maxContentLength, 30 * 1024 * 1024);
   assert.throws(() => seen[0].opts.beforeRedirect({ hostname: '10.0.0.1', protocol: 'https:' }), /not accepted/);

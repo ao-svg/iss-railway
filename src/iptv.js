@@ -41,6 +41,56 @@ function parseM3U(content) {
 }
 
 /**
+ * M3U parser for the admin's own playlists (manualChannels.js): same entries as
+ * parseM3U, plus what a typical IPTV list carries on the #EXTINF line -
+ *   #EXTINF:-1 tvg-chno="2" tvg-id="ABC.News.Live.us2" tvg-name="ABC News Live" tvg-logo="https://..." group-title="TV",ABC News Live
+ *   https://domain.com/video.m3u8
+ * An entry is { name, url } and, only when the list has them, group (group-title
+ * or a #EXTGRP line), tvgName, id (tvg-id), logo (tvg-logo). The title is what
+ * follows the first comma outside quotes (so "Fed TV, HD" stays whole, and an
+ * attribute with a comma inside quotes cannot cut it); the name falls back to
+ * tvg-name when the title is empty. Only http(s) stream links are kept.
+ */
+function parseM3UDetailed(content) {
+  const data = [];
+  let current = null;
+  let extGroup = '';
+  for (const rawLine of String(content || '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.startsWith('#EXTINF')) {
+      let quote = '';
+      let cut = -1;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (quote) { if (ch === quote) quote = ''; } else if (ch === '"' || ch === "'") quote = ch;
+        else if (ch === ',') { cut = i; break; }
+      }
+      if (cut === -1) { current = null; continue; }
+      const attrs = {};
+      for (const m of line.slice(0, cut).matchAll(/([A-Za-z0-9_-]+)=(?:"([^"]*)"|'([^']*)')/g)) attrs[m[1].toLowerCase()] = (m[2] !== undefined ? m[2] : m[3]).trim();
+      const title = line.slice(cut + 1).trim();
+      const name = title || attrs['tvg-name'] || '';
+      current = { name };
+      const group = attrs['group-title'] || extGroup;
+      if (group) current.group = group;
+      if (attrs['tvg-name'] && attrs['tvg-name'] !== name) current.tvgName = attrs['tvg-name'];
+      if (attrs['tvg-id']) current.id = attrs['tvg-id'];
+      if (attrs['tvg-logo']) current.logo = attrs['tvg-logo'];
+      extGroup = '';
+    } else if (line.startsWith('#EXTGRP:')) {
+      extGroup = line.slice(8).trim();
+    } else if (line && !line.startsWith('#')) {
+      if (current && current.name && /^https?:\/\//i.test(line) && line.length <= 2000) {
+        current.url = line;
+        data.push(current);
+      }
+      current = null;
+    }
+  }
+  return data;
+}
+
+/**
  * Fetch (and cache) the public iptv-org playlist.
  * Mirrors ISS_IPTV_Scraper::get_playlist()
  *
@@ -436,6 +486,7 @@ module.exports = {
   streamIdentity,
   swapStaleUrls,
   parseM3U,
+  parseM3UDetailed,
   getPlaylist,
   getCachedPlaylist,
   setCachedPlaylist,

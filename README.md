@@ -269,21 +269,30 @@ The channels the games list, but no playlist has a stream for, can be given sour
 
 - **Stream**: a video link (`.m3u8` etc.), played by the sites' video player.
 - **Embed**: a web page the sites show in an iframe (an official player page, Twitch, Vimeo...). Paste the page link or the whole `<iframe ...>` tag. https only; the page must allow being framed (the feed checks the headers and hides one that doesn't). The feed screenshots it like any page, and exports it as `sourceEmbed: true` with its own link (no `/go`). Needs zhibo82 4.6.0 or later.
-- **Remote playlist**: a link to an M3U/M3U8 file. Its entries are matched to channel names like iptv-org's, applied at once, and read again every 30 minutes (tokens that change follow the file). Private and local addresses are refused.
+- **Playlist**: an M3U/M3U8 list, either a **link** (read again every 30 minutes, so changing tokens follow the file; private and local addresses are refused) or a **file** pasted/uploaded on the page (up to 5 MB, kept on the data volume). The usual format works - `#EXTINF:-1 tvg-id="..." tvg-name="..." tvg-logo="..." group-title="...",Channel name` followed by the stream link; `group-title`/`#EXTGRP`, `tvg-name` and `tvg-id` are kept. Entries are matched to channel names like iptv-org's, and can be used by a rule.
+- **Rule**: sources for every game that fits, not tied to a channel name. Conditions (all you fill in must fit): league contains, sport is, a word in the game name. The rule has a **channel name** the games will show (e.g. `NFL Network`) and one link or embed and/or a playlist - optionally only the entries whose name, group or id contains some words (comma separated), and up to N per game (default 5, at most 20). The channel is added to each fitting game (or joins the channel of that name it already has); links a game already has are not repeated; remove the rule and it is gone.
 
-JSON (same shape for export and import; from a script: `curl -u admin:PASSWORD -X POST -H "Content-Type: application/json" --data @channels.json $URL/api/manual-channels`, `?replace=1` to replace everything):
+JSON (same shape for export and import, so an export can be edited and imported again; from a script: `curl -u admin:PASSWORD -X POST -H "Content-Type: application/json" --data @channels.json $URL/api/manual-channels`, `?replace=1` to replace everything):
 
 ```json
 {
-  "playlists": [{ "url": "https://example.com/channels.m3u8", "label": "My list" }],
+  "playlists": [
+    { "url": "https://example.com/channels.m3u8", "label": "My list" },
+    { "id": "file:0a1b2c3d4e", "label": "My file", "content": "#EXTM3U
+#EXTINF:-1 group-title=\"Sports\",NFL Network
+https://example.com/nfl.m3u8" }
+  ],
+  "rules": [
+    { "channel": "NFL Network", "when": { "league": "NFL" }, "playlist": { "ref": "My file", "filter": "NFL", "limit": 3 } },
+    { "channel": "Federation TV", "when": { "sport": "Volleyball", "text": "Brazil" }, "sources": [{ "url": "https://player.example.org/embed/1", "type": "embed" }] }
+  ],
   "channels": [
-    { "name": "WST Play", "sources": ["https://example.com/wst.m3u8"] },
-    { "name": "Federation TV", "sources": [{ "url": "https://player.example.org/embed/1", "type": "embed" }] }
+    { "name": "WST Play", "sources": ["https://example.com/wst.m3u8"] }
   ]
 }
 ```
 
-`{"Channel name": ["url", ...]}` and a bare list of channels are accepted too. Links that fail the checks are skipped and listed with the reason.
+`{"Channel name": ["url", ...]}` and a bare list of channels are accepted too. Entries that fail the checks are skipped and listed with the reason; a replace with nothing usable in it keeps the current list.
 
 ## Pulling into your Google Sheet
 

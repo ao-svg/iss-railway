@@ -775,6 +775,8 @@ function renderManualChannels(state, getManualChannelsAllFn, playlistsApi = {}, 
   const store = getManualChannelsAllFn ? getManualChannelsAllFn() : {};
   const playlists = playlistsApi.getPlaylists ? playlistsApi.getPlaylists() : [];
   const playlistStatus = playlistsApi.getUserPlaylistStatus || (() => null);
+  const rules = playlistsApi.getRules ? playlistsApi.getRules() : [];
+  const sportNames = [...new Set(rows.map((r) => r.sportType).filter(Boolean))].sort();
 
   // Stream = the sites' video player plays it (HLS etc.); Embed = a web page the sites show in an
   // iframe. Auto: a pasted <iframe> tag is an embed, anything else a stream.
@@ -857,11 +859,34 @@ function renderManualChannels(state, getManualChannelsAllFn, playlistsApi = {}, 
           : `${st.count} channels, read ${escapeHtml(st.at.slice(0, 16).replace('T', ' '))} UTC`
         : '<span class="muted">not read yet</span>';
       return `<tr>
-        <td>${p.label ? `<strong>${escapeHtml(p.label)}</strong><br>` : ''}<a href="${escapeHtml(p.url)}" target="_blank" rel="noopener">${escapeHtml(p.url)}</a></td>
+        <td>${p.label ? `<strong>${escapeHtml(p.label)}</strong><br>` : ''}${p.file ? '<span class="badge badge-auto">file</span>' : `<a href="${escapeHtml(p.url)}" target="_blank" rel="noopener">${escapeHtml(p.url)}</a>`}</td>
         <td>${state}</td>
         <td>
           <form class="inline-form" method="POST" action="/api/manual-playlist/remove">
             <input type="hidden" name="url" value="${escapeHtml(p.url)}">
+            <button type="submit" class="secondary">Remove</button>
+          </form>
+        </td>
+      </tr>`;
+    })
+    .join('');
+
+  const playlistOptions = playlists.map((p) => `<option value="${escapeHtml(p.url)}">${escapeHtml(p.label || p.url)}</option>`).join('');
+  const ruleRows = rules
+    .map((r) => {
+      const when = [r.when.league && `league contains “${r.when.league}”`, r.when.sport && `sport is ${r.when.sport}`, r.when.text && `game name contains “${r.when.text}”`].filter(Boolean).join(' and ');
+      const pl = r.playlist ? playlists.find((p) => p.url === r.playlist.ref) : null;
+      const what = [
+        ...r.sources.map((s) => `<span class="badge ${s.type === 'embed' ? 'badge-manual' : 'badge-auto'}">${s.type}</span> <a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.url)}</a>`),
+        r.playlist ? `playlist <strong>${escapeHtml(pl ? pl.label || pl.url : r.playlist.ref)}</strong>${r.playlist.filter ? ` (only entries with “${escapeHtml(r.playlist.filter)}”)` : ''}, up to ${r.playlist.limit} per game` : '',
+      ].filter(Boolean).join('<br>');
+      return `<tr>
+        <td><strong>${escapeHtml(r.channel)}</strong></td>
+        <td>${escapeHtml(when)}</td>
+        <td>${what}</td>
+        <td>
+          <form class="inline-form" method="POST" action="/api/manual-rule/remove">
+            <input type="hidden" name="id" value="${escapeHtml(r.id)}">
             <button type="submit" class="secondary">Remove</button>
           </form>
         </td>
@@ -909,12 +934,43 @@ function renderManualChannels(state, getManualChannelsAllFn, playlistsApi = {}, 
         <input type="text" name="label" placeholder="Label (optional)">
         <button type="submit">Add playlist</button>
       </form>
+      <p class="muted" style="margin-top:.8rem"><strong>Or a playlist file</strong> — the file's text, in the usual format:</p>
+      <pre class="muted" style="margin:.2rem 0 .6rem;font-size:.75rem;white-space:pre-wrap">#EXTINF:-1 tvg-chno="2" tvg-id="ABC.News.Live.us2" tvg-name="ABC News Live" tvg-logo="https://…/logo.png" group-title="TV",ABC News Live
+https://domain.com/video.m3u8</pre>
+      <form id="playlist-file-form">
+        <input type="file" id="playlist-file" accept=".m3u,.m3u8,.txt,text/plain,audio/x-mpegurl,application/vnd.apple.mpegurl">
+        <input type="text" id="playlist-file-label" placeholder="Label (optional)" style="margin:.3rem 0">
+        <textarea id="playlist-file-text" rows="5" style="width:100%;font-family:monospace;font-size:.8rem" placeholder="Choose a file above, or paste its text here (up to 5 MB)"></textarea>
+        <button type="submit">Add playlist file</button> <span id="playlist-file-note" class="muted"></span>
+      </form>
       ${
         playlistRows
           ? `<table><tr><th>Playlist</th><th>Last read</th><th></th></tr>${playlistRows}</table>
-             <form class="inline-form" method="POST" action="/api/manual-playlist/refresh" style="margin-top:.6rem"><button type="submit" class="secondary">Read all again now</button></form>`
+             <form class="inline-form" method="POST" action="/api/manual-playlist/refresh" style="margin-top:.6rem"><button type="submit" class="secondary">Read all links again now</button></form>`
           : '<p class="muted">None added yet.</p>'
       }
+    </div>
+    <div class="card">
+      <strong>Rules — sources for every game that fits</strong>
+      <p class="muted">Not tied to a channel name: say which games (a league, a sport, or a word in the game name — all you fill in must fit), what the games should call the channel, and where its picture comes from: one link or embed, and/or a playlist added above (optionally only the entries whose name or group contains some words, separated by commas, e.g. <code>NFL, football</code>). The channel is added to every fitting game. Example: league <code>NFL</code> → channel <code>NFL Network</code> → your m3u8.</p>
+      <form method="POST" action="/api/manual-rule">
+        <div class="inline-form" style="margin-bottom:.4rem">
+          <input type="text" name="channel" placeholder="Channel name the games show (e.g. NFL Network)" required>
+          <input type="text" name="league" placeholder="League contains (e.g. NFL)">
+          <input type="text" name="sport" list="rule-sports" placeholder="Sport is (e.g. American Football)">
+          <input type="text" name="text" placeholder="Game name contains (e.g. Packers)">
+          <datalist id="rule-sports">${sportNames.map((n) => `<option value="${escapeHtml(n)}">`).join('')}</datalist>
+        </div>
+        <div class="inline-form">
+          <input type="text" name="url" placeholder="A link: ${urlPlaceholder}">
+          ${typeSelect}
+          <select name="playlist" title="Use the entries of one of the playlists above"><option value="">No playlist</option>${playlistOptions}</select>
+          <input type="text" name="filter" placeholder="Only entries with… (NFL, football)">
+          <input type="text" name="limit" placeholder="Entries per game (5)" style="max-width:9rem">
+          <button type="submit">Add rule</button>
+        </div>
+      </form>
+      ${ruleRows ? `<table><tr><th>Channel</th><th>Games</th><th>Sources</th><th></th></tr>${ruleRows}</table>` : '<p class="muted">No rules yet.</p>'}
     </div>
     <div class="card">
       <strong>JSON</strong>
@@ -932,6 +988,38 @@ function renderManualChannels(state, getManualChannelsAllFn, playlistsApi = {}, 
       </form>
       <p class="muted" style="margin-top:.6rem">From a script: <code>curl -u admin:PASSWORD -X POST -H "Content-Type: application/json" --data @channels.json https://&lt;this service&gt;/api/manual-channels</code> (add <code>?replace=1</code> to replace).</p>
     </div>
+    <script>
+    (function () {
+      var form = document.getElementById('playlist-file-form');
+      var fileInput = document.getElementById('playlist-file');
+      var text = document.getElementById('playlist-file-text');
+      var label = document.getElementById('playlist-file-label');
+      var note = document.getElementById('playlist-file-note');
+      fileInput.addEventListener('change', function () {
+        var f = fileInput.files && fileInput.files[0];
+        if (!f) return;
+        if (f.size > 5 * 1024 * 1024) { note.textContent = 'That file is larger than 5 MB.'; return; }
+        if (!label.value) label.value = f.name.replace(/[.][^.]+$/, '');
+        var r = new FileReader();
+        r.onload = function () { text.value = String(r.result || ''); note.textContent = f.name + ' read (' + Math.round(f.size / 1024) + ' KB). Click Add playlist file.'; };
+        r.readAsText(f);
+      });
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        if (!text.value.trim()) { note.textContent = 'Choose a file or paste its text first.'; return; }
+        note.textContent = 'Adding...';
+        fetch('/api/manual-playlist/file', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label: label.value, content: text.value }) })
+          .then(function (res) { return res.json().then(function (j) { return { ok: res.ok, j: j }; }); })
+          .then(function (r) {
+            if (!r.ok) { note.textContent = 'Not added: ' + (r.j.error || 'error'); return; }
+            try { sessionStorage.setItem('mcMsg', 'Playlist file added - ' + r.j.count + ' channels read'); } catch (e) {}
+            location.reload();
+          })
+          .catch(function (err) { note.textContent = 'Not added: ' + err.message; });
+      });
+      try { var m = sessionStorage.getItem('mcMsg'); if (m) { sessionStorage.removeItem('mcMsg'); note.textContent = m; } } catch (e) {}
+    })();
+    </script>
   `,
     '/manual-channels'
   );
@@ -1072,6 +1160,10 @@ function createServer({
   addPlaylist = async () => ({ error: 'playlists are not available' }),
   removePlaylist = () => false,
   refreshPlaylists = async () => false,
+  addPlaylistFile = async () => ({ error: 'playlists are not available' }),
+  getRules = () => [],
+  addRule = () => ({ error: 'rules are not available' }),
+  removeRule = () => false,
   runScreenshots,
   getScreenshot,
   getAllScreenshots,
@@ -1278,14 +1370,17 @@ function createServer({
   });
 
   app.get('/manual-channels', requireAuth('admin'), (req, res) => {
-    res.send(renderManualChannels(getState(), getManualChannelsAll, { getPlaylists, getUserPlaylistStatus }));
+    res.send(renderManualChannels(getState(), getManualChannelsAll, manualUi()));
   });
+
+  // What the manual channels page needs besides the channels: playlists (and how each was read) and rules
+  const manualUi = () => ({ getPlaylists, getUserPlaylistStatus, getRules });
 
   // A refused entry (bad link, embed over http...) is shown on the page instead of vanishing
   app.post('/api/manual-channel', requireAuth('admin'), (req, res) => {
     const { name, url, type } = req.body;
     const result = addManualChannel(name, url, { type });
-    if (result && result.error) return res.status(400).send(renderManualChannels(getState(), getManualChannelsAll, { getPlaylists, getUserPlaylistStatus }, `Not added: ${result.error}`));
+    if (result && result.error) return res.status(400).send(renderManualChannels(getState(), getManualChannelsAll, manualUi(), `Not added: ${result.error}`));
     res.redirect('/manual-channels');
   });
 
@@ -1301,7 +1396,7 @@ function createServer({
     res.set('Content-Disposition', 'attachment; filename="manual-channels.json"').json(exportManualChannels());
   });
 
-  app.post('/api/manual-channels', requireAuth('admin'), express.json({ limit: '2mb' }), async (req, res) => {
+  app.post('/api/manual-channels', requireAuth('admin'), express.json({ limit: '7mb' }), async (req, res) => {
     const result = await importManualChannels(req.body, { replace: req.query.replace === '1' || req.query.replace === 'true' });
     res.status(result.error ? 400 : 200).json(result);
   });
@@ -1313,7 +1408,7 @@ function createServer({
     const message = result.error
       ? `Import failed: ${result.error}${skipped.length ? ' - ' + skipped.join('; ') : ''}`
       : `Imported ${result.added} source(s)${result.playlistsAdded ? ` and ${result.playlistsAdded} playlist(s)` : ''}${skipped.length ? `; skipped ${result.skipped.length}: ${skipped.join('; ')}` : ''}`;
-    res.status(result.error ? 400 : 200).send(renderManualChannels(getState(), getManualChannelsAll, { getPlaylists, getUserPlaylistStatus }, message));
+    res.status(result.error ? 400 : 200).send(renderManualChannels(getState(), getManualChannelsAll, manualUi(), message));
   });
 
   app.post('/api/manual-playlist', requireAuth('admin'), async (req, res) => {
@@ -1324,11 +1419,38 @@ function createServer({
       : status && status.error
         ? `Playlist added, but it could not be read: ${status.error}`
         : `Playlist added${status && status.count ? ` - ${status.count} channels read` : ''}`;
-    res.status(result.error ? 400 : 200).send(renderManualChannels(getState(), getManualChannelsAll, { getPlaylists, getUserPlaylistStatus }, message));
+    res.status(result.error ? 400 : 200).send(renderManualChannels(getState(), getManualChannelsAll, manualUi(), message));
   });
 
   app.post('/api/manual-playlist/remove', requireAuth('admin'), (req, res) => {
     removePlaylist(String(req.body.url || ''));
+    res.redirect('/manual-channels');
+  });
+
+  // An M3U file (its text): pasted, or read from a chosen file by the page's script. Sent as JSON
+  // because a playlist can be several MB; only an admin gets that far (the body is read after the login).
+  app.post('/api/manual-playlist/file', requireAuth('admin'), express.json({ limit: '7mb' }), async (req, res) => {
+    const result = await addPlaylistFile(req.body && req.body.label, req.body && req.body.content);
+    res.status(result.error ? 400 : 200).json(result);
+  });
+
+  // A rule: sources for every game that fits (league / sport / a word in the game name)
+  app.post('/api/manual-rule', requireAuth('admin'), async (req, res) => {
+    const b = req.body || {};
+    const url = String(b.url || '').trim();
+    const input = {
+      channel: b.channel,
+      when: { league: b.league, sport: b.sport, text: b.text },
+      sources: url ? [{ url, type: b.type }] : [],
+      playlist: b.playlist ? { ref: b.playlist, filter: b.filter, limit: b.limit } : undefined,
+    };
+    const result = await addRule(input);
+    if (result.error) return res.status(400).send(renderManualChannels(getState(), getManualChannelsAll, manualUi(), `Rule not added: ${result.error}`));
+    res.send(renderManualChannels(getState(), getManualChannelsAll, manualUi(), `Rule added: ${result.rule.channel}`));
+  });
+
+  app.post('/api/manual-rule/remove', requireAuth('admin'), async (req, res) => {
+    await removeRule(String(req.body.id || ''));
     res.redirect('/manual-channels');
   });
 
