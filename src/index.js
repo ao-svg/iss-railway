@@ -218,13 +218,65 @@ async function runScreenshots({ retryOnly = false } = {}) {
 // refreshTranslationsOnRows() below.
 function applyManualChannelsAndRefresh() {
   if (!state.lastRows) return;
-  state.lastRows = manualChannels.applyManualChannels(state.lastRows, manualChannels.getAll());
+  // Remote playlists added on /manual-channels: whatever was downloaded last (kept when a refresh fails)
+  const playlists = manualChannels.getPlaylists().map((p) => iptv.getCachedPlaylist(p.url)).filter(Boolean);
+  state.lastRows = manualChannels.applyManualChannels(state.lastRows, manualChannels.getAll(), { playlists });
   writeFixturesCsv();
 }
 
-function addManualChannelAndRefresh(name, url) {
-  manualChannels.addManualChannel(name, url);
-  applyManualChannelsAndRefresh();
+function addManualChannelAndRefresh(name, url, opts) {
+  const result = manualChannels.addManualChannel(name, url, opts);
+  if (result.ok) applyManualChannelsAndRefresh();
+  return result;
+}
+
+// What the last download of each remote playlist did: { at, count, error } (memory only)
+const playlistStatus = new Map();
+const PLAYLIST_REFRESH_MS = 30 * 60 * 1000;
+
+// Downloads the admin's remote playlists that are due (never fetched, last fetch older than 30 min,
+// or failed last time), then re-applies. A failed download keeps the previous copy in use.
+async function refreshUserPlaylists({ force = false, only = null } = {}) {
+  let changed = false;
+  for (const p of manualChannels.getPlaylists()) {
+    if (only && p.url !== only) continue;
+    const last = playlistStatus.get(p.url);
+    const fresh = last && !last.error && Date.now() - Date.parse(last.at) < PLAYLIST_REFRESH_MS;
+    if (!force && fresh) continue;
+    try {
+      const list = await manualChannels.fetchPlaylist(p.url);
+      playlistStatus.set(p.url, { at: new Date().toISOString(), count: list.length, error: '' });
+      changed = true;
+    } catch (err) {
+      playlistStatus.set(p.url, { ...(last || {}), at: (last && last.at) || '', error: String(err.message).slice(0, 160), errorAt: new Date().toISOString() });
+      console.error(`[playlists] ${p.url}: ${err.message}`);
+    }
+  }
+  if (changed) applyManualChannelsAndRefresh();
+  return changed;
+}
+
+async function addPlaylistAndRefresh(url, label) {
+  const result = manualChannels.addPlaylist(url, label);
+  if (result.ok) await refreshUserPlaylists({ force: true, only: result.url });
+  return result;
+}
+
+function removePlaylistAndRefresh(url) {
+  const removed = manualChannels.removePlaylist(url);
+  playlistStatus.delete(url);
+  if (removed) applyManualChannelsAndRefresh();
+  return removed;
+}
+
+async function importManualChannelsAndRefresh(input, opts) {
+  const result = manualChannels.importManualChannels(input, opts);
+  if (result.ok) {
+    applyManualChannelsAndRefresh();
+    // Playlists that came with the JSON are fetched now (the result reports their state afterwards)
+    await refreshUserPlaylists();
+  }
+  return result;
 }
 
 function removeManualChannelAndRefresh(name, index) {
@@ -497,6 +549,7 @@ function scheduleCron() {
       // Fresh doms9 tokens first, so this tick checks and captures the
       // URLs visitors will actually be handed.
       await refreshDoms9Sources().catch((err) => console.error('[doms9]', err.message));
+      await refreshUserPlaylists().catch((err) => console.error('[playlists]', err.message));
       await runSourceCheck().catch((err) => console.error('[sourceChecks]', err.message));
       state.sourceCheckRuns += 1;
       // Every 3rd check (~9 min by default) re-captures every source; the
@@ -588,6 +641,13 @@ if (runOnlyFlag) {
     getManualChannelsAll: manualChannels.getAll,
     addManualChannel: addManualChannelAndRefresh,
     removeManualChannel: removeManualChannelAndRefresh,
+    importManualChannels: importManualChannelsAndRefresh,
+    exportManualChannels: manualChannels.exportManualChannels,
+    getPlaylists: manualChannels.getPlaylists,
+    getUserPlaylistStatus: (url) => playlistStatus.get(url) || null,
+    addPlaylist: addPlaylistAndRefresh,
+    removePlaylist: removePlaylistAndRefresh,
+    refreshPlaylists: () => refreshUserPlaylists({ force: true }),
     runScreenshots,
     getScreenshot: screenshots.getScreenshot,
     getAllScreenshots: screenshots.getAllScreenshots,

@@ -74,6 +74,12 @@ function getCachedPlaylist(playlistUrl) {
   return cached ? cached.playlist : null;
 }
 
+// For a playlist fetched elsewhere (manualChannels.js fetches the admin's own
+// links with extra checks), so it is cached and shown like the others.
+function setCachedPlaylist(playlistUrl, parsed) {
+  _cacheByUrl.set(playlistUrl, { playlist: parsed, fetchedAt: Date.now() });
+}
+
 function getPlaylistStatus(playlistUrl) {
   const cached = _cacheByUrl.get(playlistUrl);
   if (!cached) return null;
@@ -432,6 +438,7 @@ module.exports = {
   parseM3U,
   getPlaylist,
   getCachedPlaylist,
+  setCachedPlaylist,
   getPlaylistStatus,
   findChannelSources,
   findChannelSourcesAcrossPlaylists,

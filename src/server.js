@@ -770,9 +770,17 @@ function renderLeagues(state, getLeagueOverrides) {
   );
 }
 
-function renderManualChannels(state, getManualChannelsAllFn) {
+function renderManualChannels(state, getManualChannelsAllFn, playlistsApi = {}, message = '') {
   const rows = state.lastRows || [];
   const store = getManualChannelsAllFn ? getManualChannelsAllFn() : {};
+  const playlists = playlistsApi.getPlaylists ? playlistsApi.getPlaylists() : [];
+  const playlistStatus = playlistsApi.getUserPlaylistStatus || (() => null);
+
+  // Stream = the sites' video player plays it (HLS etc.); Embed = a web page the sites show in an
+  // iframe. Auto: a pasted <iframe> tag is an embed, anything else a stream.
+  const typeSelect =
+    '<select name="type" title="Stream: played by the video player. Embed: a web page shown in an iframe."><option value="">Auto</option><option value="stream">Stream</option><option value="embed">Embed (iframe)</option></select>';
+  const urlPlaceholder = 'Stream URL (.m3u8 etc.), embed page URL, or pasted &lt;iframe&gt; code';
 
   // Distinct channel names that no playlist matched, with how many games
   // list them — a channel used by 40 games is worth fixing before one used
@@ -799,7 +807,8 @@ function renderManualChannels(state, getManualChannelsAllFn) {
         <td>
           <form class="inline-form" method="POST" action="/api/manual-channel">
             <input type="hidden" name="name" value="${escapeHtml(c.name)}">
-            <input type="text" name="url" placeholder="Stream URL (.m3u8 etc.)" required>
+            <input type="text" name="url" placeholder="${urlPlaceholder}" required>
+            ${typeSelect}
             <button type="submit">Add</button>
           </form>
         </td>
@@ -811,16 +820,18 @@ function renderManualChannels(state, getManualChannelsAllFn) {
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((entry) => {
       const urlItems = entry.urls
-        .map(
-          (url, index) => `<li>
+        .map((url, index) => {
+          const embed = (entry.embed || []).includes(url);
+          return `<li>
+            <span class="badge ${embed ? 'badge-manual' : 'badge-auto'}">${embed ? 'embed' : 'stream'}</span>
             <a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a>
             <form class="inline-form" method="POST" action="/api/manual-channel/remove" style="display:inline">
               <input type="hidden" name="name" value="${escapeHtml(entry.name)}">
               <input type="hidden" name="index" value="${index}">
               <button type="submit" class="secondary">Remove</button>
             </form>
-          </li>`
-        )
+          </li>`;
+        })
         .join('');
       return `<tr>
         <td>${escapeHtml(entry.name)}</td>
@@ -828,8 +839,30 @@ function renderManualChannels(state, getManualChannelsAllFn) {
         <td>
           <form class="inline-form" method="POST" action="/api/manual-channel">
             <input type="hidden" name="name" value="${escapeHtml(entry.name)}">
-            <input type="text" name="url" placeholder="Add another URL" required>
+            <input type="text" name="url" placeholder="Add another source" required>
+            ${typeSelect}
             <button type="submit">Add</button>
+          </form>
+        </td>
+      </tr>`;
+    })
+    .join('');
+
+  const playlistRows = playlists
+    .map((p) => {
+      const st = playlistStatus(p.url);
+      const state = st
+        ? st.error
+          ? `<span style="color:#fca5a5">${escapeHtml(st.error)}</span>${st.at ? ` (last good read ${escapeHtml(st.at.slice(0, 16).replace('T', ' '))} UTC)` : ''}`
+          : `${st.count} channels, read ${escapeHtml(st.at.slice(0, 16).replace('T', ' '))} UTC`
+        : '<span class="muted">not read yet</span>';
+      return `<tr>
+        <td>${p.label ? `<strong>${escapeHtml(p.label)}</strong><br>` : ''}<a href="${escapeHtml(p.url)}" target="_blank" rel="noopener">${escapeHtml(p.url)}</a></td>
+        <td>${state}</td>
+        <td>
+          <form class="inline-form" method="POST" action="/api/manual-playlist/remove">
+            <input type="hidden" name="url" value="${escapeHtml(p.url)}">
+            <button type="submit" class="secondary">Remove</button>
           </form>
         </td>
       </tr>`;
@@ -840,12 +873,23 @@ function renderManualChannels(state, getManualChannelsAllFn) {
     'iss-railway manual channels',
     `
     <h1>Manual channels</h1>
-    <p class="muted">Channel names the sources report but no playlist (doms9 / iptv-org) has a stream for. Give a channel a stream URL here and it applies to every game listing that channel — now and on every future run — ahead of any playlist match. Same idea as the <a href="/leagues">league</a> and <a href="/translations">translation</a> overrides.</p>
+    <p class="muted">Channels you define yourself: a channel name plus where its picture comes from. A channel applies to every game listing that name — now and in future runs — and its sources go first. A source is a <strong>stream</strong> (a video link such as .m3u8, played by the sites' video player), an <strong>embed</strong> (a web page the sites show in an iframe; the feed takes its screenshot), or — in a <strong>remote playlist</strong> — every channel of an M3U/M3U8 file. All of it can also be sent as JSON (bottom of this page).</p>
+    ${message ? `<div class="card" style="border-left:4px solid var(--accent)">${escapeHtml(message)}</div>` : ''}
+    <div class="card">
+      <strong>Add a channel</strong>
+      <p class="muted">The name must be the one the games list (see the first table below), or any name you want to add ahead of time.</p>
+      <form class="inline-form" method="POST" action="/api/manual-channel">
+        <input type="text" name="name" placeholder="Channel name (e.g. WST Play)" required>
+        <input type="text" name="url" placeholder="${urlPlaceholder}" required>
+        ${typeSelect}
+        <button type="submit">Add</button>
+      </form>
+    </div>
     <div class="card">
       <strong>Channels with no IPTV match</strong>
       ${
         unmatchedRows
-          ? `<table><tr><th>Channel</th><th>Games</th><th>Add a stream URL</th></tr>${unmatchedRows}</table>`
+          ? `<table><tr><th>Channel</th><th>Games</th><th>Add a source</th></tr>${unmatchedRows}</table>`
           : '<p class="muted">None right now — every reported channel has at least one stream.</p>'
       }
     </div>
@@ -853,9 +897,40 @@ function renderManualChannels(state, getManualChannelsAllFn) {
       <strong>Manually added channels</strong>
       ${
         manualRows
-          ? `<table><tr><th>Channel</th><th>Stream URLs</th><th></th></tr>${manualRows}</table>`
+          ? `<table><tr><th>Channel</th><th>Sources</th><th></th></tr>${manualRows}</table>`
           : '<p class="muted">None added yet.</p>'
       }
+    </div>
+    <div class="card">
+      <strong>Remote playlists (M3U / M3U8 files)</strong>
+      <p class="muted">A link to a playlist file. Its entries are matched to channel names the same way iptv-org's are, and the file is read again every 30 minutes, so changing tokens and added channels follow it.</p>
+      <form class="inline-form" method="POST" action="/api/manual-playlist">
+        <input type="text" name="url" placeholder="https://example.com/channels.m3u8" required>
+        <input type="text" name="label" placeholder="Label (optional)">
+        <button type="submit">Add playlist</button>
+      </form>
+      ${
+        playlistRows
+          ? `<table><tr><th>Playlist</th><th>Last read</th><th></th></tr>${playlistRows}</table>
+             <form class="inline-form" method="POST" action="/api/manual-playlist/refresh" style="margin-top:.6rem"><button type="submit" class="secondary">Read all again now</button></form>`
+          : '<p class="muted">None added yet.</p>'
+      }
+    </div>
+    <div class="card">
+      <strong>JSON</strong>
+      <p class="muted"><a href="/api/manual-channels" style="color:#93c5fd">Download the current list as JSON</a>. Paste JSON in the same shape below to add to it (tick the box to replace everything instead). Each source is a URL, a pasted &lt;iframe&gt; tag, or <code>{"url": "...", "type": "stream" | "embed"}</code>.</p>
+      <form method="POST" action="/api/manual-channels/import">
+        <textarea name="json" rows="9" style="width:100%;font-family:monospace;font-size:.8rem" placeholder='{
+  "playlists": [ { "url": "https://example.com/channels.m3u8", "label": "My list" } ],
+  "channels": [
+    { "name": "WST Play", "sources": [ "https://example.com/wst.m3u8" ] },
+    { "name": "Federation TV", "sources": [ { "url": "https://player.example.org/embed/1", "type": "embed" } ] }
+  ]
+}' required></textarea>
+        <label class="muted" style="display:block;margin:.4rem 0"><input type="checkbox" name="replace" value="1"> Replace the whole list (channels, and playlists when the JSON has them)</label>
+        <button type="submit">Import JSON</button>
+      </form>
+      <p class="muted" style="margin-top:.6rem">From a script: <code>curl -u admin:PASSWORD -X POST -H "Content-Type: application/json" --data @channels.json https://&lt;this service&gt;/api/manual-channels</code> (add <code>?replace=1</code> to replace).</p>
     </div>
   `,
     '/manual-channels'
@@ -989,6 +1064,14 @@ function createServer({
   getManualChannelsAll,
   addManualChannel,
   removeManualChannel,
+  // JSON import/export and remote playlists of /manual-channels; plain defaults for tests
+  importManualChannels = async (input, opts) => manualChannels.importManualChannels(input, opts),
+  exportManualChannels = () => manualChannels.exportManualChannels(),
+  getPlaylists = () => [],
+  getUserPlaylistStatus = () => null,
+  addPlaylist = async () => ({ error: 'playlists are not available' }),
+  removePlaylist = () => false,
+  refreshPlaylists = async () => false,
   runScreenshots,
   getScreenshot,
   getAllScreenshots,
@@ -1038,7 +1121,7 @@ function createServer({
   function liteRows(rows) {
     return rows.map((r) => ({
       ...r,
-      channels: (r.channels || []).map((c) => ({ name: c.name, sources: c.sources, sourceWorking: c.sourceWorking })),
+      channels: (r.channels || []).map((c) => ({ name: c.name, sources: c.sources, sourceWorking: c.sourceWorking, sourceEmbed: c.sourceEmbed })),
     }));
   }
 
@@ -1195,18 +1278,62 @@ function createServer({
   });
 
   app.get('/manual-channels', requireAuth('admin'), (req, res) => {
-    res.send(renderManualChannels(getState(), getManualChannelsAll));
+    res.send(renderManualChannels(getState(), getManualChannelsAll, { getPlaylists, getUserPlaylistStatus }));
   });
 
+  // A refused entry (bad link, embed over http...) is shown on the page instead of vanishing
   app.post('/api/manual-channel', requireAuth('admin'), (req, res) => {
-    const { name, url } = req.body;
-    addManualChannel(name, url);
+    const { name, url, type } = req.body;
+    const result = addManualChannel(name, url, { type });
+    if (result && result.error) return res.status(400).send(renderManualChannels(getState(), getManualChannelsAll, { getPlaylists, getUserPlaylistStatus }, `Not added: ${result.error}`));
     res.redirect('/manual-channels');
   });
 
   app.post('/api/manual-channel/remove', requireAuth('admin'), (req, res) => {
     const { name, index } = req.body;
     removeManualChannel(name, Number(index));
+    res.redirect('/manual-channels');
+  });
+
+  // JSON: the whole manual list (channels + remote playlists) out, and in - the same shape both ways.
+  // Scripts use Basic auth: curl -u admin:password
+  app.get('/api/manual-channels', requireAuth('admin'), (req, res) => {
+    res.set('Content-Disposition', 'attachment; filename="manual-channels.json"').json(exportManualChannels());
+  });
+
+  app.post('/api/manual-channels', requireAuth('admin'), express.json({ limit: '2mb' }), async (req, res) => {
+    const result = await importManualChannels(req.body, { replace: req.query.replace === '1' || req.query.replace === 'true' });
+    res.status(result.error ? 400 : 200).json(result);
+  });
+
+  // The same from the page: a pasted JSON text (or a .json file's contents)
+  app.post('/api/manual-channels/import', requireAuth('admin'), async (req, res) => {
+    const result = await importManualChannels(String(req.body.json || ''), { replace: req.body.replace === '1' });
+    const skipped = (result.skipped || []).slice(0, 20).map((s) => `${s.channel || '?'} ${s.url || ''}: ${s.reason}`);
+    const message = result.error
+      ? `Import failed: ${result.error}${skipped.length ? ' - ' + skipped.join('; ') : ''}`
+      : `Imported ${result.added} source(s)${result.playlistsAdded ? ` and ${result.playlistsAdded} playlist(s)` : ''}${skipped.length ? `; skipped ${result.skipped.length}: ${skipped.join('; ')}` : ''}`;
+    res.status(result.error ? 400 : 200).send(renderManualChannels(getState(), getManualChannelsAll, { getPlaylists, getUserPlaylistStatus }, message));
+  });
+
+  app.post('/api/manual-playlist', requireAuth('admin'), async (req, res) => {
+    const result = await addPlaylist(req.body.url, req.body.label);
+    const status = result.ok ? getUserPlaylistStatus(result.url) : null;
+    const message = result.error
+      ? `Playlist not added: ${result.error}`
+      : status && status.error
+        ? `Playlist added, but it could not be read: ${status.error}`
+        : `Playlist added${status && status.count ? ` - ${status.count} channels read` : ''}`;
+    res.status(result.error ? 400 : 200).send(renderManualChannels(getState(), getManualChannelsAll, { getPlaylists, getUserPlaylistStatus }, message));
+  });
+
+  app.post('/api/manual-playlist/remove', requireAuth('admin'), (req, res) => {
+    removePlaylist(String(req.body.url || ''));
+    res.redirect('/manual-channels');
+  });
+
+  app.post('/api/manual-playlist/refresh', requireAuth('admin'), async (req, res) => {
+    await refreshPlaylists();
     res.redirect('/manual-channels');
   });
 

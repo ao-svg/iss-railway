@@ -29,6 +29,10 @@ const { launchBrowser, closeBrowser, processStats, formatStats } = require('./br
 const { GIFEncoder, quantize, applyPalette } = require('gifenc');
 const { PNG } = require('pngjs');
 const sourceChecks = require('./sourceChecks');
+const manualChannels = require('./manualChannels');
+
+// Embed pages (iframe sources) load their player after the page itself
+const EMBED_SETTLE_MS = 6000;
 
 const DIR = dataPath('screenshots');
 const INDEX_PATH = dataPath('screenshots.json');
@@ -216,7 +220,10 @@ async function captureOne(page, url) {
   // An .m3u8 URL always goes through the player even if the check saw an
   // HTML page for it — navigating a browser straight to a manifest just
   // triggers a download (net::ERR_ABORTED), never a picture.
-  const isManifest = /\.m3u8(\?|$)/i.test(url) || (check ? check.isManifest !== false : true);
+  // A manual embed is a web page shown in an iframe, never a stream - captured as a page
+  // (a longer wait below, so its own player can paint a frame), even before it was checked.
+  const embed = manualChannels.isEmbedUrl(url);
+  const isManifest = !embed && (/\.m3u8(\?|$)/i.test(url) || (check ? check.isManifest !== false : true));
   const timeout =
     check && check.working === true ? WORKING_TIMEOUT_MS : check && check.working === false ? DEAD_TIMEOUT_MS : UNVERIFIED_TIMEOUT_MS;
   const target = (check && check.resolvedUrl) || url;
@@ -286,7 +293,7 @@ async function captureOne(page, url) {
 
     const file = `${id}.jpg`;
     await page.goto(target, { waitUntil: 'domcontentloaded', timeout });
-    await new Promise((r) => setTimeout(r, 1000));
+    await new Promise((r) => setTimeout(r, embed ? EMBED_SETTLE_MS : 1000));
     await page.screenshot({ path: path.join(DIR, file), type: 'jpeg', quality: 70 });
     return { ok: true, file, gifOk: false, gifFile: null, gifError: null };
   } catch (err) {

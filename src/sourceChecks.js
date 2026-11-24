@@ -812,14 +812,33 @@ async function checkVisitorPath(url, goBase) {
  *   - otherwise the visitor probe's true, else the check's own working.
  * Pure, so testable without network.
  */
-function visitorPlayable(check, url) {
+function visitorPlayable(check, url, embed = false) {
   if (!check) return null;
+  if (embed) return embedPlayable(check);
   const working = check.working === undefined ? null : check.working;
   if (working === false) return false;
   if (check.isManifest !== false && isDash(check, url)) return false;
   if (check.visitorWorking === false) return false;
   if (check.visitorPath === 'direct' && geoHintFor(check.resolvedUrl || url) === 'us-only') return false;
   return check.visitorWorking === true ? true : working;
+}
+
+/**
+ * An embed is a web page shown in an iframe on the visitor's site, added by
+ * hand, so the person vouches for it: only hard facts hide it. The page
+ * forbids being framed (X-Frame-Options / frame-ancestors) -> false, as
+ * does a page that is gone (404/410) or unreachable. A refusal from this
+ * US datacenter (401/403/429/5xx) says nothing about a visitor - bot
+ * walls and geo fences look like that - so it stays unverified (null) and
+ * shown. Reachable and frameable -> true.
+ */
+function embedPlayable(check) {
+  if (check.status === 'blocked') return false;
+  if (check.status === 'ok') return true;
+  if (check.status === 'dangerous') return false;
+  const code = check.httpStatus;
+  if (code === 404 || code === 410 || !code) return false;
+  return null;
 }
 
 function isDash(check, url) {
@@ -933,6 +952,9 @@ async function checkAll(urls, { force = false, onProgress, relayProbe = null, vi
  *   sourceWorking  - can a visitor outside the US play it, the way the
  *                    sites play it (through /go): true / false / null
  *                    (unverified or never checked) — see visitorPlayable
+ *   sourceEmbed    - true for a manual channel's web page the sites show in an
+ *                    iframe (manualChannels.js); its `sources` entry is the page's
+ *                    own link, not a /go link, and sourceWorking is embedPlayable
  *   sourceVisitorPath - where /go sends visitors: 'relay' / 'direct' / null
  *   sourceSpeedRatio - segment download time / segment duration from the
  *                    last speed test (> TOO_SLOW_RATIO = too slow), or null
@@ -972,12 +994,18 @@ function enrichRowsWithSourceStatus(rows, getSourceStatus = getStatus, { getScre
       // YouTube links stay as they are: no token, never relayed, and the
       // sites embed them - wrapped, a site that reads the feed on another
       // address than its /go links can't tell they're YouTube.
-      const playable = sources.map((url) => (isYouTubeUrl(url) ? url : `${publicBaseUrl}/go?u=${encodeURIComponent(url)}`));
+      // Embeds (manual channels shown in an iframe) are exported plain too: /go would
+      // redirect the frame, and the page is not a stream.
+      const embedSet = new Set(ch.embedUrls || []);
+      const isEmbed = (url) => embedSet.has(url);
+      const playable = sources.map((url) => (isYouTubeUrl(url) || isEmbed(url) ? url : `${publicBaseUrl}/go?u=${encodeURIComponent(url)}`));
       return orderForVisitors({
         ...ch,
         sources: playable,
+        // Shown in an iframe by the sites instead of played as a stream
+        sourceEmbed: sources.map((url) => isEmbed(url)),
         sourceStatuses: results.map((s) => s?.status || null),
-        sourceWorking: results.map((s, i) => visitorPlayable(s, sources[i])),
+        sourceWorking: results.map((s, i) => visitorPlayable(s, sources[i], isEmbed(sources[i]))),
         sourceVisitorPath: results.map((s) => (s && s.visitorPath) || null),
         // Last whole-segment speed test: download time / segment duration
         // (above TOO_SLOW_RATIO = too slow, hidden). null = not measured.
@@ -1022,7 +1050,7 @@ function isYouTubeUrl(url) {
 
 // Every per-source array of an enriched channel, parallel to `sources`.
 const PARALLEL_SOURCE_FIELDS = [
-  'sources', 'sourceStatuses', 'sourceWorking', 'sourceVisitorPath', 'sourceSpeedRatio', 'sourceCors',
+  'sources', 'sourceEmbed', 'sourceStatuses', 'sourceWorking', 'sourceVisitorPath', 'sourceSpeedRatio', 'sourceCors',
   'sourceRelayPlayable', 'sourceResolved', 'sourceScreenshot', 'sourceGif', 'sourceRank', 'sourceGeo',
 ];
 

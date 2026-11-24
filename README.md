@@ -204,6 +204,9 @@ only). Manage accounts on `/users`.
 | `GET /translations` | Set manual Simplified Chinese overrides (admin only) |
 | `GET /live`          | Currently-live games from the live-streaming source, refreshed on demand (admin only) |
 | `GET /youtube-channels` | YouTube channels the live-streaming source has surfaced, with informational approve/reject labels — doesn't gate what's exported (admin only) |
+| `GET /manual-channels` | Channels you define yourself: name + sources - stream links, **embeds** (a web page shown in an iframe, screenshot taken by the feed) and **remote M3U/M3U8 playlists**; also JSON in/out (admin only) |
+| `GET /api/manual-channels` | The manual list as JSON (admin; Basic auth works for scripts) |
+| `POST /api/manual-channels` | Import JSON, `?replace=1` replaces everything - see [Manual channels](#manual-channels) (admin only) |
 | `GET /users`        | Manage accounts: add/edit/delete admin and viewer logins (admin only) |
 | `POST /api/check-sources` | Kicks off the reachability/iframe check job in the background (admin only) |
 | `POST /api/translate-names` | Kicks off the translation job in the background (admin only) |
@@ -259,6 +262,28 @@ and never removes the table; such a site shows an **ABS3** pill on `/sites`).
 | `POST /api/hub/setup` `{ site, setup }` | Queues the set-up on a connected schedule site and pokes it; answers with the command id to follow on `/api/hub/site/<host>` |
 | `POST /api/hub/update` `{ site?, plugin? }` | Asks outdated sites to install the published plugin now |
 | `PUT /api/hub/release?notes=` (zip body) | Publishes a plugin zip (`npm run hub -- publish`) |
+
+### Manual channels
+
+The channels the games list, but no playlist has a stream for, can be given sources by hand on `/manual-channels`, or in bulk as JSON. A channel name applies to every game that lists it, now and in future runs, and its sources go first.
+
+- **Stream**: a video link (`.m3u8` etc.), played by the sites' video player.
+- **Embed**: a web page the sites show in an iframe (an official player page, Twitch, Vimeo...). Paste the page link or the whole `<iframe ...>` tag. https only; the page must allow being framed (the feed checks the headers and hides one that doesn't). The feed screenshots it like any page, and exports it as `sourceEmbed: true` with its own link (no `/go`). Needs zhibo82 4.6.0 or later.
+- **Remote playlist**: a link to an M3U/M3U8 file. Its entries are matched to channel names like iptv-org's, applied at once, and read again every 30 minutes (tokens that change follow the file). Private and local addresses are refused.
+
+JSON (same shape for export and import; from a script: `curl -u admin:PASSWORD -X POST -H "Content-Type: application/json" --data @channels.json $URL/api/manual-channels`, `?replace=1` to replace everything):
+
+```json
+{
+  "playlists": [{ "url": "https://example.com/channels.m3u8", "label": "My list" }],
+  "channels": [
+    { "name": "WST Play", "sources": ["https://example.com/wst.m3u8"] },
+    { "name": "Federation TV", "sources": [{ "url": "https://player.example.org/embed/1", "type": "embed" }] }
+  ]
+}
+```
+
+`{"Channel name": ["url", ...]}` and a bare list of channels are accepted too. Links that fail the checks are skipped and listed with the reason.
 
 ## Pulling into your Google Sheet
 
